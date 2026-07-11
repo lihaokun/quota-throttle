@@ -47,7 +47,7 @@ fn max_watch_pct(cfg: &Config, status: &QuotaStatus) -> f64 {
 
 impl Orchestrator {
     pub fn new(cfg: Config) -> Self {
-        let probe = QuotaProbe::new(cfg.zhipu.quota_url.clone());
+        let probe = QuotaProbe::new(&cfg.zhipu);
         let api = NewApiClient::new(&cfg.new_api);
         Self {
             cfg,

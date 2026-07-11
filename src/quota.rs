@@ -6,9 +6,10 @@
 //!
 //! 本模块与 new-api 完全解耦：将来迁到 litellm-rs 或自研网关，这块原样搬走即可。
 
-use crate::config::Window;
+use crate::config::{Window, ZhipuConfig};
 use anyhow::{Context, Result};
 use serde::Deserialize;
+use tracing::warn;
 
 #[derive(Debug, Clone)]
 pub struct WindowStatus {
@@ -70,26 +71,34 @@ struct RawLimit {
 pub struct QuotaProbe {
     client: reqwest::Client,
     url: String,
+    extra_headers: Vec<(String, String)>,
 }
 
 impl QuotaProbe {
-    pub fn new(url: String) -> Self {
+    pub fn new(cfg: &ZhipuConfig) -> Self {
         Self {
             client: reqwest::Client::new(),
-            url,
+            url: cfg.quota_url.clone(),
+            extra_headers: cfg
+                .extra_headers
+                .iter()
+                .map(|h| (h.key.clone(), h.value.clone()))
+                .collect(),
         }
     }
 
     /// 查询某把 key 的用量。Authorization 直接放 key（该端点不是 Bearer 前缀，按社区脚本）。
+    /// 团体/企业套餐所需的 org/project selector 走 extra_headers 追加。
     pub async fn query(&self, api_key: &str) -> Result<QuotaStatus> {
-        let resp = self
+        let mut rb = self
             .client
             .get(&self.url)
             .header("Authorization", api_key)
-            .header("Content-Type", "application/json")
-            .send()
-            .await
-            .context("请求智谱用量 API 失败")?;
+            .header("Content-Type", "application/json");
+        for (k, v) in &self.extra_headers {
+            rb = rb.header(k.as_str(), v.as_str());
+        }
+        let resp = rb.send().await.context("请求智谱用量 API 失败")?;
 
         let raw: RawResponse = resp.json().await.context("解析智谱用量响应失败")?;
         if !raw.success {
@@ -105,6 +114,12 @@ impl QuotaProbe {
             .filter(|l| l.kind == "TOKENS_LIMIT")
             .collect();
         token_limits.sort_by_key(|l| l.next_reset_time);
+
+        // success=true 但没有任何 TOKENS_LIMIT，多半是团体/企业套餐缺 org/project selector
+        // header 导致 limits 为空。这时若静默返回会被当成 0% → 永不切换，故显式告警。
+        if token_limits.is_empty() {
+            warn!("智谱用量响应 limits 为空（团体套餐？请检查 zhipu.extra_headers 的 org/project selector）");
+        }
 
         let mut status = QuotaStatus {
             level: data.level,

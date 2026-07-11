@@ -73,6 +73,11 @@ pub struct ZhipuConfig {
     /// 智谱用量查询端点。国内版默认如下；国际版 z.ai 换成对应地址。
     #[serde(default = "default_quota_url")]
     pub quota_url: String,
+    /// 团体/企业套餐通常要额外的 selector header（如 Bigmodel-Organization /
+    /// Bigmodel-Project），否则接口可能返回 success 但 limits 为空 → 用量恒为 0、永不切换。
+    /// 用 F12 抓一次浏览器里的真实请求核实 header 名再填。个人套餐一般留空即可。
+    #[serde(default)]
+    pub extra_headers: Vec<HeaderKV>,
 }
 
 fn default_quota_url() -> String {

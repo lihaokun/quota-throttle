@@ -20,6 +20,18 @@ priority_exhausted = 0
 # 国内版端点；国际版 z.ai 换成对应地址
 quota_url = "https://open.bigmodel.cn/api/monitor/usage/quota/limit"
 
+# ⚠️ 团体/企业套餐通常必须带 org/project selector header，否则接口返回 success 但
+# limits 为空 → 用量恒为 0、永不切换（启动后日志会 WARN 提醒你）。
+# F12 打开后台用量页，抓那条 quota/limit 请求，把它带的 selector header 原样填这里。
+# header 名各版本可能不同（Bigmodel-Organization / Bigmodel-Project 是 z.ai 的写法），以抓到的为准。
+# 个人套餐一般不需要，删掉这两段即可。
+# [[zhipu.extra_headers]]
+# key = "Bigmodel-Organization"
+# value = "你的组织 id"
+# [[zhipu.extra_headers]]
+# key = "Bigmodel-Project"
+# value = "你的项目 id"
+
 [new_api]
 base_url = "http://127.0.0.1:3000"
 # new-api 后台【个人设置 / Profile】里生成的“系统访问令牌”（不是发给 opencode 的调用令牌）
