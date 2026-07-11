@@ -70,18 +70,20 @@ fn default_p_exhausted() -> i64 {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ZhipuConfig {
-    /// 智谱用量查询端点。国内版默认如下；国际版 z.ai 换成对应地址。
+    /// 智谱用量查询端点。
+    /// ⚠️ 团体套餐必须带 `?type=2`（团队额度作用域）——不带会返回「当前用户不存在coding plan」。
+    /// 个人套餐去掉该查询参数即可。国际版 z.ai 换成对应主机。
     #[serde(default = "default_quota_url")]
     pub quota_url: String,
-    /// 团体/企业套餐通常要额外的 selector header（如 Bigmodel-Organization /
-    /// Bigmodel-Project），否则接口可能返回 success 但 limits 为空 → 用量恒为 0、永不切换。
-    /// 用 F12 抓一次浏览器里的真实请求核实 header 名再填。个人套餐一般留空即可。
+
+    /// 全局默认 selector header（各 key 未单独配置时的兜底）。
+    /// 多把 key 同组织/项目时只写一遍即可。
     #[serde(default)]
     pub extra_headers: Vec<HeaderKV>,
 }
 
 fn default_quota_url() -> String {
-    "https://open.bigmodel.cn/api/monitor/usage/quota/limit".to_string()
+    "https://open.bigmodel.cn/api/monitor/usage/quota/limit?type=2".to_string()
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -194,6 +196,12 @@ pub struct KeyMapping {
     /// 这把 key 在 new-api 里对应的渠道 id。可留空，交给 sync 按 name 自动解析/创建。
     #[serde(default)]
     pub channel_id: Option<i64>,
+
+    /// 该 key 查询用量时附加的 selector header。团体套餐必需
+    /// （Bigmodel-Organization / Bigmodel-Project）——**不同 key 可能属于不同组织/项目，
+    /// 故按 key 配置**。留空则回退到 [zhipu].extra_headers 的全局兜底。
+    #[serde(default)]
+    pub quota_headers: Vec<HeaderKV>,
 }
 
 /// channel_id 解析完成后的可用条目（orchestrator 直接用它）。
@@ -202,6 +210,8 @@ pub struct ResolvedKey {
     pub name: String,
     pub zhipu_api_key: String,
     pub channel_id: i64,
+    /// per-key 的用量查询 selector header（透传自 KeyMapping）
+    pub quota_headers: Vec<HeaderKV>,
 }
 
 impl Config {

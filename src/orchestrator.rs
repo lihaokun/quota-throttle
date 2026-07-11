@@ -66,7 +66,7 @@ impl Orchestrator {
         // 1. 采集每把 key 的最大窗口使用率；查询失败的不进 map（不参与本轮决策）
         let mut pct: HashMap<i64, f64> = HashMap::new();
         for k in &keys {
-            match self.probe.query(&k.zhipu_api_key).await {
+            match self.probe.query(&k.zhipu_api_key, &k.quota_headers).await {
                 Ok(status) => {
                     let p = max_watch_pct(&self.cfg, &status);
                     info!(name = %k.name, channel_id = k.channel_id, pct = p, "用量");

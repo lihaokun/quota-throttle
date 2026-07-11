@@ -23,15 +23,14 @@ priority_standby = 10
 priority_exhausted = 0
 
 [zhipu]
-# 国内版端点；国际版 z.ai 换成对应地址
-quota_url = "https://open.bigmodel.cn/api/monitor/usage/quota/limit"
+# ⚠️ 团体套餐必须带 ?type=2（团队额度作用域），否则返回「当前用户不存在coding plan」。
+#    个人套餐去掉 ?type=2。国际版 z.ai 换主机。鉴权用 Authorization: Bearer <key>（程序内置）。
+quota_url = "https://open.bigmodel.cn/api/monitor/usage/quota/limit?type=2"
 
-# ⚠️ 团体/企业套餐若 F12 发现调用需要 org/project selector header（否则接口 success 但
-# limits 为空 → 用量恒为 0、永不切换，启动后日志会 WARN），把抓到的 header 填这里。
-# header 名各版本可能不同（Bigmodel-Organization / Bigmodel-Project 是 z.ai 的写法）。个人套餐一般不需要。
+# 全局兜底 selector（各 key 未单独配 quota_headers 时用这个）。个人套餐不需要。
 # [[zhipu.extra_headers]]
 # key = "Bigmodel-Organization"
-# value = "你的组织 id"
+# value = "org-..."
 
 [new_api]
 base_url = "http://127.0.0.1:3000"
@@ -70,7 +69,22 @@ group = "default"
 name = "zhipu-1"
 zhipu_api_key = "第一把智谱 key"
 # channel_id = 1   # 可选：已有渠道时显式指定；留空则按 name 自动解析/创建
+# —— 团体套餐必需的 selector；不同 key 可能属不同组织/项目，故按 key 配 ——
+# 取法：浏览器打开 https://bigmodel.cn/coding-plan/team/usage-stats → F12 Network →
+#       刷新 → 找 api/monitor/usage/quota/limit 请求 → 复制它带的这两个请求头
+[[keys.quota_headers]]
+key = "Bigmodel-Organization"
+value = "org-..."
+[[keys.quota_headers]]
+key = "Bigmodel-Project"
+value = "proj_..."
 
 [[keys]]
 name = "zhipu-2"
 zhipu_api_key = "第二把智谱 key"
+[[keys.quota_headers]]
+key = "Bigmodel-Organization"
+value = "org-..."
+[[keys.quota_headers]]
+key = "Bigmodel-Project"
+value = "proj_..."

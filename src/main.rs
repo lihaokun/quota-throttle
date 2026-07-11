@@ -150,6 +150,7 @@ fn resolve_keys(cfg: &Config, map: &HashMap<String, i64>) -> Vec<ResolvedKey> {
                 name: k.name.clone(),
                 zhipu_api_key: k.zhipu_api_key.clone(),
                 channel_id: id,
+                quota_headers: k.quota_headers.clone(),
             }),
             None => warn!(name = %k.name, "解析不到 channel_id（既无显式配置也无同名渠道），本 key 跳过"),
         }

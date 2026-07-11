@@ -6,7 +6,7 @@
 //!
 //! 本模块与 new-api 完全解耦：将来迁到 litellm-rs 或自研网关，这块原样搬走即可。
 
-use crate::config::{Window, ZhipuConfig};
+use crate::config::{HeaderKV, Window, ZhipuConfig};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use tracing::warn;
@@ -86,6 +86,7 @@ impl RawLimit {
 pub struct QuotaProbe {
     client: reqwest::Client,
     url: String,
+    /// 全局兜底 selector header（各 key 未单独配置时用）
     extra_headers: Vec<(String, String)>,
 }
 
@@ -102,18 +103,27 @@ impl QuotaProbe {
         }
     }
 
-    /// 查询某把 key 的用量。Authorization 直接放 key（该端点不是 Bearer 前缀，按社区脚本）。
-    /// 团体/企业套餐所需的 org/project selector 走 extra_headers 追加。
-    pub async fn query(&self, api_key: &str) -> Result<QuotaStatus> {
+    /// 查询单把 key 的 5 小时 / 每周窗口已用百分比。
+    ///
+    /// 鉴权：`Authorization: Bearer <key>`（**必须带 Bearer**）。
+    /// 团体套餐还必须满足两点，否则返回「当前用户不存在coding plan」：
+    ///   1. url 带 `?type=2`（团队额度作用域）；
+    ///   2. 带 selector header：Bigmodel-Organization / Bigmodel-Project。
+    /// selector 按 key 传入（不同 key 可能属不同组织/项目）；为空则回退全局 extra_headers。
+    pub async fn query(&self, api_key: &str, key_headers: &[HeaderKV]) -> Result<QuotaStatus> {
         let mut rb = self
             .client
             .get(&self.url)
-            .header("Authorization", api_key)
+            .header("Authorization", format!("Bearer {api_key}"))
+            .header("Accept", "application/json")
             .header("Content-Type", "application/json")
-            // 带个明确 UA，规避部分版本对空/可疑 UA 的拦截（照 opencode 插件做法）。
             .header("User-Agent", "quota-throttle/0.1");
+        // 先全局兜底，再 per-key 覆盖
         for (k, v) in &self.extra_headers {
             rb = rb.header(k.as_str(), v.as_str());
+        }
+        for h in key_headers {
+            rb = rb.header(h.key.as_str(), h.value.as_str());
         }
         let resp = rb.send().await.context("请求智谱用量 API 失败")?;
 
@@ -130,10 +140,14 @@ impl QuotaProbe {
             .filter(|l| l.kind == "TOKENS_LIMIT")
             .collect();
 
-        // success=true 但没有任何 TOKENS_LIMIT，多半是团体/企业套餐缺 org/project selector
-        // header 导致 limits 为空。这时若静默返回会被当成 0% → 永不切换，故显式告警。
+        // success=true 但没有任何 TOKENS_LIMIT：团体套餐多半是 url 缺 `?type=2`
+        // 或缺 Bigmodel-Organization / Bigmodel-Project selector。静默返回会被当成 0% →
+        // 永不切换，故显式告警。
         if token_limits.is_empty() {
-            warn!("智谱用量响应 limits 为空（团体套餐？请检查 zhipu.extra_headers 的 org/project selector）");
+            warn!(
+                "智谱用量响应 limits 为空：团体套餐请确认 quota_url 带 ?type=2，\
+                 且 keys.quota_headers 配了 Bigmodel-Organization / Bigmodel-Project"
+            );
         }
 
         let mut status = QuotaStatus {
