@@ -8,10 +8,33 @@
 //! ⚠️ channel_path / 建渠道字段 / 是否需要 New-Api-User，请用 F12 抓真实请求核实。
 
 use crate::config::{ChannelTemplate, NewApiConfig};
+use crate::status::{ChannelState, RequestLog};
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use tracing::{info, warn};
+
+/// new-api 列表响应兼容：新版 `data.items[]`，旧版 `data[]`。
+fn extract_items(body: &Value) -> Vec<Value> {
+    body.get("data")
+        .and_then(|d| {
+            d.get("items")
+                .and_then(|v| v.as_array())
+                .or_else(|| d.as_array())
+        })
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn s(v: &Value, k: &str) -> String {
+    v.get(k)
+        .and_then(|x| x.as_str())
+        .unwrap_or_default()
+        .to_string()
+}
+fn i(v: &Value, k: &str) -> Option<i64> {
+    v.get(k).and_then(|x| x.as_i64())
+}
 
 enum Auth {
     Token(String),
@@ -169,14 +192,8 @@ impl NewApiClient {
             .await
             .context("解析渠道列表失败")?;
 
-        let items = body
-            .get("data")
-            .and_then(|d| d.get("items").and_then(|v| v.as_array()).or_else(|| d.as_array()))
-            .cloned()
-            .unwrap_or_default();
-
         let mut map = HashMap::new();
-        for it in items {
+        for it in extract_items(&body) {
             if let (Some(name), Some(id)) = (
                 it.get("name").and_then(|v| v.as_str()),
                 it.get("id").and_then(|v| v.as_i64()),
@@ -185,6 +202,87 @@ impl NewApiClient {
             }
         }
         Ok(map)
+    }
+
+    /// 【看板】拉取渠道**完整状态**（status / priority / weight / used_quota / auto_ban）。
+    ///
+    /// **纯读，零副作用**——已核实 new-api 的 `GetAllChannels` 内无任何写/测试调用。
+    /// 首要用途：暴露「渠道被 new-api 自动禁用」这个盲区——我们只改 priority、从不碰 status，
+    /// 渠道一旦被禁，priority=100 也不会有流量。
+    pub async fn list_channel_states(&self) -> Result<Vec<ChannelState>> {
+        let url = format!("{}{}/?p=0&page_size=100", self.base_url, self.channel_path);
+        let body: Value = self
+            .apply_headers(self.client.get(&url))
+            .send()
+            .await
+            .context("拉取渠道状态失败")?
+            .json()
+            .await
+            .context("解析渠道状态失败")?;
+
+        let mut out: Vec<ChannelState> = extract_items(&body)
+            .iter()
+            .filter_map(|it| {
+                let id = i(it, "id")?;
+                let status_raw = i(it, "status").unwrap_or(0);
+                Some(ChannelState {
+                    id,
+                    name: s(it, "name"),
+                    enabled: status_raw == 1,
+                    status_raw,
+                    priority: i(it, "priority"),
+                    weight: i(it, "weight"),
+                    used_quota: i(it, "used_quota").unwrap_or(0),
+                    auto_ban: i(it, "auto_ban"),
+                    models: s(it, "models"),
+                    group: s(it, "group"),
+                })
+            })
+            .collect();
+        out.sort_by_key(|c| c.id); // 顺序稳定，看板不跳动
+        Ok(out)
+    }
+
+    /// 【看板】最近 n 条**真实请求**。纯读（`/api/log/` handler 无写操作）。
+    ///
+    /// 过滤依据用**字段语义**（model_name 非空 且 channel != 0）而非 `type` 枚举值——
+    /// 后者随 new-api 版本可能变，前者稳。日志里混有登录等系统条目（实测 type=7）。
+    pub async fn recent_logs(&self, n: usize) -> Result<Vec<RequestLog>> {
+        let url = format!("{}/api/log/?p=0&page_size={n}", self.base_url);
+        let body: Value = self
+            .apply_headers(self.client.get(&url))
+            .send()
+            .await
+            .context("拉取请求日志失败")?
+            .json()
+            .await
+            .context("解析请求日志失败")?;
+
+        let mut out: Vec<RequestLog> = extract_items(&body)
+            .iter()
+            .filter_map(|it| {
+                let model_name = s(it, "model_name");
+                let channel = i(it, "channel").unwrap_or(0);
+                if model_name.is_empty() || channel == 0 {
+                    return None; // 系统日志（登录等），非真实请求
+                }
+                Some(RequestLog {
+                    created_at: i(it, "created_at").unwrap_or(0),
+                    channel,
+                    channel_name: s(it, "channel_name"),
+                    model_name,
+                    prompt_tokens: i(it, "prompt_tokens").unwrap_or(0),
+                    completion_tokens: i(it, "completion_tokens").unwrap_or(0),
+                    quota: i(it, "quota").unwrap_or(0),
+                    use_time: i(it, "use_time").unwrap_or(0),
+                    is_stream: it.get("is_stream").and_then(|v| v.as_bool()).unwrap_or(false),
+                    token_name: s(it, "token_name"),
+                })
+            })
+            .collect();
+        // 自行排序，不依赖服务端返回顺序
+        out.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        Ok(out)
     }
 
     /// 创建一把 key 对应的渠道（把 name/key/priority 合并进模板 POST）。

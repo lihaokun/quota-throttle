@@ -22,7 +22,7 @@ use crate::quota::{QuotaProbe, QuotaStatus};
 use crate::status::{self, KeyStatus, Shared, StatusSnapshot};
 use std::collections::HashMap;
 use std::time::Duration;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 pub struct Orchestrator {
     cfg: Config,
@@ -186,6 +186,24 @@ impl Orchestrator {
             .unwrap_or(0);
         let healthy = self.newapi_healthy().await;
 
+        // new-api 面板数据：**纯读**（已核实 GetAllChannels / /api/log/ 无写操作）。
+        // 拉取在决策与下发之后 ⇒ 失败也不可能影响切换；退化为空列表，看板显示「暂无数据」。
+        let channels = match self.api.list_channel_states().await {
+            Ok(v) => v,
+            Err(e) => {
+                debug!(error = %e, "拉取渠道状态失败（看板降级，不影响切换）");
+                Vec::new()
+            }
+        };
+        let recent = match self.api.recent_logs(20).await {
+            Ok(v) => v,
+            Err(e) => {
+                debug!(error = %e, "拉取请求日志失败（看板降级，不影响切换）");
+                Vec::new()
+            }
+        };
+        let client_endpoint = format!("{}/v1", self.cfg.new_api.base_url.trim_end_matches('/'));
+
         let key_statuses = keys
             .iter()
             .map(|k| {
@@ -227,6 +245,9 @@ impl Orchestrator {
                 new_api_healthy: healthy,
                 active_channel_id: active,
                 keys: key_statuses,
+                client_endpoint,
+                channels,
+                recent,
             },
         );
     }

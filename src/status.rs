@@ -34,6 +34,46 @@ pub struct KeyStatus {
     pub error: Option<String>,
 }
 
+/// new-api 侧的渠道实况。补的是我们看不见的盲区：
+/// 本工具只改 priority、**从不碰 status**——渠道一旦被 new-api 自动禁用，
+/// priority=100 也不会有流量，而我们毫无察觉。
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct ChannelState {
+    pub id: i64,
+    pub name: String,
+    /// status == 1
+    pub enabled: bool,
+    /// 原始 status（1=启用；2=手动禁用；3=自动禁用 …）
+    pub status_raw: i64,
+    /// new-api 中的**权威** priority，用于和本工具下发值对账
+    pub priority: Option<i64>,
+    pub weight: Option<i64>,
+    /// new-api 累计计费额度（内部单位；默认 QuotaPerUnit=500000，即 $ = used_quota/500000）
+    pub used_quota: i64,
+    pub auto_ban: Option<i64>,
+    pub models: String,
+    pub group: String,
+}
+
+/// 一条真实请求（证明流量确实走了 new-api、落在哪个渠道）。
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct RequestLog {
+    /// epoch **秒**（注意与 snapshot.updated_at 的毫秒不同单位）
+    pub created_at: i64,
+    /// 实际服务的渠道 id ← 本面板核心
+    pub channel: i64,
+    pub channel_name: String,
+    pub model_name: String,
+    pub prompt_tokens: i64,
+    pub completion_tokens: i64,
+    pub quota: i64,
+    /// 耗时（秒）
+    pub use_time: i64,
+    pub is_stream: bool,
+    /// 哪个调用令牌发起的（如 "opencode"）
+    pub token_name: String,
+}
+
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct StatusSnapshot {
     pub updated_at: i64,
@@ -44,6 +84,12 @@ pub struct StatusSnapshot {
     pub new_api_healthy: bool,
     pub active_channel_id: Option<i64>,
     pub keys: Vec<KeyStatus>,
+    /// 客户端应连的地址（= new_api_base + /v1）
+    pub client_endpoint: String,
+    /// new-api 侧渠道实况
+    pub channels: Vec<ChannelState>,
+    /// 最近的真实请求流水
+    pub recent: Vec<RequestLog>,
 }
 
 pub type Shared = Arc<RwLock<StatusSnapshot>>;
@@ -172,11 +218,40 @@ fn render_html() -> String {
  .rst{margin-top:6px;color:var(--dim);font-size:12px;font-variant-numeric:tabular-nums}
  .err{color:var(--bad);font-size:12px;margin-top:4px}
  .foot{margin-top:20px;color:var(--dim);font-size:12px}
+ h2{font-size:13px;margin:28px 0 12px;color:var(--dim);font-weight:600;
+    text-transform:uppercase;letter-spacing:.08em}
+ .ttl{font-size:13px;color:var(--dim);margin-bottom:14px}
+ .tbl{width:100%;border-collapse:collapse;font-size:13px}
+ .tbl th{text-align:left;color:var(--dim);font-weight:500;font-size:11px;text-transform:uppercase;
+         letter-spacing:.05em;padding:0 12px 9px 0;border-bottom:1px solid var(--line);white-space:nowrap}
+ .tbl td{padding:10px 12px 10px 0;border-bottom:1px solid rgba(37,43,56,.55);font-variant-numeric:tabular-nums}
+ .tbl tr:last-child td{border-bottom:none}
+ .off{background:rgba(242,85,90,.06)}
+ .badge{padding:2px 8px;border-radius:6px;font-size:11px;font-weight:700;white-space:nowrap}
+ .b-on{background:rgba(62,207,142,.15);color:var(--ok)}
+ .b-off{background:rgba(242,85,90,.22);color:var(--bad)}
+ .warn{color:var(--warn);font-size:11px;margin-top:3px}
+ .pdot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:7px;vertical-align:middle}
+ .copy{cursor:pointer;border:1px dashed var(--line);border-radius:6px;padding:3px 9px;
+       font-family:ui-monospace,SFMono-Regular,monospace;font-size:12px;color:var(--accent)}
+ .copy:hover{border-color:var(--accent);background:rgba(91,140,255,.08)}
+ .empty{color:var(--dim);font-size:13px;padding:6px 0}
 </style></head><body><div class="wrap">
 <header><h1>quota-throttle</h1><span class="tag">智谱 GLM Coding Plan</span></header>
 <div class="sub" id="sub">加载中…</div>
 <div class="chips" id="chips"></div>
 <div class="grid" id="grid"></div>
+
+<h2>new-api</h2>
+<div class="card">
+  <div class="ttl">渠道实况 · new-api 侧的真实状态（我们只改 priority、从不碰 status）</div>
+  <div id="chtbl"></div>
+</div>
+<div class="card" style="margin-top:14px">
+  <div class="ttl">最近请求 · 流量实际落在哪把 key</div>
+  <div id="logtbl"></div>
+</div>
+
 <div class="foot" id="foot"></div>
 </div><script>
 const pad=n=>String(n).padStart(2,'0');
@@ -212,11 +287,52 @@ async function tick(){
 
   document.getElementById('chips').innerHTML=`
    <div class="chip"><span class="dot" style="background:${d.new_api_healthy?'var(--ok)':'var(--bad)'}"></span>
-     <span class="k">new-api</span><span class="v">${d.new_api_healthy?'健康':'不可达'}</span>
-     <span class="k">${d.new_api_base}</span></div>
+     <span class="k">new-api</span><span class="v">${d.new_api_healthy?'健康':'不可达'}</span></div>
    <div class="chip"><span class="k">活动 key</span>
      <span class="v" style="color:var(--ok)">${act?act.name:'无 · 全部无额度'}</span></div>
+   <div class="chip"><span class="k">客户端连接</span>
+     <span class="copy" title="点击复制" onclick="navigator.clipboard.writeText('${d.client_endpoint||''}');this.textContent='已复制';setTimeout(()=>this.textContent='${d.client_endpoint||''}',900)">${d.client_endpoint||'—'}</span></div>
    ${d.dry_run?'<div class="chip" style="border-color:rgba(245,185,66,.5)"><span class="v" style="color:var(--warn)">dry_run</span><span class="k">只打印决策，不真改 new-api</span></div>':''}`;
+
+  // —— C：渠道实况。核心是暴露「被 new-api 自动禁用」这个盲区 ——
+  const applied = Object.fromEntries(d.keys.map(k=>[k.channel_id, k.priority]));
+  const chs = d.channels||[];
+  document.getElementById('chtbl').innerHTML = !chs.length
+    ? '<div class="empty">暂无数据</div>'
+    : `<table class="tbl"><thead><tr>
+         <th>渠道</th><th>启用状态</th><th>priority (new-api)</th><th>weight</th>
+         <th>累计花费</th><th>auto_ban</th><th>模型</th></tr></thead><tbody>${
+      chs.map(c=>{
+        const mism = applied[c.id]!=null && c.priority!=null && applied[c.id]!==c.priority;
+        return `<tr class="${c.enabled?'':'off'}">
+          <td><b>${c.name}</b> <span style="color:var(--dim)">#${c.id}</span></td>
+          <td>${c.enabled
+              ? '<span class="badge b-on">启用</span>'
+              : `<span class="badge b-off">已被禁用</span><div class="warn">status=${c.status_raw} · priority 不起作用，流量不会来</div>`}</td>
+          <td>${c.priority??'—'}${mism?`<div class="warn">与我们下发的 ${applied[c.id]} 不一致</div>`:''}</td>
+          <td style="color:var(--dim)">${c.weight??'—'}</td>
+          <td>$${(c.used_quota/500000).toFixed(4)}<div class="warn" style="color:var(--dim)">按 new-api 默认计价</div></td>
+          <td style="color:var(--dim)">${c.auto_ban?'开':'关'}</td>
+          <td style="color:var(--dim);font-size:12px">${c.models||'—'}</td></tr>`;
+      }).join('')}</tbody></table>`;
+
+  // —— A：请求流水。绿点=落在活动 key；黄点=掉到了兜底渠道 ——
+  const lg = d.recent||[];
+  document.getElementById('logtbl').innerHTML = !lg.length
+    ? '<div class="empty">暂无请求 · 用 opencode 发一条试试</div>'
+    : `<table class="tbl"><thead><tr>
+         <th>时间</th><th>模型</th><th>落在渠道</th><th>tokens</th><th>耗时</th><th>令牌</th></tr></thead><tbody>${
+      lg.map(r=>{
+        const on = r.channel === d.active_channel_id;
+        return `<tr>
+          <td style="color:var(--dim)">${clock(r.created_at*1000)}</td>
+          <td>${r.model_name}</td>
+          <td><span class="pdot" style="background:${on?'var(--ok)':'var(--warn)'}"></span>${r.channel_name||('#'+r.channel)}
+              ${on?'':'<div class="warn">未走活动 key（活动 key 撞墙后兜底？）</div>'}</td>
+          <td>${r.prompt_tokens.toLocaleString()}<span style="color:var(--dim)"> in</span> · ${r.completion_tokens.toLocaleString()}<span style="color:var(--dim)"> out</span></td>
+          <td style="color:var(--dim)">${r.use_time}s${r.is_stream?' · 流式':''}</td>
+          <td style="color:var(--dim)">${r.token_name||'—'}</td></tr>`;
+      }).join('')}</tbody></table>`;
 
   document.getElementById('grid').innerHTML=d.keys.map(k=>`
    <div class="card ${k.tier==='active'?'act':''} ${k.tier==='exhausted'?'dead':''}">
