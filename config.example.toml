@@ -1,0 +1,48 @@
+# 复制为 config.toml 后填写。启动：cargo run --release -- config.toml
+
+poll_interval_secs = 60      # 轮询智谱用量的间隔（秒）
+
+# 活动 key 用量达到这个百分比 → 切换到下一把有额度的 key；也是「有额度」判定线。
+throttle_threshold = 95.0
+# 挑「新活动 key」时要求用量低于这个值（比 throttle 低，多留余量 → 切换更少 → 缓存更稳）。
+restore_threshold = 90.0
+
+dry_run = true               # 先 true 空跑验证日志；确认无误再改 false 真正生效
+watch_windows = ["five_hour", "weekly"]   # 同时盯 5 小时和每周窗口，取最大使用率
+
+# 三档 priority（一般不用改）。new-api 优先路由最高 priority 的渠道：
+# active 独占最高档吃走所有正常流量；standby 作 429 兜底；exhausted 是最后手段。
+priority_active = 100
+priority_standby = 10
+priority_exhausted = 0
+
+[zhipu]
+# 国内版端点；国际版 z.ai 换成对应地址
+quota_url = "https://open.bigmodel.cn/api/monitor/usage/quota/limit"
+
+[new_api]
+base_url = "http://127.0.0.1:3000"
+# new-api 后台【个人设置 / Profile】里生成的“系统访问令牌”（不是发给 opencode 的调用令牌）
+admin_token = "PUT_YOUR_SYSTEM_ACCESS_TOKEN_HERE"
+# 用 F12 抓一次后台“编辑渠道→保存”的请求，核实真实路径
+channel_path = "/api/channel"
+
+# 部分 new-api 版本的管理 API 需要额外 header 标识管理员 user id。
+# 用 F12 确认；不需要就删掉这一段。
+[[new_api.extra_headers]]
+key = "New-Api-User"
+value = "1"
+
+# —— 一把智谱 key = 一个独立渠道 ——
+# 多把 key 都放同一分组、配同一模型名。本程序会用 priority 钉住其中一把当活动 key，
+# 其余作兜底；活动 key 逼近额度时自动切到下一把。渠道的 weight 由 new-api 后台自便，
+# 本程序不再用 weight 做控制。
+[[keys]]
+name = "zhipu-1"
+zhipu_api_key = "第一把智谱 key"
+channel_id = 1        # 这把 key 在 new-api 里的渠道 id
+
+[[keys]]
+name = "zhipu-2"
+zhipu_api_key = "第二把智谱 key"
+channel_id = 2

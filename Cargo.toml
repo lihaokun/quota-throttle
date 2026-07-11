@@ -1,0 +1,17 @@
+[package]
+name = "quota-throttle"
+version = "0.1.0"
+edition = "2021"
+description = "轮询智谱 GLM Coding Plan 用量，通过 new-api 管理 API 用 priority 钉住单把活动 key，逼近额度时自动切换"
+license = "MIT"
+repository = "https://github.com/lihaokun/quota-throttle"
+
+[dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "signal"] }
+reqwest = { version = "0.11", features = ["json", "rustls-tls"], default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
