@@ -66,6 +66,21 @@ struct RawLimit {
     percentage: f64,
     #[serde(rename = "nextResetTime", default)]
     next_reset_time: i64,
+    /// 时间单位枚举（智谱：3=小时，6=周），配合 number 精确区分窗口。
+    #[serde(default)]
+    unit: Option<i64>,
+    /// 单位数量（如 5 小时的 5、1 周的 1）。
+    #[serde(default)]
+    number: Option<i64>,
+}
+
+impl RawLimit {
+    fn to_window(&self) -> WindowStatus {
+        WindowStatus {
+            percentage: self.percentage,
+            next_reset_time: self.next_reset_time,
+        }
+    }
 }
 
 pub struct QuotaProbe {
@@ -94,7 +109,9 @@ impl QuotaProbe {
             .client
             .get(&self.url)
             .header("Authorization", api_key)
-            .header("Content-Type", "application/json");
+            .header("Content-Type", "application/json")
+            // 带个明确 UA，规避部分版本对空/可疑 UA 的拦截（照 opencode 插件做法）。
+            .header("User-Agent", "quota-throttle/0.1");
         for (k, v) in &self.extra_headers {
             rb = rb.header(k.as_str(), v.as_str());
         }
@@ -106,14 +123,12 @@ impl QuotaProbe {
         }
         let data = raw.data.context("响应缺少 data 字段")?;
 
-        // 只看 TOKENS_LIMIT，按 nextResetTime 升序排：
-        // 5 小时窗口重置更快 → nextResetTime 更早 → 排在前；每周窗口排在后。
-        let mut token_limits: Vec<RawLimit> = data
+        // 只看 TOKENS_LIMIT（TIME_LIMIT 是 MCP 搜索次数，不是用量窗口）。
+        let token_limits: Vec<RawLimit> = data
             .limits
             .into_iter()
             .filter(|l| l.kind == "TOKENS_LIMIT")
             .collect();
-        token_limits.sort_by_key(|l| l.next_reset_time);
 
         // success=true 但没有任何 TOKENS_LIMIT，多半是团体/企业套餐缺 org/project selector
         // header 导致 limits 为空。这时若静默返回会被当成 0% → 永不切换，故显式告警。
@@ -125,17 +140,33 @@ impl QuotaProbe {
             level: data.level,
             ..Default::default()
         };
-        if let Some(l) = token_limits.first() {
-            status.five_hour = Some(WindowStatus {
-                percentage: l.percentage,
-                next_reset_time: l.next_reset_time,
-            });
+
+        // 首选：按智谱返回的 unit/number 精确分窗（unit=3&number=5 → 5小时；unit=6&number=1 → 每周）。
+        let mut classified = false;
+        for l in &token_limits {
+            match (l.unit, l.number) {
+                (Some(3), Some(5)) => {
+                    status.five_hour = Some(l.to_window());
+                    classified = true;
+                }
+                (Some(6), Some(1)) => {
+                    status.weekly = Some(l.to_window());
+                    classified = true;
+                }
+                _ => {}
+            }
         }
-        if let Some(l) = token_limits.get(1) {
-            status.weekly = Some(WindowStatus {
-                percentage: l.percentage,
-                next_reset_time: l.next_reset_time,
-            });
+
+        // 回退：老版本/字段缺失时，照 nextResetTime 升序猜（5小时重置更早 → 排前）。
+        if !classified && !token_limits.is_empty() {
+            let mut sorted = token_limits;
+            sorted.sort_by_key(|l| l.next_reset_time);
+            if let Some(l) = sorted.first() {
+                status.five_hour = Some(l.to_window());
+            }
+            if let Some(l) = sorted.get(1) {
+                status.weekly = Some(l.to_window());
+            }
         }
         Ok(status)
     }
