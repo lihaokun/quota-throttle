@@ -1,5 +1,8 @@
 /target
 config.toml
+# 托管 new-api 的数据目录（下载的二进制、SQLite、日志、PID）
+.newapi/
+/.newapi
 # 源材料压缩包，不入库
 files.zip
 files_extracted/

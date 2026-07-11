@@ -16,7 +16,7 @@
 //!   - 本轮查询失败的 key 不参与决策，也不去动它的 priority；活动 key 查询失败时保持不变，
 //!     避免一次瞬时抖动就切换、白白丢缓存。
 
-use crate::config::Config;
+use crate::config::{Config, ResolvedKey};
 use crate::newapi::NewApiClient;
 use crate::quota::{QuotaProbe, QuotaStatus};
 use std::collections::HashMap;
@@ -26,6 +26,8 @@ pub struct Orchestrator {
     cfg: Config,
     probe: QuotaProbe,
     api: NewApiClient,
+    /// channel_id 已解析好的 key 列表
+    keys: Vec<ResolvedKey>,
     /// 当前钉住的活动渠道 id
     active: Option<i64>,
     /// 已下发到 new-api 的 priority（channel_id → priority），幂等用，避免每轮重复 PUT
@@ -46,20 +48,20 @@ fn max_watch_pct(cfg: &Config, status: &QuotaStatus) -> f64 {
 }
 
 impl Orchestrator {
-    pub fn new(cfg: Config) -> Self {
+    pub fn new(cfg: Config, api: NewApiClient, keys: Vec<ResolvedKey>) -> Self {
         let probe = QuotaProbe::new(&cfg.zhipu);
-        let api = NewApiClient::new(&cfg.new_api);
         Self {
             cfg,
             probe,
             api,
+            keys,
             active: None,
             applied: HashMap::new(),
         }
     }
 
     pub async fn tick(&mut self) {
-        let keys = self.cfg.keys.clone();
+        let keys = self.keys.clone();
 
         // 1. 采集每把 key 的最大窗口使用率；查询失败的不进 map（不参与本轮决策）
         let mut pct: HashMap<i64, f64> = HashMap::new();

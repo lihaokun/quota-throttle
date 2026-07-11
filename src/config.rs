@@ -87,20 +87,94 @@ fn default_quota_url() -> String {
 #[derive(Debug, Clone, Deserialize)]
 pub struct NewApiConfig {
     /// 例如 http://127.0.0.1:3000
+    #[serde(default = "default_base_url")]
     pub base_url: String,
-    /// new-api 后台【个人设置】里生成的“系统访问令牌”
+    /// 管理认证优先用这个“系统访问令牌”；留空则用下面的 root 账号自动登录拿会话。
+    #[serde(default)]
     pub admin_token: String,
+    /// admin_token 为空时用它登录 new-api（首启默认 root/123456）。
+    #[serde(default = "default_root_user")]
+    pub root_username: String,
+    #[serde(default = "default_root_pass")]
+    pub root_password: String,
     /// 渠道管理路径。用 F12 核实你的版本，默认 /api/channel
     #[serde(default = "default_channel_path")]
     pub channel_path: String,
-    /// 部分版本的管理 API 需要额外 header（如 New-Api-User: <管理员 user id>），
-    /// 用 F12 抓一次确认后填这里。
+    /// 部分版本的管理 API 需要额外 header（如 New-Api-User: <管理员 user id>）。
     #[serde(default)]
     pub extra_headers: Vec<HeaderKV>,
+    /// 由本工具下载并托管 new-api 进程（选项二：零前置一键起）。
+    #[serde(default)]
+    pub manage: Option<ManageConfig>,
+    /// sync 建渠道用的模板（版本相关字段，F12 对齐）。缺省则不自动建渠道，只按 name 解析已有渠道。
+    #[serde(default)]
+    pub channel_template: Option<ChannelTemplate>,
 }
 
+fn default_base_url() -> String {
+    "http://127.0.0.1:3000".to_string()
+}
+fn default_root_user() -> String {
+    "root".to_string()
+}
+fn default_root_pass() -> String {
+    // 新版 new-api 首启要求密码 ≥8 位；本工具首启会用它创建管理员。建议改成你自己的。
+    "changeme123".to_string()
+}
 fn default_channel_path() -> String {
     "/api/channel".to_string()
+}
+
+/// 让本工具自己下载 new-api release 二进制并作为原生进程托管。
+#[derive(Debug, Clone, Deserialize)]
+pub struct ManageConfig {
+    /// GitHub release tag，例如 v1.0.0-rc.20
+    #[serde(default = "default_newapi_version")]
+    pub version: String,
+    /// 监听端口（应与 base_url 里的端口一致）
+    #[serde(default = "default_newapi_port")]
+    pub port: u16,
+    /// 存放二进制 / SQLite / 日志 / PID 的目录
+    #[serde(default = "default_newapi_data_dir")]
+    pub data_dir: String,
+    /// GitHub 仓库，默认官方 new-api
+    #[serde(default = "default_newapi_repo")]
+    pub repo: String,
+}
+
+fn default_newapi_version() -> String {
+    "v1.0.0-rc.20".to_string()
+}
+fn default_newapi_port() -> u16 {
+    3000
+}
+fn default_newapi_data_dir() -> String {
+    "./.newapi".to_string()
+}
+fn default_newapi_repo() -> String {
+    "QuantumNous/new-api".to_string()
+}
+
+/// 建渠道模板：sync 时把每把 key 的 name/key/priority 合并进来 POST /api/channel。
+#[derive(Debug, Clone, Deserialize)]
+pub struct ChannelTemplate {
+    /// 渠道类型码（F12 核实；智谱可用 OpenAI 兼容或专用类型）
+    #[serde(rename = "type", default = "default_channel_type")]
+    pub channel_type: i64,
+    /// 智谱上游 base_url，例如 https://open.bigmodel.cn/api/paas/v4
+    pub base_url: String,
+    /// 逗号分隔的模型名，例如 "glm-4.6,glm-4.5"
+    pub models: String,
+    /// 分组名
+    #[serde(default = "default_group")]
+    pub group: String,
+}
+
+fn default_channel_type() -> i64 {
+    1
+}
+fn default_group() -> String {
+    "default".to_string()
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -111,11 +185,20 @@ pub struct HeaderKV {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct KeyMapping {
-    /// 便于日志辨认，例如 zhipu-1
+    /// 便于日志辨认，例如 zhipu-1；sync 时也作为 new-api 渠道名，用于解析 channel_id
     pub name: String,
-    /// 这把智谱 key（探针直接拿它调智谱用量 API）
+    /// 这把智谱 key（探针直接拿它调智谱用量 API；sync 建渠道时也用它）
     pub zhipu_api_key: String,
-    /// 这把 key 在 new-api 里对应的渠道 id
+    /// 这把 key 在 new-api 里对应的渠道 id。可留空，交给 sync 按 name 自动解析/创建。
+    #[serde(default)]
+    pub channel_id: Option<i64>,
+}
+
+/// channel_id 解析完成后的可用条目（orchestrator 直接用它）。
+#[derive(Debug, Clone)]
+pub struct ResolvedKey {
+    pub name: String,
+    pub zhipu_api_key: String,
     pub channel_id: i64,
 }
 

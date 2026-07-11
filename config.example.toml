@@ -1,4 +1,10 @@
-# 复制为 config.toml 后填写。启动：cargo run --release -- config.toml
+# 复制为 config.toml 后填写。一键起：cargo run --release -- up config.toml
+#
+# 子命令：
+#   up    下载/启动 new-api（配了 [new_api.manage] 时）→ sync 建渠道 → 进入切换循环
+#   sync  只建/对齐渠道并打印 name→channel_id，不进循环
+#   run   假设 new-api 已在跑，只解析渠道并进入切换循环
+#   down  停掉本工具托管的 new-api
 
 poll_interval_secs = 60      # 轮询智谱用量的间隔（秒）
 
@@ -20,41 +26,48 @@ priority_exhausted = 0
 # 国内版端点；国际版 z.ai 换成对应地址
 quota_url = "https://open.bigmodel.cn/api/monitor/usage/quota/limit"
 
-# ⚠️ 团体/企业套餐通常必须带 org/project selector header，否则接口返回 success 但
-# limits 为空 → 用量恒为 0、永不切换（启动后日志会 WARN 提醒你）。
-# F12 打开后台用量页，抓那条 quota/limit 请求，把它带的 selector header 原样填这里。
-# header 名各版本可能不同（Bigmodel-Organization / Bigmodel-Project 是 z.ai 的写法），以抓到的为准。
-# 个人套餐一般不需要，删掉这两段即可。
+# ⚠️ 团体/企业套餐若 F12 发现调用需要 org/project selector header（否则接口 success 但
+# limits 为空 → 用量恒为 0、永不切换，启动后日志会 WARN），把抓到的 header 填这里。
+# header 名各版本可能不同（Bigmodel-Organization / Bigmodel-Project 是 z.ai 的写法）。个人套餐一般不需要。
 # [[zhipu.extra_headers]]
 # key = "Bigmodel-Organization"
 # value = "你的组织 id"
-# [[zhipu.extra_headers]]
-# key = "Bigmodel-Project"
-# value = "你的项目 id"
 
 [new_api]
 base_url = "http://127.0.0.1:3000"
-# new-api 后台【个人设置 / Profile】里生成的“系统访问令牌”（不是发给 opencode 的调用令牌）
-admin_token = "PUT_YOUR_SYSTEM_ACCESS_TOKEN_HERE"
-# 用 F12 抓一次后台“编辑渠道→保存”的请求，核实真实路径
 channel_path = "/api/channel"
+# 管理认证：① 若你已有 new-api 并生成了“系统访问令牌”，填这里，本工具用 Bearer 调管理 API；
+#           ② 留空则用下面 root 账号登录（配合 [new_api.manage] 首启自动建管理员）。
+admin_token = ""
+# admin_token 为空时用它登录 new-api。首启会用它创建管理员（密码需 ≥8 位）。请改成你自己的。
+root_username = "root"
+root_password = "changeme123"
 
-# 部分 new-api 版本的管理 API 需要额外 header 标识管理员 user id。
-# 用 F12 确认；不需要就删掉这一段。
-[[new_api.extra_headers]]
-key = "New-Api-User"
-value = "1"
+# —— 让本工具自己下载并托管 new-api 原生进程（不用容器）——
+# 配了这段，up/sync 会在 new-api 不在跑时按平台下载 release 二进制（sha256 校验）并启动。
+# 不想让本工具管 new-api（自己部署）就删掉整段 [new_api.manage]，用 run 子命令。
+[new_api.manage]
+version = "v1.0.0-rc.20"     # GitHub release tag
+port = 3000                  # 应与 base_url 端口一致
+data_dir = "./.newapi"       # 二进制 / SQLite / 日志 / PID 都放这里
+repo = "QuantumNous/new-api"
+
+# —— sync 建渠道用的模板（版本相关字段，建议 F12 对齐）——
+# sync 会把每把 key 的 name/key 合并进来，一 key 一渠道；有它才能自动建渠道。
+[new_api.channel_template]
+type = 1                                              # 渠道类型码（1=OpenAI 兼容；智谱用兼容口即可）
+base_url = "https://open.bigmodel.cn/api/paas/v4"     # 智谱上游
+models = "glm-4.6,glm-4.5"                            # 逗号分隔
+group = "default"
 
 # —— 一把智谱 key = 一个独立渠道 ——
-# 多把 key 都放同一分组、配同一模型名。本程序会用 priority 钉住其中一把当活动 key，
-# 其余作兜底；活动 key 逼近额度时自动切到下一把。渠道的 weight 由 new-api 后台自便，
-# 本程序不再用 weight 做控制。
+# name 同时用作 new-api 渠道名，sync 靠它解析/创建渠道。channel_id 可留空，交给 sync 自动解析。
+# 只有 >=2 把 key 时本工具才有意义（轮着用）。
 [[keys]]
 name = "zhipu-1"
 zhipu_api_key = "第一把智谱 key"
-channel_id = 1        # 这把 key 在 new-api 里的渠道 id
+# channel_id = 1   # 可选：已有渠道时显式指定；留空则按 name 自动解析/创建
 
 [[keys]]
 name = "zhipu-2"
 zhipu_api_key = "第二把智谱 key"
-channel_id = 2
