@@ -189,6 +189,19 @@ async fn run_loop(cfg: Config, api: NewApiClient, keys: Vec<ResolvedKey>) -> Res
         tokio::spawn(status::serve(cfg.status_addr.clone(), snapshot.clone()));
     }
 
+    let api = std::sync::Arc::new(api);
+
+    // 面板循环：独立 task、独立频率（本地 new-api 可高频；智谱是外部 API 该低频）。
+    // 只写面板字段，与切换循环的决策字段严格不相交。
+    tokio::spawn(
+        orchestrator::Panel {
+            api: api.clone(),
+            keys: keys.clone(),
+            snapshot: snapshot.clone(),
+        }
+        .run(Duration::from_secs(cfg.panel_interval_secs.max(1))),
+    );
+
     let mut orch = Orchestrator::new(cfg, api, keys, snapshot);
     let mut ticker = tokio::time::interval(interval);
     loop {

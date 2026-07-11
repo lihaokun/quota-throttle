@@ -19,22 +19,23 @@
 use crate::config::{Config, ResolvedKey};
 use crate::newapi::NewApiClient;
 use crate::quota::{QuotaProbe, QuotaStatus};
-use crate::status::{self, KeyStatus, Shared, StatusSnapshot};
+use crate::status::{self, KeyStatus, LiveMetric, ModelUsage, Shared, UsagePoint};
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, error, info, warn};
 
 pub struct Orchestrator {
     cfg: Config,
     probe: QuotaProbe,
-    api: NewApiClient,
+    api: Arc<NewApiClient>,
     /// channel_id 已解析好的 key 列表
     keys: Vec<ResolvedKey>,
     /// 当前钉住的活动渠道 id
     active: Option<i64>,
     /// 已下发到 new-api 的 priority（channel_id → priority），幂等用，避免每轮重复 PUT
     applied: HashMap<i64, i64>,
-    /// 状态看板共享快照（每轮 tick 末尾整体覆盖）
+    /// 状态看板共享快照（**只写决策字段**，面板字段由 Panel 循环独占）
     snapshot: Shared,
     /// new-api 健康探测用
     http: reqwest::Client,
@@ -54,7 +55,12 @@ fn max_watch_pct(cfg: &Config, status: &QuotaStatus) -> f64 {
 }
 
 impl Orchestrator {
-    pub fn new(cfg: Config, api: NewApiClient, keys: Vec<ResolvedKey>, snapshot: Shared) -> Self {
+    pub fn new(
+        cfg: Config,
+        api: Arc<NewApiClient>,
+        keys: Vec<ResolvedKey>,
+        snapshot: Shared,
+    ) -> Self {
         let probe = QuotaProbe::new(&cfg.zhipu);
         Self {
             cfg,
@@ -178,30 +184,14 @@ impl Orchestrator {
             }
         }
 
-        // 4. 发布状态快照（在决策与下发**之后**生成 ⇒ 看板与 new-api 实际状态一致；
-        //    下发失败的 key 其 applied 未更新，快照如实显示旧 priority，不撒谎）
+        // 4. 发布**决策部分**快照（在决策与下发之后生成 ⇒ 与 new-api 实际状态一致；
+        //    下发失败的 key 其 applied 未更新，快照如实显示旧 priority，不撒谎）。
+        //    面板字段（channels/live/hourly/model_usage/内部余额）由 Panel 循环独占写，此处不碰。
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0);
         let healthy = self.newapi_healthy().await;
-
-        // new-api 面板数据：**纯读**（已核实 GetAllChannels / /api/log/ 无写操作）。
-        // 拉取在决策与下发之后 ⇒ 失败也不可能影响切换；退化为空列表，看板显示「暂无数据」。
-        let channels = match self.api.list_channel_states().await {
-            Ok(v) => v,
-            Err(e) => {
-                debug!(error = %e, "拉取渠道状态失败（看板降级，不影响切换）");
-                Vec::new()
-            }
-        };
-        let recent = match self.api.recent_logs(20).await {
-            Ok(v) => v,
-            Err(e) => {
-                debug!(error = %e, "拉取请求日志失败（看板降级，不影响切换）");
-                Vec::new()
-            }
-        };
         let client_endpoint = format!("{}/v1", self.cfg.new_api.base_url.trim_end_matches('/'));
 
         let key_statuses = keys
@@ -234,21 +224,123 @@ impl Orchestrator {
             })
             .collect();
 
-        status::publish(
-            &self.snapshot,
-            StatusSnapshot {
-                updated_at: now_ms,
-                dry_run: self.cfg.dry_run,
-                throttle_threshold: throttle,
-                restore_threshold: restore,
-                new_api_base: self.cfg.new_api.base_url.clone(),
-                new_api_healthy: healthy,
-                active_channel_id: active,
-                keys: key_statuses,
-                client_endpoint,
-                channels,
-                recent,
-            },
-        );
+        // 只写决策字段（面板字段不动）
+        status::update(&self.snapshot, |s| {
+            s.updated_at = now_ms;
+            s.dry_run = self.cfg.dry_run;
+            s.throttle_threshold = throttle;
+            s.restore_threshold = restore;
+            s.new_api_base = self.cfg.new_api.base_url.clone();
+            s.new_api_healthy = healthy;
+            s.active_channel_id = active;
+            s.keys = key_statuses;
+            s.client_endpoint = client_endpoint;
+        });
+    }
+}
+
+/// 面板循环：只刷**看板数据**，与切换循环完全隔离。
+///
+/// 为什么独立：智谱是**外部 API**（该低频，60s），new-api 是**本地**服务（毫秒级纯读，可 5s 高频）。
+/// 绑在一起会让看板 60 秒才动一次，看不到实时流量。
+///
+/// **并发安全**：本循环只写面板字段（channels / live / hourly / model_usage / newapi_user_quota），
+/// 决策循环只写决策字段，两者严格不相交 + 写锁互斥 ⇒ 不会互相覆盖。
+/// 本循环整个挂掉也不影响切换。
+pub struct Panel {
+    pub api: Arc<NewApiClient>,
+    pub keys: Vec<ResolvedKey>,
+    pub snapshot: Shared,
+}
+
+impl Panel {
+    pub async fn run(self, interval: Duration) {
+        let mut ticker = tokio::time::interval(interval);
+        loop {
+            ticker.tick().await;
+            self.refresh().await;
+        }
+    }
+
+    async fn refresh(&self) {
+        // 渠道实况（含「被 new-api 自动禁用」这个盲区）
+        let channels = self.api.list_channel_states().await.unwrap_or_else(|e| {
+            debug!(error = %e, "面板：拉取渠道状态失败");
+            Vec::new()
+        });
+
+        // new-api 内部虚拟余额（见底会直接挡住转发）
+        let newapi_user_quota = self.api.user_quota().await.unwrap_or(-1);
+
+        // 每把 key 的实时速率（最近 60 秒，服务端固定窗口）
+        let mut live: Vec<LiveMetric> = Vec::new();
+        for k in &self.keys {
+            let (rpm, tpm) = self.api.channel_rate(k.channel_id).await.unwrap_or((0, 0));
+            live.push(LiveMetric {
+                channel_id: k.channel_id,
+                rpm,
+                tpm,
+                last_request_at: None,
+                last_request_model: None,
+            });
+        }
+        // 最后一次请求：日志按时间倒序，每个渠道首次出现即最新
+        if let Ok(logs) = self.api.recent_logs(50).await {
+            for l in &logs {
+                if let Some(m) = live
+                    .iter_mut()
+                    .find(|m| m.channel_id == l.channel && m.last_request_at.is_none())
+                {
+                    m.last_request_at = Some(l.created_at);
+                    m.last_request_model = Some(l.model_name.clone());
+                }
+            }
+        }
+
+        // 用量统计（new-api 自己按小时聚合的 quota_data）：近 24h 时序 + 按模型汇总
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let (mut hourly, mut model_usage) = (Vec::new(), Vec::new());
+        if let Ok(rows) = self.api.usage_data(now - 24 * 3600, now + 3600).await {
+            let mut by_hour: HashMap<i64, (i64, i64)> = HashMap::new();
+            let mut by_model: HashMap<String, (i64, i64)> = HashMap::new();
+            for (model, hour, tokens, count) in rows {
+                let h = by_hour.entry(hour).or_insert((0, 0));
+                h.0 += tokens;
+                h.1 += count;
+                let m = by_model.entry(model).or_insert((0, 0));
+                m.0 += tokens;
+                m.1 += count;
+            }
+            hourly = by_hour
+                .into_iter()
+                .map(|(hour, (tokens, count))| UsagePoint {
+                    hour,
+                    tokens,
+                    count,
+                })
+                .collect();
+            hourly.sort_by_key(|p| p.hour);
+            model_usage = by_model
+                .into_iter()
+                .map(|(model, (tokens, count))| ModelUsage {
+                    model,
+                    tokens,
+                    count,
+                })
+                .collect();
+            model_usage.sort_by(|a, b| b.tokens.cmp(&a.tokens)); // 用量降序
+        }
+
+        // 只写面板字段
+        status::update(&self.snapshot, |s| {
+            s.channels = channels;
+            s.newapi_user_quota = newapi_user_quota;
+            s.live = live;
+            s.hourly = hourly;
+            s.model_usage = model_usage;
+        });
     }
 }

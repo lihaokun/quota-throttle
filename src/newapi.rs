@@ -356,6 +356,91 @@ impl NewApiClient {
         }
     }
 
+    /// 【看板】某渠道**最近 60 秒**的 (rpm, tpm)。纯读。
+    ///
+    /// 依据：new-api `model/log.go` 的 `SumUsedQuota` —— `// 只统计最近60秒的rpm和tpm`，
+    /// 且 `rpmTpmQuery.Where("channel_id = ?", channel)` 支持按渠道过滤。
+    /// **rpm > 0 ⟺ 流量正在走这把 key**（「有没有连上」的直接答案）。
+    pub async fn channel_rate(&self, channel_id: i64) -> Result<(i64, i64)> {
+        // type=2 = LogTypeConsume；start/end 只影响 quota 字段，rpm/tpm 的 60s 窗口由服务端固定
+        let url = format!(
+            "{}/api/log/stat?type=2&channel={channel_id}&start_timestamp=0&end_timestamp=9999999999",
+            self.base_url
+        );
+        let body: Value = self
+            .apply_headers(self.client.get(&url))
+            .send()
+            .await
+            .context("拉取渠道实时速率失败")?
+            .json()
+            .await
+            .context("解析实时速率失败")?;
+        let d = body.get("data");
+        Ok((
+            d.and_then(|x| x.get("rpm")).and_then(|v| v.as_i64()).unwrap_or(0),
+            d.and_then(|x| x.get("tpm")).and_then(|v| v.as_i64()).unwrap_or(0),
+        ))
+    }
+
+    /// 【看板】用量统计（new-api 自己按**小时**聚合好的 `quota_data`）。纯读。
+    /// 返回 (model, hour_epoch_sec, tokens, count)。供时序曲线 + 按模型汇总两用。
+    ///
+    /// ⚠️ 该接口 `Group("model_name, created_at")` —— **不带渠道维度**（new-api 从不暴露按渠道的用量）。
+    pub async fn usage_data(&self, start: i64, end: i64) -> Result<Vec<(String, i64, i64, i64)>> {
+        let url = format!(
+            "{}/api/data/?start_timestamp={start}&end_timestamp={end}",
+            self.base_url
+        );
+        let body: Value = self
+            .apply_headers(self.client.get(&url))
+            .send()
+            .await
+            .context("拉取用量统计失败")?
+            .json()
+            .await
+            .context("解析用量统计失败")?;
+        let items = body
+            .get("data")
+            .and_then(|d| d.as_array())
+            .cloned()
+            .unwrap_or_default();
+        Ok(items
+            .iter()
+            .filter_map(|it| {
+                let m = s(it, "model_name");
+                if m.is_empty() {
+                    return None;
+                }
+                Some((
+                    m,
+                    i(it, "created_at").unwrap_or(0),
+                    i(it, "token_used").unwrap_or(0),
+                    i(it, "count").unwrap_or(0),
+                ))
+            })
+            .collect())
+    }
+
+    /// 【看板】读 new-api 的**内部虚拟余额**（当前登录用户）。纯读。
+    ///
+    /// ⚠️ new-api 按「按量付费倍率」给包月编码套餐虚构记账，余额见底会**直接挡住转发**
+    /// （报「预扣费额度失败」），跟智谱额度毫无关系。看板据此在见底前告警。
+    pub async fn user_quota(&self) -> Result<i64> {
+        let url = format!("{}/api/user/self", self.base_url);
+        let body: Value = self
+            .apply_headers(self.client.get(&url))
+            .send()
+            .await
+            .context("拉取 new-api 用户余额失败")?
+            .json()
+            .await
+            .context("解析用户余额失败")?;
+        body.get("data")
+            .and_then(|d| d.get("quota"))
+            .and_then(|v| v.as_i64())
+            .context("响应缺少 data.quota")
+    }
+
     /// GET /api/channel/{id} → 渠道对象（从 data 取出）
     pub async fn get_channel(&self, id: i64) -> Result<Value> {
         let url = format!("{}{}/{}", self.base_url, self.channel_path, id);

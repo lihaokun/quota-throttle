@@ -28,6 +28,11 @@ pub struct Config {
     #[serde(default = "default_status_addr")]
     pub status_addr: String,
 
+    /// 看板**面板数据**的刷新间隔（秒）。new-api 是**本地**服务（毫秒级纯读），可以高频；
+    /// 与智谱用量轮询 `poll_interval_secs` **分离**——后者是外部 API，该低频。
+    #[serde(default = "default_panel_interval")]
+    pub panel_interval_secs: u64,
+
     /// 监控哪些窗口。默认同时看 5 小时和每周（取最大使用率）。
     #[serde(default = "default_windows")]
     pub watch_windows: Vec<Window>,
@@ -56,6 +61,9 @@ pub enum Window {
 
 fn default_status_addr() -> String {
     "127.0.0.1:3001".to_string()
+}
+fn default_panel_interval() -> u64 {
+    5
 }
 fn default_throttle() -> f64 {
     95.0
