@@ -23,6 +23,11 @@ pub struct Config {
     #[serde(default)]
     pub dry_run: bool,
 
+    /// 状态看板监听地址。留空则不启用看板（只跑切换循环）。
+    /// 看板是附属功能：监听失败只降级记 error，绝不影响切换。
+    #[serde(default = "default_status_addr")]
+    pub status_addr: String,
+
     /// 监控哪些窗口。默认同时看 5 小时和每周（取最大使用率）。
     #[serde(default = "default_windows")]
     pub watch_windows: Vec<Window>,
@@ -49,6 +54,9 @@ pub enum Window {
     Weekly,
 }
 
+fn default_status_addr() -> String {
+    "127.0.0.1:3001".to_string()
+}
 fn default_throttle() -> f64 {
     95.0
 }

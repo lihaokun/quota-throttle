@@ -16,6 +16,10 @@ restore_threshold = 90.0
 dry_run = true               # 先 true 空跑验证日志；确认无误再改 false 真正生效
 watch_windows = ["five_hour", "weekly"]   # 同时盯 5 小时和每周窗口，取最大使用率
 
+# 状态看板：浏览器打开 http://127.0.0.1:3001 看每把 key 的 5h/周 用量、档位、当前活动 key。
+# 同地址下 /api/status 是 JSON 接口（opencode 插件等外部消费者读它）。留空则不启用看板。
+status_addr = "127.0.0.1:3001"
+
 # 三档 priority（一般不用改）。new-api 优先路由最高 priority 的渠道：
 # active 独占最高档吃走所有正常流量；standby 作 429 兜底；exhausted 是最后手段。
 priority_active = 100

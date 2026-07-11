@@ -3,6 +3,7 @@ mod config;
 mod newapi;
 mod orchestrator;
 mod quota;
+mod status;
 
 use crate::boot::NewApiProcess;
 use crate::config::{Config, ResolvedKey};
@@ -182,7 +183,13 @@ async fn run_loop(cfg: Config, api: NewApiClient, keys: Vec<ResolvedKey>) -> Res
         "进入切换循环（priority 单活动 key 模式）"
     );
 
-    let mut orch = Orchestrator::new(cfg, api, keys);
+    // 状态看板：独立 task，bind 失败只降级（切换循环照常跑）
+    let snapshot: status::Shared = Default::default();
+    if !cfg.status_addr.trim().is_empty() {
+        tokio::spawn(status::serve(cfg.status_addr.clone(), snapshot.clone()));
+    }
+
+    let mut orch = Orchestrator::new(cfg, api, keys, snapshot);
     let mut ticker = tokio::time::interval(interval);
     loop {
         tokio::select! {

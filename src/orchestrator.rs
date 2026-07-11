@@ -19,7 +19,9 @@
 use crate::config::{Config, ResolvedKey};
 use crate::newapi::NewApiClient;
 use crate::quota::{QuotaProbe, QuotaStatus};
+use crate::status::{self, KeyStatus, Shared, StatusSnapshot};
 use std::collections::HashMap;
+use std::time::Duration;
 use tracing::{error, info, warn};
 
 pub struct Orchestrator {
@@ -32,6 +34,10 @@ pub struct Orchestrator {
     active: Option<i64>,
     /// 已下发到 new-api 的 priority（channel_id → priority），幂等用，避免每轮重复 PUT
     applied: HashMap<i64, i64>,
+    /// 状态看板共享快照（每轮 tick 末尾整体覆盖）
+    snapshot: Shared,
+    /// new-api 健康探测用
+    http: reqwest::Client,
 }
 
 /// 取该 key 在所有监控窗口里的最大使用率（5h 墙和周墙谁高听谁的）。
@@ -48,7 +54,7 @@ fn max_watch_pct(cfg: &Config, status: &QuotaStatus) -> f64 {
 }
 
 impl Orchestrator {
-    pub fn new(cfg: Config, api: NewApiClient, keys: Vec<ResolvedKey>) -> Self {
+    pub fn new(cfg: Config, api: NewApiClient, keys: Vec<ResolvedKey>, snapshot: Shared) -> Self {
         let probe = QuotaProbe::new(&cfg.zhipu);
         Self {
             cfg,
@@ -57,22 +63,43 @@ impl Orchestrator {
             keys,
             active: None,
             applied: HashMap::new(),
+            snapshot,
+            http: reqwest::Client::new(),
         }
+    }
+
+    /// new-api 健康探测（只入快照，不影响本轮决策）
+    async fn newapi_healthy(&self) -> bool {
+        let url = format!(
+            "{}/api/status",
+            self.cfg.new_api.base_url.trim_end_matches('/')
+        );
+        matches!(
+            self.http.get(&url).timeout(Duration::from_secs(3)).send().await,
+            Ok(r) if r.status().is_success()
+        )
     }
 
     pub async fn tick(&mut self) {
         let keys = self.keys.clone();
 
-        // 1. 采集每把 key 的最大窗口使用率；查询失败的不进 map（不参与本轮决策）
+        // 1. 采集每把 key 的最大窗口使用率；查询失败的不进 map（不参与本轮决策）。
+        //    windows / errors 仅供状态看板，不参与决策。
         let mut pct: HashMap<i64, f64> = HashMap::new();
+        let mut windows: HashMap<i64, QuotaStatus> = HashMap::new();
+        let mut errors: HashMap<i64, String> = HashMap::new();
         for k in &keys {
             match self.probe.query(&k.zhipu_api_key, &k.quota_headers).await {
                 Ok(status) => {
                     let p = max_watch_pct(&self.cfg, &status);
                     info!(name = %k.name, channel_id = k.channel_id, pct = p, "用量");
                     pct.insert(k.channel_id, p);
+                    windows.insert(k.channel_id, status);
                 }
-                Err(e) => warn!(key = %k.name, error = %e, "查询智谱用量失败，本轮不参与决策"),
+                Err(e) => {
+                    warn!(key = %k.name, error = %e, "查询智谱用量失败，本轮不参与决策");
+                    errors.insert(k.channel_id, e.to_string());
+                }
             }
         }
 
@@ -150,5 +177,57 @@ impl Orchestrator {
                 }
             }
         }
+
+        // 4. 发布状态快照（在决策与下发**之后**生成 ⇒ 看板与 new-api 实际状态一致；
+        //    下发失败的 key 其 applied 未更新，快照如实显示旧 priority，不撒谎）
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        let healthy = self.newapi_healthy().await;
+
+        let key_statuses = keys
+            .iter()
+            .map(|k| {
+                let id = k.channel_id;
+                let w = windows.get(&id);
+                let max = pct.get(&id).copied();
+                let tier = if Some(id) == active {
+                    "active"
+                } else if max.is_some_and(|p| p < throttle) {
+                    "standby"
+                } else if max.is_some() {
+                    "exhausted"
+                } else {
+                    "unknown"
+                };
+                KeyStatus {
+                    name: k.name.clone(),
+                    channel_id: id,
+                    five_hour_pct: w.and_then(|q| q.five_hour.as_ref().map(|x| x.percentage)),
+                    weekly_pct: w.and_then(|q| q.weekly.as_ref().map(|x| x.percentage)),
+                    five_hour_reset: w.and_then(|q| q.five_hour.as_ref().map(|x| x.next_reset_time)),
+                    weekly_reset: w.and_then(|q| q.weekly.as_ref().map(|x| x.next_reset_time)),
+                    max_pct: max,
+                    tier: tier.to_string(),
+                    priority: self.applied.get(&id).copied(),
+                    error: errors.get(&id).cloned(),
+                }
+            })
+            .collect();
+
+        status::publish(
+            &self.snapshot,
+            StatusSnapshot {
+                updated_at: now_ms,
+                dry_run: self.cfg.dry_run,
+                throttle_threshold: throttle,
+                restore_threshold: restore,
+                new_api_base: self.cfg.new_api.base_url.clone(),
+                new_api_healthy: healthy,
+                active_channel_id: active,
+                keys: key_statuses,
+            },
+        );
     }
 }
