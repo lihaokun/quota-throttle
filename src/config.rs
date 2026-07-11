@@ -171,7 +171,9 @@ pub struct ChannelTemplate {
 }
 
 fn default_channel_type() -> i64 {
-    1
+    // 8 = Custom：原样透传 base_url 全路径。智谱 coding 口 /v4/chat/completions
+    // 用 OpenAI 类型(1) 会被拼成 /v4/v1/... 而 404，故默认 Custom。
+    8
 }
 fn default_group() -> String {
     "default".to_string()

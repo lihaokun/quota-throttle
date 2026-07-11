@@ -55,9 +55,12 @@ repo = "QuantumNous/new-api"
 # —— sync 建渠道用的模板（版本相关字段，建议 F12 对齐）——
 # sync 会把每把 key 的 name/key 合并进来，一 key 一渠道；有它才能自动建渠道。
 [new_api.channel_template]
-type = 1                                              # 渠道类型码（1=OpenAI 兼容；智谱用兼容口即可）
-base_url = "https://open.bigmodel.cn/api/paas/v4"     # 智谱上游
-models = "glm-4.6,glm-4.5"                            # 逗号分隔
+# 智谱编码套餐口是 /coding/paas/v4/chat/completions（/v4 不是 /v1）。已实测：必须用 Custom
+# 类型(8) 原样透传全路径；OpenAI 类型(1) 会拼成 /v4/v1/... 报 404。
+type = 8
+base_url = "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions"
+# opencode zhipuai-coding-plan 的全部模型（取自 models.dev）
+models = "glm-4.7,glm-5.1,glm-5.2,glm-5-turbo,glm-5v-turbo,glm-4.6v,glm-4.5-air"
 group = "default"
 
 # —— 一把智谱 key = 一个独立渠道 ——
