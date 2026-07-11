@@ -1,105 +1,149 @@
 # quota-throttle
 
-一个独立的小守护进程：轮询智谱 GLM Coding Plan 的用量 API，通过 **new-api 的管理 API** 用 `priority` **钉住单把活动 key**，让 opencode / Claude Code 的流量连续打在同一把 key 上（prompt 缓存能持续命中）；当这把 key 的 **5 小时**或**每周**窗口用量逼近阈值（默认 95%）时，自动把活动 key 切到下一把还有额度的 key。
+给智谱 GLM Coding Plan **多 key 池**做**预防式调度**的守护进程：轮询每把 key 的真实用量（5 小时 / 每周窗口），通过 new-api 用 `priority` **钉住单把活动 key**（让 prompt 缓存能连续命中），当它逼近额度上限时**在撞墙前**自动切到下一把还有额度的 key。
 
-转发、多 key 兜底、撞 429 反应式切换仍由 new-api 负责；这个进程补上 new-api 缺的那一环——**由外部集中决定「现在走哪一把 key」**，既预防式在撞墙前主动切，又保住缓存局部性。
-
-它还能**替你把 new-api 起和配好**（可选）：`up` 子命令会在 new-api 不在跑时，按平台从 GitHub release 下载 new-api 二进制（sha256 校验）、原生进程启动、首启自动建管理员，再按你的 key 列表建好渠道——零前置一条命令拉起整套。不想让它管 new-api，删掉配置里的 `[new_api.manage]`、用 `run` 子命令即可，退回纯外挂模式。
+顺带把 new-api 也管了：`up` 一条命令自动下载 new-api 二进制、拉起进程、按 key 列表建好渠道，并提供一个状态看板。
 
 ```
-        智谱 quota API（每把 key 的 5h/周 已用%）
-                    │  本进程轮询
+        智谱 quota API（每把 key 的 5h / 周 已用%）
+                    │  每 60s 轮询
                     ▼
-        quota-throttle
-                    │  钉住活动 key：PUT /api/channel 把它 priority 抬到最高
-                    │  活动 key ≥95% → 把下一把有额度的 key 抬为新活动
-                    ▼
-        new-api 管理 API
-                    │
-                    ▼
-        new-api 路由层（优先打最高 priority 的渠道 + 429 反应式兜底）
-                    ▲
-                    │ base_url 指这里
+        ┌──────────────────────┐        看板 :3001
+        │   quota-throttle     │◀───────（每把 key 的用量 / 档位 / 活动 key /
+        │  · 选活动 key         │         new-api 渠道实况 / 请求流水）
+        │  · 写 priority        │
+        │  · 托管 new-api 进程   │
+        └──────────┬───────────┘
+                   │ PUT /api/channel（只改 priority，从不碰 status）
+                   ▼
+            new-api :3000  ──────▶  智谱 coding 口
+                   ▲                /api/coding/paas/v4/chat/completions
+                   │ base_url 指这里
             opencode / Claude Code
 ```
 
-## 为什么用 priority 钉住单把，而不是加权分散
+## 为什么钉住单把 key，而不是加权分散
 
-new-api 默认在同组同模型的健康渠道里**按 weight 加权随机**，每个请求可能落到不同 key。对无状态的 `chat/completions` 这本身没问题，但如果上游 **prompt 缓存是按账号/key 隔离的**，请求分散会让 Claude Code / opencode 那种「系统提示 + 长上下文大量复用」的缓存命中率下降 → 成本和首 token 延迟变差。
+new-api 默认在健康渠道间**按 weight 加权随机**——每个请求可能落到不同 key。对无状态的 `chat/completions` 本身没问题，但智谱的 **prompt 缓存是按 key 隔离的**：请求分散会让 opencode / Claude Code 那种「系统提示 + 长上下文大量复用」的缓存命中率大跌，成本和首 token 延迟都变差。
 
-所以本程序把「选哪把 key」的决策收回来，用**三档 priority** 钉住单把：
+所以本工具把「现在走哪把 key」的决策收回来，用**三档 priority** 钉住单把：
 
-| 档位 | 默认 priority | 含义 |
-|------|--------------|------|
-| active | 100 | 所有正常流量都走它（缓存连续命中） |
-| standby | 10 | 有额度、平时不碰，只作 429 兜底目标 |
-| exhausted | 0 | 逼近/超阈值，最后手段 |
+| 档位 | priority | 含义 |
+|------|----------|------|
+| **active** | 100 | 所有正常流量都走它（缓存连续命中） |
+| **standby** | 10 | 有额度、平时不碰，只作 429 兜底目标 |
+| **exhausted** | 0 | 逼近/超阈值，最后手段 |
 
-**关键：用 priority 而不是 weight=0。** new-api 优先路由最高 priority 的渠道；活动 key 万一撞 429，它能沿 priority 阶梯自动跌到还有额度的 standby 渠道。而 `weight=0` 会把渠道从选择集里抹掉，破坏这层反应式兜底。
+**关键：用 `priority` 而不是 `weight=0`。** new-api 优先路由最高 priority 的渠道；活动 key 万一预测漏判先撞了 429，它能沿 priority 阶梯自动跌到还有额度的 standby 渠道。`weight=0` 会把渠道从选择集里抹掉，破坏这层反应式兜底。
 
-**切换策略（能不换就不换，护缓存）**：当前活动 key 只要 `pct < throttle(95)` 就继续钉住；到 95% 才切走，在有额度的其余 key 里挑 **`pct` 最低（剩余最多）** 的当新活动，让它撑最久、切换最少。活动 key 一旦被切走就没流量，`pct` 停在高位直到窗口重置（一次性大跌），天然不回跳，不需要滞回防抖。
+**切换策略（能不换就不换，护缓存）**：活动 key 只要 `pct < 95%` 就一直钉着；到阈值才切走，在有额度的其余 key 里挑 **用量最低（剩余最多）** 的当新活动，让它撑最久、切换最少。
 
-## 两种用法
-
-**A. 让本工具全托管（推荐，零前置）** —— 配上 `[new_api.manage]` 和 `[new_api.channel_template]`，其余交给 `up`：
+## 快速开始
 
 ```bash
-cp config.example.toml config.toml   # 填智谱 key；dry_run 先保持 true
-cargo run --release -- up config.toml
+cp config.example.toml config.toml     # 填智谱 key + org/project selector（见下）
+cargo run --release -- up config.toml  # 起 new-api + 建渠道 + 进入切换循环
 ```
 
-`up` 会：new-api 不在跑就下载 release 二进制（sha256 校验）+ 启动 → 首启自动建管理员（`root` / `root_password`，密码需 ≥8 位，**首启后请登录 UI 改掉**）→ 按 key 列表建渠道 → 进入切换循环。停： `... down config.toml`。
-
-> 一把智谱 key = 一个独立渠道，本工具自动一一建好。只有 **≥2 把 key** 时「切换」才有意义。
-
-**B. 你自己已有 new-api** —— 删掉 `[new_api.manage]`，填 `admin_token`（后台【个人设置】生成的系统访问令牌）或 root 账号，用 `run`（只解析已有渠道并切换）或 `sync`（先建/对齐渠道）。这步先在后台手动验证过 opencode 指向 new-api 能出结果、撞 429 会自动切渠道。
-
-## ⚠️ 必须用 F12 核实的几处（版本差异所在）
-
-new-api 的管理 API 没有稳定的官方文档，路由和 header 随版本变。打开后台，F12 → Network，手动点一次「编辑渠道 → 改优先级 → 保存」，核对：
-
-- **渠道路径**：多为 `GET /api/channel/{id}` 和 `PUT /api/channel`，填进 `channel_path`。
-- **priority 字段**：确认渠道对象里确实有 `priority`，且**路由确实优先取最高 priority**（抓一次 `/api/channel` 列表看字段名）。绝大多数版本如此，但值得亲自确认——这是本程序赖以工作的前提。
-- **额外 header**：不少版本需要 `New-Api-User: <管理员 user id>`，漏了会 401。抓到就填进 `[[new_api.extra_headers]]`，不需要就删掉那段。
-
-同理，智谱用量响应的字段名（`success` / `data.limits[].type` / `percentage` / `nextResetTime`）也请用一把真实 key 手动打一次
-`https://open.bigmodel.cn/api/monitor/usage/quota/limit`（Header: `Authorization: <key>`）核对；不一致就改 `src/quota.rs` 里的 `Raw*` 结构体。
-
-- **认证（已核对 opencode 插件源码，可 headless）**：直接 `Authorization: <裸 key>`（**无 `Bearer` 前缀**）即可，本程序已这么做，并附带一个明确 `User-Agent`。社区那句「只认浏览器 cookie / 反爬」是另一条路——那是拿**网页会话 cookie**（`bigmodel_token_production`）去打；用 **API key** 直连 headless 是通的（opencode-mystatus、opencode-glm-quota 两个插件都这么干）。
-- **团体/企业套餐**：现有能跑通的实现里，quota 请求都**没带** org/project header，所以多半不需要。但若你 F12 发现自己的团队 key 必须带某个 selector（如 `Bigmodel-Organization` / `Bigmodel-Project`），塞进 `[[zhipu.extra_headers]]` 即可。启动后若日志出现 `limits 为空` 的 WARN，就往这个方向查。
-
-### 关于用量数据的更新延迟
-
-`percentage` 是实时还是有滞后，**智谱官方和社区都没有公开文档**。社区监控工具的默认刷新间隔从 10 分钟到几十秒不等，说明没人拿到过确切数字。唯一可靠的办法是**自己测**：拿一把 key 打一批已知量的请求，然后每几秒 poll 一次这个端点，看 `percentage` 多久才动——这个实测延迟就是 `poll_interval_secs` 的下限（比它还密没意义）。
-
-## 子命令
+`up` 会自动：new-api 不在跑 → 按平台下载 release 二进制（sha256 校验）→ 启动 → 首启建管理员 → 按 key 列表建渠道 → 进入切换循环 + 起状态看板。
 
 | 子命令 | 作用 |
 |--------|------|
-| `up`   | 配了 `[new_api.manage]` 时下载/启动 new-api → sync 建渠道 → 进入切换循环 |
+| `up` | 下载/启动 new-api → 建渠道 → 切换循环 + 看板 |
 | `sync` | 只建/对齐渠道并打印 `name → channel_id`，不进循环 |
-| `run`  | 假设 new-api 已在跑，只解析已有渠道并进入切换循环 |
+| `run` | 假设 new-api 已在跑，只解析渠道并进入循环 |
 | `down` | 停掉本工具托管的 new-api |
 
-省略子命令按 `run` 处理。先保持 `dry_run = true` 空跑，看日志确认活动 key 选择、切换判断、窗口识别都对，再改 `false` 正式生效。日志级别用 `RUST_LOG` 控制（如 `RUST_LOG=debug`）。
+数据（SQLite / 二进制 / 日志 / PID）都在 `./.newapi/`。日志级别用 `RUST_LOG` 控制。
 
-> 首启凭据：托管模式下本工具用 `root` / `root_password` 创建 new-api 管理员（新版 new-api 不再有默认 root/123456）。**首启后请登录 UI 改密码**，或改用你自己生成的 `admin_token`。
+## 状态看板
+
+`http://127.0.0.1:3001`（`status_addr` 可配，留空则不启用）
+
+- 每把 key：**5 小时 / 每周窗口进度条**（95% 处画阈值线）+ **重置倒计时** + 档位徽章 + 当前 priority；活动 key 的卡片绿色高亮
+- **new-api 渠道实况**：是否被 new-api **自动禁用**（红行告警——我们只改 priority、从不碰 status，渠道一旦被禁 priority=100 也没用，这是唯一的盲区）、priority 与我们下发值**对账**、累计花费、`auto_ban`
+- **最近请求流水**：每条请求**落在哪个渠道**（绿点=活动 key / 黄点=掉到兜底渠道）、tokens、耗时
+- 查询失败显示「查询失败」而非 0%（不会骗你说还有额度）
+
+`GET /api/status` 是同数据的 JSON 接口（供 opencode 插件等外部消费者）。看板每 5 秒刷新只读进程内快照，**不给 new-api 增加任何负载**。
+
+## ⚠️ 三个必须知道的坑（都是踩出来的）
+
+### 1. 团体套餐读用量：三个条件缺一不可
+
+```
+GET  https://open.bigmodel.cn/api/monitor/usage/quota/limit?type=2   ← ① 必须带 ?type=2
+Authorization: Bearer <api key>                                      ← ② 必须带 Bearer（裸 key 不行）
+Bigmodel-Organization: org-...                                       ← ③ 团体必需的 selector
+Bigmodel-Project: proj_...
+```
+
+缺任一 → 返回 `当前用户不存在coding plan` 或 `limits` 为空（会被误当成 0% 用量、永不切换）。
+
+**org / project id 取法**：浏览器打开 `https://bigmodel.cn/coding-plan/team/usage-stats` → F12 Network → 刷新 → 找 `quota/limit` 请求 → 抄它带的这两个请求头。
+
+**selector 按 key 配**（`[[keys.quota_headers]]`）——不同 key 可能属于不同组织/项目。个人套餐去掉 `?type=2` 和 selector 即可。
+
+返回里 `unit=3 & number=5` = 5 小时窗口，`unit=6 & number=1` = 每周窗口；`TIME_LIMIT` 是 MCP 搜索次数（非用量窗口，须过滤）。
+
+### 2. new-api 渠道必须用 Custom 类型(8) + 全路径 base_url
+
+智谱编码套餐口是 `.../api/coding/paas/v4/chat/completions`（`/v4` 不是 `/v1`，`/coding/` 不是普通 `/paas/`）。new-api 的 **OpenAI 类型(1)** 会拼成 `.../v4/v1/chat/completions` → 智谱 **404**。必须用 **Custom 类型(8)**（原样透传 base_url 全路径）：
+
+```toml
+[new_api.channel_template]
+type = 8
+base_url = "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions"
+```
+
+### 3. opencode 接入：改 provider 的 baseURL，并清掉 auth.json 里的智谱 key
+
+opencode 的 `zhipuai-coding-plan` 是 **OpenAI 兼容** provider（`@ai-sdk/openai-compatible`），默认直连 `https://open.bigmodel.cn/api/coding/paas/v4`。把它指向 new-api：
+
+```jsonc
+// ~/.config/opencode/opencode.jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "zhipuai-coding-plan": {
+      "options": {
+        "baseURL": "http://127.0.0.1:3000/v1",   // 指向 new-api
+        "apiKey": "<new-api 调用令牌>"            // 不是智谱 key！
+      }
+    }
+  }
+}
+```
+
+**同时要把 `~/.local/share/opencode/auth.json` 里的 `zhipuai-coding-plan` 条目清掉**（备份后置空即可）——否则 opencode 可能优先用 auth.json 里的智谱 key 去连 new-api，被拒 401。
+
+**模型名**只能用 opencode 该 provider 的这几个：`glm-4.7` `glm-5.1` `glm-5.2` `glm-5-turbo` `glm-5v-turbo` `glm-4.6v` `glm-4.5-air`（**没有 `glm-4.6`**）。
 
 ## 设计要点
 
-- **单活动 key + priority 钉住**：护住 prompt 缓存局部性；切换靠调 priority，不动 `status`，避免和 new-api 自带的「渠道失败自动禁用/自动测试重启用」逻辑打架。
-- **粘滞切换**：活动 key 撑到 95% 才换；挑新活动时要求 `pct < restore(90)` 多留余量 → 切换更少。活动 key 被切走后无流量、pct 不回落，天然不横跳。
-- **窗口独立**：任一监控窗口达阈值即视为该 key 满，触发切换。5h 墙和周墙取最大使用率一起看。
-- **429 兜底不丢**：非活动 key 保留在 standby 档，活动 key 预测漏判先撞墙时，new-api 反应式沿 priority 阶梯自动兜底。
-- **鲁棒**：单把 key 查询失败只 warn 跳过本轮，不参与决策也不动其 priority；活动 key 查询失败时保持不变，不因瞬时抖动丢缓存。改 priority 用「GET 渠道 → 只改 priority → PUT 回」，整体搬运，对 new-api 字段差异不敏感。幂等下发：priority 没变就不重复 PUT。
+- **单活动 key + priority 钉住**：护 prompt 缓存局部性。切换靠调 priority，**不动 `status`**，避免和 new-api 自带的「失败自动禁用」逻辑打架。
+- **窗口取最大**：5 小时墙和周墙同时盯，任一达阈值即切。
+- **粘滞 + 余量**：活动 key 撑到 95% 才换；挑新活动时要求 `< 90%` 多留余量 → 切换更少。活动 key 被切走后无流量、用量不回落，天然不横跳，无需滞回。
+- **鲁棒**：单把 key 查询失败只 warn 跳过本轮（不参与决策、也不动它的 priority）；活动 key 查询失败时**保持不变**，不因瞬时抖动丢缓存。全部 key 无额度时**保留原活动**，交给 new-api 的 429 兜底。
+- **幂等下发**：priority 没变就不重复 PUT。稳态下对 new-api **零写入**。
+- **看板绝不拖垮主循环**：监听失败只降级记 error；渠道/日志拉取失败退化为空列表。
+- **恢复干净**：智谱耗尽返回中文「已达到…使用上限」，不撞 new-api 的英文自动禁用关键词（默认只有 401 触发禁用）；渠道全程 enabled，窗口重置后自动恢复。
 
-## 已知边界 / 待你决定
+## 已知边界
 
-- **吞吐上限不变，但更集中**：一把 key 会被灌到 ~95% 才换下一把。要保证有**足够多的 key 覆盖一个 5h 窗口**，否则全灌满只能等重置。总额度不够时，钉不钉都会 429。
-- **5h 与周窗口的区分**已按智谱返回的 `unit`/`number` 字段精确判定（`unit=3&number=5` → 5小时；`unit=6&number=1` → 每周，核对自 opencode-glm-quota 源码）。若某版本没这俩字段，自动回退到「按 `nextResetTime` 升序，早的当 5h」的启发式。
-- **多进程**：本进程是集中式的（一个进程管所有 key），这正是它相对「每个 opencode 进程各跑一份插件」的优势。别在多台机器上各跑一份指向同一批 key，否则状态会打架。
-- **合规**：多个**个人** Coding Plan 拿来做 key 池扛团队/多实例用量，可能违反智谱套餐条款（已有封号先例）。实验室规模的正规做法是企业版或按量 API。
-- **模块可复用**：`src/quota.rs` 的 `QuotaProbe` 与 new-api 解耦。将来若迁到 litellm-rs 或自研网关，这块原样搬走即可。
+- **吞吐上限不变，但更集中**：一把 key 会被灌到 ~95% 才换下一把。要有**足够多的 key 覆盖一个 5h 窗口**，否则全灌满只能等重置。总额度不够时，钉不钉都会 429。
+- **轮询间隔**：默认 60s。轮询间隔内活动 key 可能冲过阈值一点点（实测你的用量强度下 < 1%，而 95%→100% 有 5% 余量，够）。多实例并发时可压到 30s。
+- **单进程集中式**：别在多台机器各跑一份指向同一批 key，状态会打架。
+- **合规**：多个**个人** Coding Plan 拼 key 池扛团队用量可能违反智谱条款。团体套餐是正规做法。
+- **模块可复用**：`src/quota.rs` 的 `QuotaProbe` 与 new-api 解耦，将来迁到别的网关可原样搬走。
+
+## 开发
+
+遵循 `docs/workflow.md`（半形式化 SDD 流程）。设计文档在 `docs/design/`；项目约定与踩过的坑记在 `CLAUDE.md` 的「已知限制」段。
+
+```bash
+cargo build --release
+```
 
 ## License
 
