@@ -2,12 +2,22 @@
 //!
 //! orchestrator 每轮 tick 末尾把「每把 key 的 5h/周 用量、档位、priority、当前活动 key、
 //! new-api 健康」整体写入共享快照；本模块把它暴露为：
-//!   GET /api/status  → JSON（opencode 插件等外部消费者也读这个）
-//!   GET /            → 自包含 HTML 看板（内联 CSS/JS，无外部 CDN）
+//!   GET /api/status              → JSON（opencode 插件等外部消费者也读这个）
+//!   GET /api/usage?start=&end=   → 任意区间的用量（按需查 new-api，不进快照）
+//!   GET /                        → 自包含 HTML 看板（内联 CSS/JS，无外部 CDN）
+//!
+//! **两条刷新路径，节奏各自匹配数据的真实变化频率**：
+//!   · 快照（卡片 / rpm / 请求流水 / 近 24h 曲线）→ 5 秒，走 /api/status
+//!   · 历史区间（近 30 天 / 某一天）→ **5 分钟**，走 /api/usage
+//!     5 分钟 = new-api 把 quota_data 落库的节奏（`DataExportInterval`，见设计文档 §0.3）。
+//!     刷得再勤也拿不到更新的数——源头就是 5 分钟才写一次。
+//!   · 纯过去的区间（非今天）数据已不再变 → 前端拉一次冻住，根本不刷。
 //!
 //! 设计原则：**看板是附属，绝不拖垮主循环**——bind 失败只降级记 error，切换循环照常跑。
 
+use crate::newapi::NewApiClient;
 use serde::Serialize;
+use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -173,8 +183,54 @@ pub fn update(snap: &Shared, f: impl FnOnce(&mut StatusSnapshot)) {
     f(&mut g);
 }
 
+/// 把 new-api 的 `(model, hour, tokens, count)` 行聚合成「按小时时序」+「按模型汇总」。
+/// 面板循环（近 24h）与 `/api/usage`（任意区间）共用，口径必然一致。
+pub fn aggregate_usage(
+    rows: Vec<(String, i64, i64, i64)>,
+) -> (Vec<UsagePoint>, Vec<ModelUsage>) {
+    let mut by_hour: HashMap<i64, (i64, i64)> = HashMap::new();
+    let mut by_model: HashMap<String, (i64, i64)> = HashMap::new();
+    for (model, hour, tokens, count) in rows {
+        let h = by_hour.entry(hour).or_insert((0, 0));
+        h.0 += tokens;
+        h.1 += count;
+        let m = by_model.entry(model).or_insert((0, 0));
+        m.0 += tokens;
+        m.1 += count;
+    }
+    let mut hourly: Vec<UsagePoint> = by_hour
+        .into_iter()
+        .map(|(hour, (tokens, count))| UsagePoint {
+            hour,
+            tokens,
+            count,
+        })
+        .collect();
+    hourly.sort_by_key(|p| p.hour);
+    let mut models: Vec<ModelUsage> = by_model
+        .into_iter()
+        .map(|(model, (tokens, count))| ModelUsage {
+            model,
+            tokens,
+            count,
+        })
+        .collect();
+    models.sort_by(|a, b| b.tokens.cmp(&a.tokens));
+    (hourly, models)
+}
+
+/// `/api/usage` 的响应。**只返回小时桶，不做日聚合**——「一天」是本地时区概念，
+/// 后端做就得引时区依赖；前端本来就在用 `new Date()` 转本地时区，交给它更准也更简单。
+#[derive(Debug, Serialize)]
+struct UsageResponse {
+    start: i64,
+    end: i64,
+    points: Vec<UsagePoint>,
+    models: Vec<ModelUsage>,
+}
+
 /// 常驻状态服务。bind 失败 → 记 error 并**返回**（降级），主循环不受影响。
-pub async fn serve(addr: String, snap: Shared) {
+pub async fn serve(addr: String, snap: Shared, api: Arc<NewApiClient>) {
     let listener = match TcpListener::bind(&addr).await {
         Ok(l) => l,
         Err(e) => {
@@ -187,8 +243,9 @@ pub async fn serve(addr: String, snap: Shared) {
         match listener.accept().await {
             Ok((stream, _)) => {
                 let s = snap.clone();
+                let a = api.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = handle_conn(stream, s).await {
+                    if let Err(e) = handle_conn(stream, s, a).await {
                         debug!(error = %e, "看板连接处理失败");
                     }
                 });
@@ -199,22 +256,78 @@ pub async fn serve(addr: String, snap: Shared) {
     }
 }
 
-async fn handle_conn(mut stream: TcpStream, snap: Shared) -> std::io::Result<()> {
+/// 从 query string 取整数参数。
+fn query_i64(query: &str, name: &str) -> Option<i64> {
+    query.split('&').find_map(|kv| {
+        let (k, v) = kv.split_once('=')?;
+        (k == name).then(|| v.parse().ok())?
+    })
+}
+
+/// `/api/usage?start=<unix>&end=<unix>`：任意区间的用量（按需查，不进 5 秒快照——
+/// 30 天的数据每 5 秒重算纯属浪费）。数据源同近 24h 图：new-api 的 `quota_data`
+/// （小时预聚合，每 5 分钟落库一次，见设计文档 §0）。
+async fn usage_endpoint(query: &str, api: &NewApiClient) -> (&'static str, String) {
+    let (Some(start), Some(end)) = (query_i64(query, "start"), query_i64(query, "end")) else {
+        return (
+            "400 Bad Request",
+            r#"{"error":"缺少或非法的 start / end（unix 秒）"}"#.to_string(),
+        );
+    };
+    if end <= start {
+        return (
+            "400 Bad Request",
+            r#"{"error":"end 必须大于 start"}"#.to_string(),
+        );
+    }
+    match api.usage_data(start, end).await {
+        Ok(rows) => {
+            let (points, models) = aggregate_usage(rows);
+            let body = serde_json::to_string(&UsageResponse {
+                start,
+                end,
+                points,
+                models,
+            })
+            .unwrap_or_else(|_| "{}".to_string());
+            ("200 OK", body)
+        }
+        Err(e) => {
+            // 查询失败如实报错，不返回空数组——否则前端会画成「这段时间没用量」，是撒谎
+            debug!(error = %e, "拉取用量区间失败");
+            (
+                "502 Bad Gateway",
+                serde_json::json!({ "error": format!("向 new-api 查询用量失败: {e}") }).to_string(),
+            )
+        }
+    }
+}
+
+async fn handle_conn(
+    mut stream: TcpStream,
+    snap: Shared,
+    api: Arc<NewApiClient>,
+) -> std::io::Result<()> {
     // 上界 1 KiB：请求行 + 头足够，防畸形请求撑爆内存
     let mut buf = [0u8; 1024];
     let n = stream.read(&mut buf).await?;
     let req = String::from_utf8_lossy(&buf[..n]);
-    let path = req
+    let target = req
         .lines()
         .next()
         .and_then(|l| l.split_whitespace().nth(1))
         .unwrap_or("");
+    let (path, query) = target.split_once('?').unwrap_or((target, ""));
 
     let (status, ctype, body) = match path {
         "/api/status" => {
             let json =
                 serde_json::to_string(&read_snap(&snap)).unwrap_or_else(|_| "{}".to_string());
             ("200 OK", "application/json; charset=utf-8", json)
+        }
+        "/api/usage" => {
+            let (st, body) = usage_endpoint(query, &api).await;
+            (st, "application/json; charset=utf-8", body)
         }
         "/" | "/index.html" => ("200 OK", "text/html; charset=utf-8", render_html()),
         "" => (
@@ -309,11 +422,26 @@ fn render_html() -> String {
  .cb{flex:1;background:linear-gradient(180deg,var(--accent),rgba(91,140,255,.35));
      border-radius:3px 3px 0 0;min-height:2px;transition:height .5s;position:relative}
  .cb:hover{background:var(--accent)}
+ .cb.zero{background:#20252f}
+ .cb.tap{cursor:pointer}
+ .cb.tap:hover{background:var(--ok)}
  .cb span{display:none;position:absolute;bottom:100%;left:50%;transform:translateX(-50%);
           background:#0b0d12;border:1px solid var(--line);border-radius:6px;padding:4px 8px;
           font-size:11px;white-space:nowrap;margin-bottom:6px;z-index:9}
  .cb:hover span{display:block}
  .xax{display:flex;justify-content:space-between;color:var(--dim);font-size:11px;margin-top:8px}
+ .hrow{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin:30px 0 12px}
+ .hrow h2{margin:0}
+ .seg{display:flex;gap:3px;align-items:center;background:#171b23;border:1px solid var(--line);
+      border-radius:8px;padding:3px}
+ .seg button{background:none;border:0;color:var(--dim);font:inherit;font-size:12px;
+             padding:5px 11px;border-radius:6px;cursor:pointer}
+ .seg button:hover{color:var(--txt)}
+ .seg button.on{background:rgba(91,140,255,.16);color:var(--accent)}
+ .cnote{margin-top:10px;color:var(--dim);font-size:12px;display:flex;align-items:center;
+        gap:8px;flex-wrap:wrap;font-variant-numeric:tabular-nums}
+ .lnk{color:var(--accent);cursor:pointer}
+ .lnk:hover{text-decoration:underline}
  .tbl{width:100%;border-collapse:collapse;font-size:13px}
  .tbl th{text-align:left;color:var(--dim);font-weight:500;font-size:11px;text-transform:uppercase;
          letter-spacing:.05em;padding:0 12px 9px 0;border-bottom:1px solid var(--line)}
@@ -327,8 +455,14 @@ fn render_html() -> String {
 <div class="chips" id="chips"></div>
 <div class="grid" id="grid"></div>
 <div id="wild"></div>
-<h2>近 24 小时用量</h2>
-<div class="card"><div id="chart"></div></div>
+<div class="hrow">
+  <h2 id="ctitle">近 24 小时用量</h2>
+  <div class="seg" id="seg">
+    <button data-r="24h" class="on">近 24 小时</button>
+    <button data-r="30d">近 30 天</button>
+  </div>
+</div>
+<div class="card"><div id="chart"></div><div class="cnote" id="cnote"></div></div>
 <h2>按模型</h2>
 <div class="card"><div id="models"></div></div>
 <div class="foot" id="foot"></div>
@@ -355,6 +489,125 @@ function win(label,pct,reset,thr){
       <div class="thr" style="left:${thr}%" title="切换阈值 ${thr}%"></div></div>
     <div class="rst">${left(reset)}</div></div>`;
 }
+
+/* ——— 用量图：三态（近 24 小时 / 近 30 天 / 某一天） ———
+   · 近 24 小时走**快照**（5 秒刷，实时），一如既往。
+   · 历史两态走 /api/usage 按需查。刷新节奏 5 分钟 = new-api 把 quota_data 落库的节奏
+     （DataExportInterval），刷得再勤也拿不到更新的数。
+   · 纯过去的某一天数据已不再变 → 拉一次冻住，根本不刷。 */
+const DAY=86400, HIST_MS=5*60*1000;
+const dayStart=sec=>{const d=new Date(sec*1000); d.setHours(0,0,0,0); return Math.floor(d/1000)};
+const today=()=>dayStart(Date.now()/1000);
+const md=sec=>{const d=new Date(sec*1000); return `${pad(d.getMonth()+1)}-${pad(d.getDate())}`};
+
+let live24=[];                       // 快照里的近 24h 小时桶
+let view={mode:'24h'};               // {mode:'24h'|'30d'} | {mode:'day', day:<当地零点 epoch>}
+let hist=null, histAt=0, histErr=null, histBusy=false;
+
+/* 当前视图的区间是否**含 now** ⇒ 含则要刷；纯过去的不刷 */
+const histLive=()=>view.mode==='30d'||(view.mode==='day'&&view.day===today());
+
+async function loadHist(){
+  if(view.mode==='24h'||histBusy) return;
+  const [start,end]= view.mode==='30d'
+    ? [today()-29*DAY, Math.floor(Date.now()/1000)+3600]
+    : [view.day, view.day+DAY];
+  histBusy=true; drawChart();
+  try{
+    const r=await fetch(`/api/usage?start=${start}&end=${end}`,{cache:'no-store'});
+    const j=await r.json();
+    if(!r.ok) throw new Error(j.error||('HTTP '+r.status));
+    hist=j; histErr=null; histAt=Date.now();
+  }catch(e){ hist=null; histErr=String(e.message||e); }   // 查询失败如实说，不画成「没用量」
+  histBusy=false; drawChart();
+}
+
+/* bars: [{label, tokens, count, tip, day?}]；day 非空 ⇒ 该柱可点击下钻 */
+function bars(list,peakUnit){
+  const max=Math.max(...list.map(b=>b.tokens),1);
+  const bs=list.map(b=>`<div class="cb${b.tokens?'':' zero'}${b.day?' tap':''}"
+      style="height:${b.tokens?Math.max(3,b.tokens/max*100):2}%"
+      ${b.day?`onclick="drill(${b.day})"`:''}><span>${b.tip}</span></div>`).join('');
+  return `<div class="chart">${bs}</div>
+    <div class="xax"><span>${list[0].label}</span>
+      <span>峰值 ${kfmt(max)} tokens/${peakUnit}</span>
+      <span>${list[list.length-1].label}</span></div>`;
+}
+
+function drill(day){ view={mode:'day',day}; hist=null; syncSeg(); loadHist(); }
+function back(){ view={mode:'30d'}; hist=null; syncSeg(); loadHist(); }
+
+function syncSeg(){
+  document.querySelectorAll('#seg button[data-r]').forEach(b=>
+    b.classList.toggle('on', b.dataset.r===view.mode));
+}
+
+function drawChart(){
+  const el=document.getElementById('chart'), note=document.getElementById('cnote');
+  const title=document.getElementById('ctitle');
+
+  if(view.mode==='24h'){
+    title.textContent='近 24 小时用量';
+    el.innerHTML = !live24.length ? '<div class="empty">近 24 小时暂无用量</div>'
+      : bars(live24.map(p=>({tokens:p.tokens, count:p.count,
+          label:new Date(p.hour*1000).getHours()+':00',
+          tip:`${new Date(p.hour*1000).getHours()}:00 · ${p.tokens.toLocaleString()} tokens · ${p.count} 次`})),'小时');
+    note.innerHTML='<span class="pulse"></span> 实时 · 每 5 秒刷新';
+    return;
+  }
+
+  if(histBusy&&!hist){ el.innerHTML='<div class="empty">加载中…</div>'; note.textContent=''; return; }
+  if(histErr){ el.innerHTML=`<div class="empty" style="color:var(--bad)">用量查询失败：${histErr}</div>`;
+    note.innerHTML='<span class="lnk" onclick="loadHist()">重试</span>'; return; }
+  if(!hist){ el.innerHTML='<div class="empty">—</div>'; note.textContent=''; return; }
+
+  // 小时桶 → 按**浏览器本地时区**归日（后端不做日聚合，就是为了绕开时区）
+  const byH={}, byD={};
+  for(const p of hist.points){
+    byH[p.hour]=p;
+    const d0=dayStart(p.hour);
+    (byD[d0] ||= {tokens:0,count:0});
+    byD[d0].tokens+=p.tokens; byD[d0].count+=p.count;
+  }
+
+  if(view.mode==='30d'){
+    title.textContent='近 30 天用量';
+    const t0=today();
+    const list=[...Array(30)].map((_,i)=>{           // 补零：没用量的那天也占一格，不压缩
+      const d0=t0-(29-i)*DAY, v=byD[d0]||{tokens:0,count:0};
+      return {tokens:v.tokens, count:v.count, label:md(d0), day:v.tokens?d0:null,   // 空白日不可点
+        tip:`${md(d0)} · ${v.tokens.toLocaleString()} tokens · ${v.count} 次${v.tokens?' — 点击看小时':''}`};
+    });
+    el.innerHTML=bars(list,'天');
+    const first=list.find(b=>b.tokens);
+    note.innerHTML=`每 5 分钟刷新（= new-api 落库节奏）· ${clock(histAt)}
+      <span class="lnk" onclick="loadHist()">立即刷新</span>
+      ${first&&first.label!==list[0].label?`<span style="opacity:.7">· 最早记录 ${first.label}（此前 new-api 尚未运行）</span>`:''}
+      <span style="opacity:.7">· 点柱下钻到小时</span>`;
+    return;
+  }
+
+  // 某一天 → 24 根小时柱
+  const d0=view.day, isToday=d0===today();
+  title.textContent=`${md(d0)} 用量（按小时）`;
+  const list=[...Array(24)].map((_,h)=>{
+    const p=byH[d0+h*3600]||{tokens:0,count:0};
+    return {tokens:p.tokens, count:p.count, label:h+':00',
+      tip:`${h}:00 · ${p.tokens.toLocaleString()} tokens · ${p.count} 次`};
+  });
+  el.innerHTML=bars(list,'小时');
+  note.innerHTML=`<span class="lnk" onclick="back()">← 返回近 30 天</span>
+    · ${isToday ? `今天，每 5 分钟刷新 · ${clock(histAt)} <span class="lnk" onclick="loadHist()">立即刷新</span>`
+                : '该日已归档，数据不再变化'}`;
+}
+
+document.getElementById('seg').addEventListener('click',e=>{
+  const r=e.target.dataset.r; if(!r||r===view.mode) return;
+  view={mode:r}; hist=null; histErr=null; syncSeg();
+  r==='24h' ? drawChart() : loadHist();
+});
+// 历史视图只在「区间含 now」时才刷（纯过去的已冻结）
+setInterval(()=>{ if(histLive()) loadHist(); }, HIST_MS);
 
 async function tick(){
   let d;
@@ -429,18 +682,9 @@ async function tick(){
         <td>${c.priority??'—'}</td><td style="color:var(--dim)">${c.group||'—'}</td>
         <td style="color:var(--dim);font-size:12px">${c.models||'—'}</td></tr>`).join('')}</tbody></table></div>`;
 
-  // 近 24h 时序
-  const hs=d.hourly||[];
-  if(!hs.length){ document.getElementById('chart').innerHTML='<div class="empty">近 24 小时暂无用量</div>'; }
-  else{
-    const max=Math.max(...hs.map(p=>p.tokens),1);
-    document.getElementById('chart').innerHTML=
-      `<div class="chart">${hs.map(p=>`<div class="cb" style="height:${Math.max(2,p.tokens/max*100)}%">
-          <span>${new Date(p.hour*1000).getHours()}:00 · ${p.tokens.toLocaleString()} tokens · ${p.count} 次</span></div>`).join('')}</div>
-       <div class="xax"><span>${new Date(hs[0].hour*1000).getHours()}:00</span>
-         <span>峰值 ${kfmt(max)} tokens/小时</span>
-         <span>${new Date(hs[hs.length-1].hour*1000).getHours()}:00</span></div>`;
-  }
+  // 近 24 小时视图直接吃快照（实时，5 秒刷）；历史视图走 /api/usage，见下方 chart 引擎
+  live24=d.hourly||[];
+  if(view.mode==='24h') drawChart();
 
   // 按模型
   const ms=d.model_usage||[];

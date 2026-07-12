@@ -67,6 +67,16 @@ cargo run --release -- down config.toml    # 停 new-api
 - **new-api 首启无默认 root/123456**：需先 `POST /api/setup {username,password,confirmPassword,SelfUseModeEnabled}`（密码≥8位、用户名≤12）建管理员，再登录拿会话。
 - **new-api 令牌 key 在列表里打码**（`aK1A****7H3Z`），真实值从 SQLite `tokens.key` 读；POST/PUT 到 `/api/xxx/` 要带**尾斜杠**（否则 307，reqwest 会自动跟随、urllib 不会）。
 - **new-api release 有独立二进制**（linux/arm64/macos/win），自带 SQLite，`PORT` env 指定端口；默认只在 **401** 自动禁用渠道（429/耗尽不禁），耗尽报文是中文「已达到…使用上限」不撞其英文禁用关键词 → 恢复干净。
+- **智谱 quota 返回只有整数 percentage**：`TOKENS_LIMIT` 窗口**没有** `usage`/`remaining` 字段（那俩只出现在
+  `TIME_LIMIT`/MCP 搜索计数上，而它本就该被过滤掉）。⇒「还剩多少余量」的分辨率**就是 1%**，做不了更细的判断。
+- **new-api 用量表 `quota_data`（看板历史图的唯一数据源）**：
+  · 小时桶（`created_at - created_at%3600`），由 `UpdateQuotaData()` goroutine **每 `DataExportInterval` 分钟批量刷库**，
+    默认 **5 分钟**（`DataExportEnabled` 默认 true）。依据：`model/usedata.go` + `common/constants.go`。
+    ⇒ **看板历史视图刷新 5 分钟一次即可**，刷得再勤也拿不到更新的数（源头就是 5 分钟才写一次）。
+  · **没有滞后**：与 `logs`(type=2) 按小时分桶后逐桶逐渠道完全一致（实测）。若你看到「logs 比 quota_data 新」，
+    多半是把**非消费日志**（type≠2）也算进来了——我踩过这个坑并据此错误推断出「聚合表滞后」。
+  · 表里**有 `channel_id`**，但 new-api 的 `GET /api/data/` 是 `Group by (model_name, created_at)`，**把渠道维度压掉了**。
+    ⇒ 想看「哪把 key 烧的」，唯一的路是直读 `.newapi/one-api.db`（当前未做，故未引入 sqlite 依赖）。
 - **探测成本坑**：glm 是推理模型，`max_tokens:1` 挡不住思考（烧 ~660 token）；`thinking:{type:"disabled"}` 才压到 ~7 token。
 - **认证**：智谱各口用 `Authorization: Bearer <裸 key>`（coding/推理口）；monitor 口社区脚本用裸 key（无 Bearer），但对团体 coding plan 无效。
 

@@ -183,13 +183,18 @@ async fn run_loop(cfg: Config, api: NewApiClient, keys: Vec<ResolvedKey>) -> Res
         "进入切换循环（priority 单活动 key 模式）"
     );
 
-    // 状态看板：独立 task，bind 失败只降级（切换循环照常跑）
+    let api = std::sync::Arc::new(api);
+
+    // 状态看板：独立 task，bind 失败只降级（切换循环照常跑）。
+    // 持有 api 是为了 /api/usage 能按需查任意区间的用量（不进 5 秒快照）。
     let snapshot: status::Shared = Default::default();
     if !cfg.status_addr.trim().is_empty() {
-        tokio::spawn(status::serve(cfg.status_addr.clone(), snapshot.clone()));
+        tokio::spawn(status::serve(
+            cfg.status_addr.clone(),
+            snapshot.clone(),
+            api.clone(),
+        ));
     }
-
-    let api = std::sync::Arc::new(api);
 
     // 面板循环：独立 task、独立频率（本地 new-api 可高频；智谱是外部 API 该低频）。
     // 只写面板字段，与切换循环的决策字段严格不相交。

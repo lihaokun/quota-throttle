@@ -31,7 +31,7 @@
 use crate::config::{Config, ResolvedKey};
 use crate::newapi::NewApiClient;
 use crate::quota::{QuotaProbe, QuotaStatus};
-use crate::status::{self, KeyStatus, LiveMetric, ModelUsage, Shared, UsagePoint};
+use crate::status::{self, KeyStatus, LiveMetric, Shared};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -509,33 +509,8 @@ impl Panel {
             .unwrap_or(0);
         let (mut hourly, mut model_usage) = (Vec::new(), Vec::new());
         if let Ok(rows) = self.api.usage_data(now - 24 * 3600, now + 3600).await {
-            let mut by_hour: HashMap<i64, (i64, i64)> = HashMap::new();
-            let mut by_model: HashMap<String, (i64, i64)> = HashMap::new();
-            for (model, hour, tokens, count) in rows {
-                let h = by_hour.entry(hour).or_insert((0, 0));
-                h.0 += tokens;
-                h.1 += count;
-                let m = by_model.entry(model).or_insert((0, 0));
-                m.0 += tokens;
-                m.1 += count;
-            }
-            hourly = by_hour
-                .into_iter()
-                .map(|(hour, (tokens, count))| UsagePoint {
-                    hour,
-                    tokens,
-                    count,
-                })
-                .collect();
-            hourly.sort_by_key(|p| p.hour);
-            model_usage = by_model
-                .into_iter()
-                .map(|(model, (tokens, count))| ModelUsage {
-                    model,
-                    tokens,
-                    count,
-                })
-                .collect();
+            // 与 /api/usage 共用聚合函数 ⇒ 近 24h 图和历史图口径必然一致
+            (hourly, model_usage) = status::aggregate_usage(rows);
             model_usage.sort_by(|a, b| b.tokens.cmp(&a.tokens)); // 用量降序
         }
 
