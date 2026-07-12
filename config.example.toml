@@ -22,6 +22,30 @@ exhausted_threshold = 100.0
 dry_run = true               # 先 true 空跑验证日志；确认无误再改 false 真正生效
 watch_windows = ["five_hour", "weekly"]   # 同时盯 5 小时和每周窗口，取最大使用率
 
+# ——— 智谱高峰时段（只在看板上显示，不参与调度决策）———
+# 这不是限额，是**扣减系数**：同一个请求在高峰期烧掉的额度更多。
+# 依据（2026-07 官方文档 docs.bigmodel.cn/cn/coding-plan/faq，已交叉验证）：
+#   · 高峰期 = 每日 14:00–18:00（UTC+8），固定，不随流量浮动
+#   · GLM-5.2 / GLM-5-Turbo：高峰 3 倍、非高峰 2 倍；
+#     **限时福利**：非高峰仅 1 倍，持续到 9 月底 → 到期后把下面的 off_peak 改回 2.0
+#   · GLM-4.7 等普通模型：1 倍（不必列出）
+# ⚠️ 智谱没有任何接口能查「现在是不是高峰」，只能按时钟算。窗口按 UTC+8 定义，
+#    所以这里配的是 tz_offset_hours 而不是用本机时区——换台机器也不会算错。
+[peak]
+start_hour = 14
+end_hour = 18
+tz_offset_hours = 8
+note = "非高峰 1x 是限时福利，到 2026-09 月底；到期后非高峰恢复 2x"
+
+[[peak.coefficients]]
+model = "glm-5.2"
+peak = 3.0
+off_peak = 1.0
+[[peak.coefficients]]
+model = "glm-5-turbo"
+peak = 3.0
+off_peak = 1.0
+
 # 状态看板：浏览器打开 http://127.0.0.1:3001 看每把 key 的 5h/周 用量、档位、当前活动 key。
 # 同地址下 /api/status 是 JSON 接口（opencode 插件等外部消费者读它）。留空则不启用看板。
 status_addr = "127.0.0.1:3001"

@@ -82,6 +82,12 @@ cargo run --release -- down config.toml    # 停 new-api
     多半是把**非消费日志**（type≠2）也算进来了——我踩过这个坑并据此错误推断出「聚合表滞后」。
   · 表里**有 `channel_id`**，但 new-api 的 `GET /api/data/` 是 `Group by (model_name, created_at)`，**把渠道维度压掉了**。
     ⇒ 想看「哪把 key 烧的」，唯一的路是直读 `.newapi/one-api.db`（当前未做，故未引入 sqlite 依赖）。
+- **智谱「高峰时段」= 扣减系数，不是限额**（2026-07 官方文档 `docs.bigmodel.cn/cn/coding-plan/faq` + `overview` 交叉验证）：
+  · 高峰期 = **每日 14:00–18:00（UTC+8）**，**固定**（有二手文章说「随流量浮动」，官方无此说法）。
+  · GLM-5.2 / GLM-5-Turbo：高峰 **3 倍**、非高峰 **2 倍**；**限时福利**——非高峰仅 **1 倍**，**到 9 月底**（到期要改配置）。GLM-4.7 等 1 倍。
+  · ⇒ 同一个请求在 14–18 点烧掉的额度是其他时间的 **3 倍**。
+  · **没有任何接口能查当前是否高峰**（`quota/limit` 响应无此字段；官方文档也无该接口）——只能按时钟算。
+    因窗口按 **UTC+8** 定义，代码里必须按 `tz_offset` 算而**不是本机时区**（本机恰好 UTC+8 会掩盖这个 bug）。
 - **探测成本坑**：glm 是推理模型，`max_tokens:1` 挡不住思考（烧 ~660 token）；`thinking:{type:"disabled"}` 才压到 ~7 token。
 - **认证**：智谱各口用 `Authorization: Bearer <裸 key>`（coding/推理口）；monitor 口社区脚本用裸 key（无 Bearer），但对团体 coding plan 无效。
 

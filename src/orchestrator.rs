@@ -77,6 +77,30 @@ fn max_watch_pct(cfg: &Config, status: &QuotaStatus) -> f64 {
     max_pct
 }
 
+/// 现在是不是高峰时段 + 下次切换的时刻（epoch **秒**）。**纯函数**，零网络调用。
+///
+/// 智谱没有任何接口能查这个（quota/limit 的响应里没有该字段，官方文档也没有该接口），
+/// 好在窗口是固定的：**每日 14:00–18:00（UTC+8）**，按时钟算即可。
+///
+/// ⚠️ **按 tz_offset 算，不是按本机时区**。高峰是智谱用 UTC+8 定义的；用本机时区的话，
+/// 这台机器恰好在 UTC+8 就看不出错，换台机器/换时区就全错。
+fn peak_state(now_secs: i64, start_hour: i64, end_hour: i64, tz_offset_hours: i64) -> (bool, i64) {
+    const DAY: i64 = 86_400;
+    // 换算到「智谱时区」的当日秒数
+    let sod = (now_secs + tz_offset_hours * 3600).rem_euclid(DAY);
+    let (s, e) = (start_hour * 3600, end_hour * 3600);
+    let is_peak = sod >= s && sod < e;
+    // 下一个边界：峰中 → 峰尾；峰前 → 峰头；峰后 → 明天的峰头
+    let target = if is_peak {
+        e
+    } else if sod < s {
+        s
+    } else {
+        s + DAY
+    };
+    (is_peak, now_secs + (target - sod))
+}
+
 /// 合格集是在哪一档算出来的。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Regime {
@@ -638,6 +662,33 @@ impl Orchestrator {
         let healthy = self.newapi_healthy().await;
         let client_endpoint = format!("{}/v1", self.cfg.new_api.base_url.trim_end_matches('/'));
 
+        // 高峰时段（**纯显示**，不参与任何调度决策——它影响的是「同一请求烧掉几倍额度」，
+        // 而额度消耗本来就已经如实反映在智谱返回的 pct 里了，不需要我们再折算一遍）
+        let peak = self.cfg.peak.as_ref().map_or_else(status::PeakInfo::default, |p| {
+            let (is_peak, next) =
+                peak_state(now_ms / 1000, p.start_hour, p.end_hour, p.tz_offset_hours);
+            status::PeakInfo {
+                enabled: true,
+                is_peak,
+                window: format!(
+                    "{:02}:00–{:02}:00 (UTC{:+})",
+                    p.start_hour, p.end_hour, p.tz_offset_hours
+                ),
+                next_change_at: next * 1000,
+                models: p
+                    .coefficients
+                    .iter()
+                    .map(|c| status::PeakModel {
+                        model: c.model.clone(),
+                        current: if is_peak { c.peak } else { c.off_peak },
+                        peak: c.peak,
+                        off_peak: c.off_peak,
+                    })
+                    .collect(),
+                note: p.note.clone(),
+            }
+        });
+
         let key_statuses = keys
             .iter()
             .map(|k| {
@@ -687,6 +738,7 @@ impl Orchestrator {
                 pct: r.pct,
                 limit: r.limit,
             });
+            s.peak = peak;
             s.keys = key_statuses;
             s.client_endpoint = client_endpoint;
         });
@@ -949,5 +1001,61 @@ mod tests {
         let d = decide_with(&[(1, Some(50.0))], Some(1), Some(99));
         assert_eq!(d.active, Some(1));
         assert_eq!(d.pin_release, None, "不该为不存在的 key 报解除事件");
+    }
+
+    // ——— 高峰时段（智谱：每日 14:00–18:00 UTC+8）———
+
+    /// 给定「UTC+8 的某日某时某分」，返回 epoch 秒。
+    fn at(h: i64, m: i64) -> i64 {
+        // 2026-07-12 00:00 UTC+8 = 1783785600
+        1_783_785_600 + h * 3600 + m * 60
+    }
+    fn peak_at(h: i64, m: i64) -> (bool, i64) {
+        peak_state(at(h, m), 14, 18, 8)
+    }
+
+    #[test]
+    fn 高峰窗口边界_左闭右开() {
+        assert!(!peak_at(13, 59).0, "13:59 还不是高峰");
+        assert!(peak_at(14, 0).0, "14:00 整点进入高峰（闭）");
+        assert!(peak_at(17, 59).0, "17:59 仍在高峰");
+        assert!(!peak_at(18, 0).0, "18:00 整点离开高峰（开）");
+    }
+
+    #[test]
+    fn 峰前_倒计时指向今天的峰头() {
+        let (is_peak, next) = peak_at(9, 30);
+        assert!(!is_peak);
+        assert_eq!(next, at(14, 0), "9:30 → 4.5 小时后进入高峰");
+    }
+
+    #[test]
+    fn 峰中_倒计时指向峰尾() {
+        let (is_peak, next) = peak_at(15, 0);
+        assert!(is_peak);
+        assert_eq!(next, at(18, 0), "15:00 → 3 小时后离开高峰");
+    }
+
+    #[test]
+    fn 峰后_倒计时跨天指向明天的峰头() {
+        let (is_peak, next) = peak_at(20, 40);
+        assert!(!is_peak);
+        assert_eq!(next, at(14, 0) + 86_400, "20:40 → 明天 14:00");
+    }
+
+    #[test]
+    fn 跨零点也不出错() {
+        let (is_peak, next) = peak_at(0, 5);
+        assert!(!is_peak);
+        assert_eq!(next, at(14, 0), "凌晨 0:05 → 今天 14:00");
+    }
+
+    #[test]
+    fn 按配置时区算而不是本机时区() {
+        // 同一个绝对时刻：在 UTC+8 是 15:00（高峰），在 UTC+0 就是 07:00（非高峰）。
+        // 若代码里图省事用了本机时区，这条会挂。
+        let t = at(15, 0);
+        assert!(peak_state(t, 14, 18, 8).0, "UTC+8 视角：15:00 是高峰");
+        assert!(!peak_state(t, 14, 18, 0).0, "UTC+0 视角：同一时刻是 07:00，非高峰");
     }
 }

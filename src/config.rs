@@ -65,6 +65,54 @@ pub struct Config {
     pub zhipu: ZhipuConfig,
     pub new_api: NewApiConfig,
     pub keys: Vec<KeyMapping>,
+
+    /// 高峰时段（智谱自己的概念）。缺省则看板不显示这块。
+    #[serde(default)]
+    pub peak: Option<PeakConfig>,
+}
+
+/// 智谱的**高峰时段扣减系数**。这不是限额，是「同一个请求在高峰期烧掉几倍额度」。
+///
+/// 依据（2026-07 官方文档交叉验证：coding-plan/faq + coding-plan/overview）：
+///   · 高峰期 = **每日 14:00–18:00（UTC+8）**，固定，不随流量浮动。
+///   · GLM-5.2 / GLM-5-Turbo：高峰 **3 倍**，非高峰 **2 倍**；
+///     限时福利——非高峰仅 **1 倍**，**持续到 9 月底**（到期后要把 off_peak 改回 2.0）。
+///   · GLM-4.7 等普通模型：1 倍。
+///
+/// ⚠️ 智谱**没有任何接口**能查「现在是不是高峰」（quota/limit 的响应里没有这个字段，
+/// 官方文档也没有该接口）。所以只能按时钟算——好在窗口是固定的，纯函数即可。
+#[derive(Debug, Clone, Deserialize)]
+pub struct PeakConfig {
+    #[serde(default = "default_peak_start")]
+    pub start_hour: i64,
+    #[serde(default = "default_peak_end")]
+    pub end_hour: i64,
+    /// 高峰窗口是按 **UTC+8** 定义的。**不要用本机时区**——换台机器就错了。
+    #[serde(default = "default_peak_tz")]
+    pub tz_offset_hours: i64,
+    /// 看板上显示的备注（如福利到期日）
+    #[serde(default)]
+    pub note: String,
+    /// 受系数影响的模型；未列出的模型一律按 1 倍，不展示。
+    #[serde(default)]
+    pub coefficients: Vec<PeakCoefficient>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PeakCoefficient {
+    pub model: String,
+    pub peak: f64,
+    pub off_peak: f64,
+}
+
+fn default_peak_start() -> i64 {
+    14
+}
+fn default_peak_end() -> i64 {
+    18
+}
+fn default_peak_tz() -> i64 {
+    8
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -372,6 +420,16 @@ impl Config {
             r > 0.0 && r <= t && t <= e && e <= 100.0,
             "阈值非法：要求 0 < restore({r}) ≤ throttle({t}) ≤ exhausted({e}) ≤ 100"
         );
+        if let Some(p) = &self.peak {
+            anyhow::ensure!(
+                (0..=24).contains(&p.start_hour)
+                    && (0..=24).contains(&p.end_hour)
+                    && p.start_hour < p.end_hour,
+                "[peak] 时段非法：要求 0 ≤ start_hour({}) < end_hour({}) ≤ 24",
+                p.start_hour,
+                p.end_hour
+            );
+        }
         Ok(())
     }
 }

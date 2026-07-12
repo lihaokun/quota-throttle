@@ -124,6 +124,30 @@ pub struct ModelUsage {
     pub count: i64,
 }
 
+/// 高峰时段状态（智谱的概念：高峰期同一请求烧掉的额度更多）。
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct PeakInfo {
+    /// 配了 [peak] 才为 true；false 时看板不显示这块
+    pub enabled: bool,
+    pub is_peak: bool,
+    /// 人类可读的窗口，如 "14:00–18:00 (UTC+8)"
+    pub window: String,
+    /// 下次切换时刻（epoch ms）。前端据此做倒计时
+    pub next_change_at: i64,
+    pub models: Vec<PeakModel>,
+    /// 备注（如「非高峰 1x 是限时福利，到 9 月底」）
+    pub note: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PeakModel {
+    pub model: String,
+    /// 当前生效的系数
+    pub current: f64,
+    pub peak: f64,
+    pub off_peak: f64,
+}
+
 /// pin 因越出合格线被自动解除的事件（供看板提示）。
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct PinReleaseInfo {
@@ -152,6 +176,8 @@ pub struct StatusSnapshot {
     /// 合格集：自动逻辑允许把流量放上去的渠道。前端据此决定 pin 按钮灰不灰
     pub eligible: Vec<i64>,
     pub last_pin_release: Option<PinReleaseInfo>,
+    /// 智谱高峰时段（只显示，不参与调度决策）
+    pub peak: PeakInfo,
     pub keys: Vec<KeyStatus>,
     /// 客户端应连的地址（= new_api_base + /v1）
     pub client_endpoint: String,
@@ -788,6 +814,31 @@ async function delKey(id,name){
   tick();
 }
 
+/* ——— 智谱高峰时段（纯显示）———
+   智谱的「高峰」影响的不是限额，而是**扣减系数**：同一个请求在 14:00–18:00 烧掉的额度
+   是其他时间的数倍（glm-5.2 现为 3x vs 1x）。这件事没有任何接口能查，只能按时钟算，
+   而看板不提醒的话，你赶工赶到下午就默默多烧了 3 倍。 */
+const dur=ms=>{let s=Math.max(0,Math.floor((ms-Date.now())/1000));
+  const h=Math.floor(s/3600), m=Math.floor(s%3600/60);
+  return h?`${h} 小时 ${m} 分`:`${m} 分`};
+
+function peakChip(p){
+  if(!p||!p.enabled) return '';
+  // 系数只展示受影响的模型（未配的一律 1x，没什么好说的）
+  const coef=p.models.map(m=>`${m.model} ${m.current}x`).join(' · ')||'—';
+  const next=dur(p.next_change_at);
+  if(p.is_peak){
+    const off=p.models.map(m=>m.off_peak).filter((v,i,a)=>a.indexOf(v)===i).join('/');
+    return `<div class="chip" style="border-color:var(--bad)">
+      <span class="v" style="color:var(--bad)">⚠️ 高峰期 · ${coef}</span>
+      <span class="k">同样的请求烧掉更多额度 · ${next}后回落到 ${off}x · 窗口 ${p.window}</span></div>`;
+  }
+  const pk=p.models.map(m=>m.peak).filter((v,i,a)=>a.indexOf(v)===i).join('/');
+  return `<div class="chip">
+    <span class="v" style="color:var(--ok)">非高峰 · ${coef}</span>
+    <span class="k">${next}后进入高峰（${pk}x）· 窗口 ${p.window}${p.note?' · '+p.note:''}</span></div>`;
+}
+
 function win(label,pct,reset,thr){
   if(pct==null) return `<div><div class="wlab"><span class="l">${label}</span></div><div class="err">查询失败</div></div>`;
   const w=Math.max(0,Math.min(100,pct));
@@ -940,6 +991,7 @@ async function tick(){
      <span class="v" style="color:var(--ok)">${act?act.name:'无 · 全部无额度'}${d.pinned_channel_id!=null?' 📌':''}</span></div>
    <div class="chip"><span class="k">客户端连接</span>
      <span class="copy" title="点击复制" onclick="navigator.clipboard.writeText('${d.client_endpoint||''}');this.textContent='已复制';setTimeout(()=>this.textContent='${d.client_endpoint||''}',900)">${d.client_endpoint||'—'}</span></div>
+   ${peakChip(d.peak)}
    ${(q!=null&&q>=0&&q<LOW)?'<div class="chip" style="border-color:var(--bad)"><span class="v" style="color:var(--bad)">new-api 内部余额即将耗尽</span><span class="k">见底会挡住转发（与智谱额度无关）</span></div>':''}
    ${d.dry_run?'<div class="chip" style="border-color:rgba(245,185,66,.5)"><span class="v" style="color:var(--warn)">dry_run</span><span class="k">只打印决策，不真改 new-api</span></div>':''}`;
 
