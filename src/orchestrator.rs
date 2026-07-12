@@ -28,10 +28,11 @@
 //!   - **抖动保护**：本轮查询失败的 key 不进合格集（不会被主动选中），也不动它的 priority；
 //!     但若它恰好是现任或被 pin 的，则保持不变——一次瞬时失败不该丢缓存、也不该抖掉 pin。
 
-use crate::config::{Config, ResolvedKey};
+use crate::config::{Config, NewKeySpec, ResolvedKey};
 use crate::newapi::NewApiClient;
 use crate::quota::{QuotaProbe, QuotaStatus};
 use crate::status::{self, KeyStatus, LiveMetric, Shared};
+use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -123,11 +124,35 @@ pub enum Command {
     Unpin {
         reply: oneshot::Sender<Result<(), String>>,
     },
+    /// 从看板加一把 key：探活 → 建渠道 → 写回 config.toml → 热加载
+    AddKey {
+        spec: NewKeySpec,
+        reply: oneshot::Sender<Result<AddKeyOk, String>>,
+    },
+    /// 停止调度某把 key（priority 压到 0 + 从 config.toml 摘除；**不删 new-api 渠道**）
+    RemoveKey {
+        channel_id: i64,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+}
+
+/// 加 key 成功后回给面板的东西：探活结果原样奉上，让用户当场确认
+/// 「这把 key 确实是我以为的那把」（套餐档位 + 两个窗口的真实用量）。
+#[derive(Debug, Clone, Serialize)]
+pub struct AddKeyOk {
+    pub channel_id: i64,
+    pub level: Option<String>,
+    pub five_hour_pct: Option<f64>,
+    pub weekly_pct: Option<f64>,
 }
 
 /// 命令回执：**主循环在 tick 之后才发出**，于是「HTTP 200 返回」⇔「状态已落地且已发布」。
 pub enum Ack {
     Unit(oneshot::Sender<Result<(), String>>, Result<(), String>),
+    Key(
+        oneshot::Sender<Result<AddKeyOk, String>>,
+        Result<AddKeyOk, String>,
+    ),
 }
 
 impl Ack {
@@ -136,11 +161,15 @@ impl Ack {
     pub fn changed(&self) -> bool {
         match self {
             Ack::Unit(_, r) => r.is_ok(),
+            Ack::Key(_, r) => r.is_ok(),
         }
     }
     pub fn send(self) {
         match self {
             Ack::Unit(tx, r) => {
+                let _ = tx.send(r);
+            }
+            Ack::Key(tx, r) => {
                 let _ = tx.send(r);
             }
         }
@@ -314,7 +343,125 @@ impl Orchestrator {
                 self.last_pin_release = None;
                 Ack::Unit(reply, Ok(()))
             }
+            Command::AddKey { spec, reply } => {
+                let r = self.add_key(spec).await;
+                Ack::Key(reply, r)
+            }
+            Command::RemoveKey { channel_id, reply } => {
+                let r = self.remove_key(channel_id).await;
+                Ack::Unit(reply, r)
+            }
         }
+    }
+
+    /// 加一把 key：**探活 → 建渠道 → 写回 config.toml → 热加载**。顺序是有讲究的。
+    ///
+    /// ① 探活先行，是这个功能最值钱的地方。CLAUDE.md 里那三个坑（url 缺 `?type=2`、缺
+    ///    `Bearer`、缺 org/project selector）**都不会报错**——它们表现为「查得通但 limits 为空」，
+    ///    而空 limits 会被当成 0% 用量，于是这把 key **永远不会被切走**，直到某天线上撞墙才发现。
+    ///    把这个错挡在录入口，比事后 debug 便宜一万倍。探活不过 ⇒ 什么都不改。
+    /// ② 探活过了才建渠道、才动 config.toml。
+    async fn add_key(&mut self, spec: NewKeySpec) -> Result<AddKeyOk, String> {
+        let name = spec.name.trim().to_string();
+        if name.is_empty() || spec.api_key.trim().is_empty() {
+            return Err("名称和 API key 都不能为空".into());
+        }
+        if self.keys.iter().any(|k| k.name == name) {
+            return Err(format!("已存在同名 key：{name}"));
+        }
+        let spec = NewKeySpec {
+            name: name.clone(),
+            api_key: spec.api_key.trim().to_string(),
+            ..spec
+        };
+
+        // ① 探活
+        let headers = spec.headers();
+        let status = self
+            .probe
+            .query(&spec.api_key, &headers)
+            .await
+            .map_err(|e| format!("探活失败，未做任何改动：{e}"))?;
+
+        // ② 建渠道（新 key 一律以 standby 入场；要不要转正交给下一轮自动决策）
+        let tpl = self
+            .cfg
+            .new_api
+            .channel_template
+            .as_ref()
+            .ok_or("配置里没有 [new_api.channel_template]，无法自动建渠道")?;
+        self.api
+            .create_channel(tpl, &name, &spec.api_key, self.cfg.priority_standby)
+            .await
+            .map_err(|e| format!("建渠道失败：{e}"))?;
+        let channel_id = self
+            .api
+            .list_channels()
+            .await
+            .ok()
+            .and_then(|m| m.get(&name).copied())
+            .ok_or_else(|| format!("渠道已建好，但在 new-api 里解析不到它的 id：{name}"))?;
+
+        // ③ 写回 config.toml（唯一数据源 ⇒ 重启后仍在）
+        if let Err(e) = crate::config::append_key(&self.cfg.source_path, &spec) {
+            error!(name = %name, error = %e, "写回 config.toml 失败");
+            return Err(format!(
+                "渠道已建好（#{channel_id}），但写回 config.toml 失败：{e}。\
+                 本次运行内它不会生效，请手动补一条 [[keys]] 后重启"
+            ));
+        }
+
+        // ④ 热加载：下一轮 tick 就会查它的用量并纳入调度
+        self.keys.push(ResolvedKey {
+            name: name.clone(),
+            zhipu_api_key: spec.api_key.clone(),
+            channel_id,
+            quota_headers: headers,
+        });
+        info!(name = %name, channel_id, level = ?status.level, "已加入新 key（探活通过）");
+
+        Ok(AddKeyOk {
+            channel_id,
+            level: status.level,
+            five_hour_pct: status.five_hour.as_ref().map(|w| w.percentage),
+            weekly_pct: status.weekly.as_ref().map(|w| w.percentage),
+        })
+    }
+
+    /// 停止调度某把 key。**不删 new-api 渠道**（它身上挂着历史用量和日志）。
+    ///
+    /// ⚠️ 但必须先把它的 priority 压到最低档再放手——否则一把 priority=100 的活动渠道被移出
+    /// 管辖后仍会**继续吃下全部流量**，而我们已经不再盯它的用量了。那是最坏的结果。
+    async fn remove_key(&mut self, id: i64) -> Result<(), String> {
+        let name = self
+            .keys
+            .iter()
+            .find(|k| k.channel_id == id)
+            .map(|k| k.name.clone())
+            .ok_or_else(|| format!("渠道 #{id} 不在管辖的 key 列表里"))?;
+        if self.keys.len() <= 1 {
+            return Err("这是最后一把 key，移除后就没有可路由的渠道了".into());
+        }
+
+        if !self.cfg.dry_run {
+            self.api
+                .set_channel_priority(id, self.cfg.priority_exhausted)
+                .await
+                .map_err(|e| format!("把 {name} 的 priority 压到最低失败，未做任何改动：{e}"))?;
+        }
+        crate::config::remove_key(&self.cfg.source_path, &name)
+            .map_err(|e| format!("从 config.toml 移除失败：{e}"))?;
+
+        self.keys.retain(|k| k.channel_id != id);
+        self.applied.remove(&id);
+        if self.active == Some(id) {
+            self.active = None; // 下一轮自动重选
+        }
+        if self.pinned == Some(id) {
+            self.pinned = None;
+        }
+        info!(name = %name, channel_id = id, "已停止调度（new-api 渠道保留，priority 已压到最低）");
+        Ok(())
     }
 
     /// 钉住某把 key。**只能钉合格集内的** —— pin 是优先级，不是安全豁免：
@@ -556,7 +703,6 @@ impl Orchestrator {
 /// 本循环整个挂掉也不影响切换。
 pub struct Panel {
     pub api: Arc<NewApiClient>,
-    pub keys: Vec<ResolvedKey>,
     pub snapshot: Shared,
 }
 
@@ -579,12 +725,14 @@ impl Panel {
         // new-api 内部虚拟余额（见底会直接挡住转发）
         let newapi_user_quota = self.api.user_quota().await.unwrap_or(-1);
 
-        // 每把 key 的实时速率（最近 60 秒，服务端固定窗口）
+        // 每把 key 的实时速率（最近 60 秒，服务端固定窗口）。
+        // 渠道列表**从快照读**（决策循环发布的），而不是自己攥一份副本 ——
+        // 这样面板加/删 key 之后无需重启，实时指标就能跟上。
         let mut live: Vec<LiveMetric> = Vec::new();
-        for k in &self.keys {
-            let (rpm, tpm) = self.api.channel_rate(k.channel_id).await.unwrap_or((0, 0));
+        for channel_id in status::tracked_channels(&self.snapshot) {
+            let (rpm, tpm) = self.api.channel_rate(channel_id).await.unwrap_or((0, 0));
             live.push(LiveMetric {
-                channel_id: k.channel_id,
+                channel_id,
                 rpm,
                 tpm,
                 last_request_at: None,

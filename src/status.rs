@@ -15,6 +15,7 @@
 //!
 //! 设计原则：**看板是附属，绝不拖垮主循环**——bind 失败只降级记 error，切换循环照常跑。
 
+use crate::config::NewKeySpec;
 use crate::newapi::NewApiClient;
 use crate::orchestrator::Command;
 use serde::Serialize;
@@ -174,6 +175,17 @@ pub type Shared = Arc<RwLock<StatusSnapshot>>;
 /// 读快照。锁 poison 时用 into_inner 恢复——避免一次 panic 让看板永久黑屏。
 fn read_snap(snap: &Shared) -> StatusSnapshot {
     snap.read().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// 当前管辖的渠道 id。面板循环据此拉实时指标——**从快照读而不是自持一份副本**，
+/// 这样看板加/删 key 之后无需重启，面板数据就能跟上。
+pub fn tracked_channels(snap: &Shared) -> Vec<i64> {
+    snap.read()
+        .unwrap_or_else(|e| e.into_inner())
+        .keys
+        .iter()
+        .map(|k| k.channel_id)
+        .collect()
 }
 
 /// **字段级原子更新**：在写锁内就地修改。
@@ -491,6 +503,32 @@ async fn handle_conn(
             let (st, b) = dispatch(&tx, |reply| Command::Unpin { reply }, "200 OK").await;
             (st, JSON, b)
         }
+        ("POST", "/api/keys") => match serde_json::from_str::<NewKeySpec>(&req.body) {
+            Ok(spec) => {
+                let (st, b) =
+                    dispatch(&tx, |reply| Command::AddKey { spec, reply }, "201 Created").await;
+                (st, JSON, b)
+            }
+            Err(e) => (
+                "400 Bad Request",
+                JSON,
+                err_json(format!("请求体非法（要 name / api_key，org / project 可选）：{e}")),
+            ),
+        },
+        ("DELETE", p) if p.starts_with("/api/keys/") => {
+            match p.trim_start_matches("/api/keys/").parse::<i64>() {
+                Ok(channel_id) => {
+                    let (st, b) = dispatch(
+                        &tx,
+                        |reply| Command::RemoveKey { channel_id, reply },
+                        "200 OK",
+                    )
+                    .await;
+                    (st, JSON, b)
+                }
+                Err(_) => ("400 Bad Request", JSON, err_json("路径要 /api/keys/<渠道 id>")),
+            }
+        }
 
         ("GET", _) => (
             "404 Not Found",
@@ -629,6 +667,18 @@ fn render_html() -> String {
  .toast{position:fixed;right:18px;bottom:18px;max-width:440px;padding:11px 14px;border-radius:9px;
         background:#1b212c;border:1px solid var(--bad);color:var(--txt);font-size:13px;z-index:99;
         line-height:1.5;box-shadow:0 10px 30px rgba(0,0,0,.45)}
+ .frow{display:flex;gap:10px;margin-bottom:10px;flex-wrap:wrap;align-items:center}
+ .frow input{flex:1;min-width:220px;background:#0f131a;border:1px solid var(--line);border-radius:8px;
+             padding:9px 12px;color:var(--txt);font:inherit;font-size:13px}
+ .frow input:focus{outline:none;border-color:var(--accent)}
+ .sbtn{background:rgba(91,140,255,.16);border:1px solid rgba(91,140,255,.5);color:var(--accent);
+       font:inherit;font-size:13px;padding:9px 18px;border-radius:8px;cursor:pointer;white-space:nowrap}
+ .sbtn:hover{background:rgba(91,140,255,.26)}
+ .sbtn:disabled{opacity:.5;cursor:progress}
+ .fhint{flex:1;min-width:280px;color:var(--dim);font-size:11.5px;line-height:1.6}
+ .fhint b{color:var(--warn)}
+ .del{background:none;border:0;color:var(--dim);font:inherit;font-size:11px;cursor:pointer;padding:0}
+ .del:hover{color:var(--bad)}
  .tbl{width:100%;border-collapse:collapse;font-size:13px}
  .tbl th{text-align:left;color:var(--dim);font-weight:500;font-size:11px;text-transform:uppercase;
          letter-spacing:.05em;padding:0 12px 9px 0;border-bottom:1px solid var(--line)}
@@ -642,6 +692,26 @@ fn render_html() -> String {
 <div class="chips" id="chips"></div>
 <div id="bans"></div>
 <div class="grid" id="grid"></div>
+<h2>添加 key</h2>
+<div class="card">
+  <div id="addmsg"></div>
+  <form id="addf" autocomplete="off">
+    <div class="frow">
+      <input name="name" placeholder="名称（如 zhipu-3，同时用作 new-api 渠道名）" required>
+      <input name="api_key" type="password" placeholder="智谱 API key" required>
+    </div>
+    <div class="frow">
+      <input name="org" placeholder="Bigmodel-Organization（团体套餐必填）">
+      <input name="project" placeholder="Bigmodel-Project（团体套餐必填）">
+    </div>
+    <div class="frow">
+      <button class="sbtn" type="submit">探活并添加</button>
+      <span class="fhint">先用这把 key 真查一次智谱用量。<b>探活不通过就什么都不改</b>——不建渠道、不动 config.toml。
+        团体套餐漏填 selector 会「查得通但 limits 为空」，那把 key 会被当成 0% 用量、永不切换，所以必须在这里挡住。
+        org/project 取法：浏览器开 bigmodel.cn 的用量页 → F12 → 找 quota/limit 请求 → 抄这两个请求头。</span>
+    </div>
+  </form>
+</div>
 <div id="wild"></div>
 <div class="hrow">
   <h2 id="ctitle">近 24 小时用量</h2>
@@ -691,6 +761,32 @@ async function pin(id){ try{ await call('POST','/api/pin',{channel_id:id}); }cat
 async function unpin(){ try{ await call('DELETE','/api/pin'); }catch(e){ toast(e.message); } tick(); }
 
 let seenRelease=null;   // 「pin 已自动解除」提示：本地关掉后不再弹，除非又发生了新的一次
+
+/* ——— 加 / 删 key ——— */
+document.getElementById('addf').addEventListener('submit',async e=>{
+  e.preventDefault();
+  const f=new FormData(e.target), g=n=>(f.get(n)||'').trim();
+  const body={name:g('name'), api_key:g('api_key'), org:g('org')||null, project:g('project')||null};
+  const msg=document.getElementById('addmsg'), btn=e.target.querySelector('.sbtn');
+  btn.disabled=true;
+  msg.innerHTML='<div class="ban ban-info">正在探活……（用这把 key + selector 真查一次智谱用量）</div>';
+  try{
+    const j=await call('POST','/api/keys',body);
+    msg.innerHTML=`<div class="ban ban-info">✅ 已添加 <b>${body.name}</b>（渠道 #${j.channel_id}）
+      · 套餐 <b>${j.level||'—'}</b> · 5 小时窗口 <b>${j.five_hour_pct??'—'}%</b> · 每周 <b>${j.weekly_pct??'—'}%</b>
+      · 已写回 config.toml，重启后仍在。以 standby 入场，下一轮自动决策决定要不要转正。</div>`;
+    e.target.reset(); tick();
+  }catch(err){
+    msg.innerHTML=`<div class="ban ban-warn">❌ ${err.message}</div>`;   // 智谱的错误原文原样显示
+  }finally{ btn.disabled=false; }
+});
+
+async function delKey(id,name){
+  if(!confirm(`停止调度 ${name}？\n\n· 从 config.toml 移除，priority 压到最低（不再接流量）\n`
+            +`· new-api 渠道本身保留（历史用量和日志还在），需要的话去 new-api 里手动删`)) return;
+  try{ await call('DELETE','/api/keys/'+id); }catch(e){ toast(e.message); }
+  tick();
+}
 
 function win(label,pct,reset,thr){
   if(pct==null) return `<div><div class="wlab"><span class="l">${label}</span></div><div class="err">查询失败</div></div>`;
@@ -906,6 +1002,8 @@ async function tick(){
      <div class="meta">
        <span>priority <b style="color:${mism?'var(--warn)':'var(--txt)'}">${k.priority??'—'}</b>${mism?` <span class="warn">（new-api 侧是 ${c.priority}，不一致！）</span>`:''}</span>
        ${c?`<span>分组 ${c.group||'—'}</span><span>auto_ban ${c.auto_ban?'开':'关'}</span><span style="opacity:.7">${c.models||''}</span>`:''}
+       <button class="del" style="margin-left:auto" onclick="delKey(${k.channel_id},'${k.name}')"
+         title="从 config.toml 移除并停止调度；new-api 渠道保留">✕ 停止调度</button>
      </div>
    </div>`}).join('');
 

@@ -69,6 +69,11 @@ cargo run --release -- down config.toml    # 停 new-api
 - **new-api release 有独立二进制**（linux/arm64/macos/win），自带 SQLite，`PORT` env 指定端口；默认只在 **401** 自动禁用渠道（429/耗尽不禁），耗尽报文是中文「已达到…使用上限」不撞其英文禁用关键词 → 恢复干净。
 - **智谱 quota 返回只有整数 percentage**：`TOKENS_LIMIT` 窗口**没有** `usage`/`remaining` 字段（那俩只出现在
   `TIME_LIMIT`/MCP 搜索计数上，而它本就该被过滤掉）。⇒「还剩多少余量」的分辨率**就是 1%**，做不了更细的判断。
+- **🔥「limits 为空」必须当错误抛，绝不能返回空 status**（`quota.rs` 曾经只 warn，是个潜伏的灾难）：
+  配错 selector 时智谱**不报错**——它 `success=true` 地回一个空 `data`。若探针把它当成「查到了，但没有窗口」，
+  `max_watch_pct()` 会算出 **0.0**，于是这把 key 在调度器眼里就是**「用量 0%」**：它会被选成活动 key 并且
+  **永远不会被切走**，直到线上真撞墙。抛错则安全——该 key「查询失败」⇒ 不参与决策、不动 priority、
+  看板显示「查询失败」而不是骗你说 0%。**任何「查不到用量」的路径，默认值都必须是「未知」而不是「0」。**
 - **new-api 用量表 `quota_data`（看板历史图的唯一数据源）**：
   · 小时桶（`created_at - created_at%3600`），由 `UpdateQuotaData()` goroutine **每 `DataExportInterval` 分钟批量刷库**，
     默认 **5 分钟**（`DataExportEnabled` 默认 true）。依据：`model/usedata.go` + `common/constants.go`。

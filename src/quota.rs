@@ -9,7 +9,6 @@
 use crate::config::{HeaderKV, Window, ZhipuConfig};
 use anyhow::{Context, Result};
 use serde::Deserialize;
-use tracing::warn;
 
 #[derive(Debug, Clone)]
 pub struct WindowStatus {
@@ -140,13 +139,21 @@ impl QuotaProbe {
             .filter(|l| l.kind == "TOKENS_LIMIT")
             .collect();
 
-        // success=true 但没有任何 TOKENS_LIMIT：团体套餐多半是 url 缺 `?type=2`
-        // 或缺 Bigmodel-Organization / Bigmodel-Project selector。静默返回会被当成 0% →
-        // 永不切换，故显式告警。
+        // success=true 但没有任何 TOKENS_LIMIT ⇒ **必须报错，绝不能返回空 status**。
+        //
+        // 这是本项目最危险的一条路径：空 status 的 max_watch_pct 会算出 **0.0**，于是一把
+        // selector 配错的 key 在调度器眼里就是「用量 0%」——它会被选成活动 key 并且**永远
+        // 不会被切走**，直到线上真的撞墙才发现。而智谱对这种情况 **success=true、不报错**
+        // （url 缺 `?type=2`、或缺 Bigmodel-Organization / Bigmodel-Project selector 时，
+        // 它只是安静地回一个空 data）。
+        //
+        // 报错的后果是安全的：该 key 本轮「查询失败」⇒ 不参与决策、不动它的 priority、
+        // 看板显示「查询失败」而不是骗你说 0%。
         if token_limits.is_empty() {
-            warn!(
-                "智谱用量响应 limits 为空：团体套餐请确认 quota_url 带 ?type=2，\
-                 且 keys.quota_headers 配了 Bigmodel-Organization / Bigmodel-Project"
+            anyhow::bail!(
+                "智谱返回了 success 但没有任何用量窗口（limits 为空）。团体套餐请确认：\
+                 ① quota_url 带 ?type=2；② 这把 key 配了 Bigmodel-Organization / \
+                 Bigmodel-Project selector（不同 key 可能属不同组织/项目，须按 key 配）"
             );
         }
 

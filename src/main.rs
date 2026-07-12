@@ -206,7 +206,6 @@ async fn run_loop(cfg: Config, api: NewApiClient, keys: Vec<ResolvedKey>) -> Res
     tokio::spawn(
         orchestrator::Panel {
             api: api.clone(),
-            keys: keys.clone(),
             snapshot: snapshot.clone(),
         }
         .run(Duration::from_secs(cfg.panel_interval_secs.max(1))),

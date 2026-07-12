@@ -1,11 +1,17 @@
 //! 配置加载。所有可能随 new-api 版本变化的东西（路径、header）都放到配置里，
 //! 不写死在代码，方便你 F12 抓到真实接口后直接改。
 
+use anyhow::{bail, Context};
 use serde::Deserialize;
+use std::io::Write;
 use std::path::Path;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
+    /// 本配置文件的路径。面板加/删 key 时要写回它（**config.toml 是唯一数据源**）。
+    #[serde(skip)]
+    pub source_path: String,
+
     /// 轮询间隔（秒）
     pub poll_interval_secs: u64,
 
@@ -242,10 +248,113 @@ pub struct ResolvedKey {
     pub quota_headers: Vec<HeaderKV>,
 }
 
+/// 面板提交的新 key。
+#[derive(Debug, Clone, Deserialize)]
+pub struct NewKeySpec {
+    pub name: String,
+    pub api_key: String,
+    /// 团体套餐的 selector。个人套餐留空。
+    #[serde(default)]
+    pub org: Option<String>,
+    #[serde(default)]
+    pub project: Option<String>,
+}
+
+impl NewKeySpec {
+    /// selector → 查用量时要带的 header。**团体套餐缺了它就查不到**（返回 limits 空），
+    /// 而空 limits 会被误当成 0% 用量 → 这把 key 永远不切换。所以录入时必须探活。
+    pub fn headers(&self) -> Vec<HeaderKV> {
+        [
+            ("Bigmodel-Organization", self.org.as_deref()),
+            ("Bigmodel-Project", self.project.as_deref()),
+        ]
+        .into_iter()
+        .filter_map(|(k, v)| {
+            let v = v.map(str::trim).filter(|s| !s.is_empty())?;
+            Some(HeaderKV {
+                key: k.to_string(),
+                value: v.to_string(),
+            })
+        })
+        .collect()
+    }
+}
+
+/// 原子写：临时文件 → fsync → rename。
+/// 直接覆写 config.toml 的话，进程若在写一半时挂掉，用户的配置就被截断了。
+fn write_atomic(path: &str, bytes: &[u8]) -> anyhow::Result<()> {
+    let tmp = format!("{path}.tmp");
+    {
+        let mut f = std::fs::File::create(&tmp)
+            .with_context(|| format!("创建临时文件失败: {tmp}"))?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+    }
+    std::fs::rename(&tmp, path).with_context(|| format!("替换 {path} 失败"))?;
+    Ok(())
+}
+
+/// 往 config.toml 追加一条 `[[keys]]`。
+///
+/// 用 **toml_edit**（格式保留式编辑）而不是 `toml::to_string` 重新序列化——后者会把用户
+/// 手写的注释、空行、排版**全部冲掉**，而这个项目的 config.toml 里写满了踩坑说明。
+pub fn append_key(path: &str, spec: &NewKeySpec) -> anyhow::Result<()> {
+    let text = std::fs::read_to_string(path).with_context(|| format!("读取 {path} 失败"))?;
+    let mut doc: toml_edit::DocumentMut = text.parse().context("config.toml 不是合法 TOML")?;
+
+    if !doc.contains_key("keys") {
+        doc["keys"] = toml_edit::Item::ArrayOfTables(toml_edit::ArrayOfTables::new());
+    }
+    let keys = doc["keys"]
+        .as_array_of_tables_mut()
+        .context("config.toml 里的 keys 不是 [[keys]] 表数组")?;
+    if keys
+        .iter()
+        .any(|t| t.get("name").and_then(|v| v.as_str()) == Some(spec.name.as_str()))
+    {
+        bail!("config.toml 里已存在同名 key: {}", spec.name);
+    }
+
+    let mut t = toml_edit::Table::new();
+    t["name"] = toml_edit::value(spec.name.clone());
+    t["zhipu_api_key"] = toml_edit::value(spec.api_key.clone());
+    let hs = spec.headers();
+    if !hs.is_empty() {
+        let mut arr = toml_edit::ArrayOfTables::new();
+        for h in hs {
+            let mut ht = toml_edit::Table::new();
+            ht["key"] = toml_edit::value(h.key);
+            ht["value"] = toml_edit::value(h.value);
+            arr.push(ht);
+        }
+        t.insert("quota_headers", toml_edit::Item::ArrayOfTables(arr));
+    }
+    keys.push(t);
+
+    write_atomic(path, doc.to_string().as_bytes())
+}
+
+/// 从 config.toml 摘掉一条 `[[keys]]`（同样保留其余部分的注释与排版）。
+pub fn remove_key(path: &str, name: &str) -> anyhow::Result<()> {
+    let text = std::fs::read_to_string(path).with_context(|| format!("读取 {path} 失败"))?;
+    let mut doc: toml_edit::DocumentMut = text.parse().context("config.toml 不是合法 TOML")?;
+    let keys = doc["keys"]
+        .as_array_of_tables_mut()
+        .context("config.toml 里的 keys 不是 [[keys]] 表数组")?;
+    let before = keys.len();
+    keys.retain(|t| t.get("name").and_then(|v| v.as_str()) != Some(name));
+    if keys.len() == before {
+        bail!("config.toml 里没有名为 {name} 的 key");
+    }
+    write_atomic(path, doc.to_string().as_bytes())
+}
+
 impl Config {
     pub fn load(path: impl AsRef<Path>) -> anyhow::Result<Self> {
+        let path = path.as_ref();
         let text = std::fs::read_to_string(path)?;
-        let cfg: Config = toml::from_str(&text)?;
+        let mut cfg: Config = toml::from_str(&text)?;
+        cfg.source_path = path.to_string_lossy().into_owned();
         cfg.validate()?;
         Ok(cfg)
     }
@@ -264,5 +373,129 @@ impl Config {
             "阈值非法：要求 0 < restore({r}) ≤ throttle({t}) ≤ exhausted({e}) ≤ 100"
         );
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 一份**带注释、带排版**的配置：这正是我们要保住的东西。
+    const SAMPLE: &str = r#"# 顶部注释：别被冲掉
+poll_interval_secs = 60
+throttle_threshold = 95.0   # 行尾注释
+restore_threshold = 90.0
+
+[zhipu]
+quota_url = "https://open.bigmodel.cn/api/monitor/usage/quota/limit?type=2"
+
+[new_api]
+base_url = "http://127.0.0.1:3000"
+
+# 下面是 key 列表
+[[keys]]
+name = "zhipu-1"
+zhipu_api_key = "k1"
+[[keys.quota_headers]]
+key = "Bigmodel-Organization"
+value = "org-1"
+"#;
+
+    fn tmp(tag: &str) -> String {
+        let p = std::env::temp_dir().join(format!("qt-cfg-{}-{tag}.toml", std::process::id()));
+        std::fs::write(&p, SAMPLE).unwrap();
+        p.to_string_lossy().into_owned()
+    }
+
+    fn spec(name: &str) -> NewKeySpec {
+        NewKeySpec {
+            name: name.into(),
+            api_key: "k2".into(),
+            org: Some("org-2".into()),
+            project: Some("proj-2".into()),
+        }
+    }
+
+    #[test]
+    fn 追加key_不冲掉注释与排版() {
+        let p = tmp("append");
+        append_key(&p, &spec("zhipu-2")).unwrap();
+        let out = std::fs::read_to_string(&p).unwrap();
+
+        // 注释、行尾注释、原有内容一个字符都不能少
+        assert!(out.contains("# 顶部注释：别被冲掉"));
+        assert!(out.contains("throttle_threshold = 95.0   # 行尾注释"));
+        assert!(out.contains("# 下面是 key 列表"));
+        assert!(out.contains(r#"value = "org-1""#));
+
+        // 新 key 进去了，且能被正常解析回来
+        let cfg: Config = toml::from_str(&out).unwrap();
+        assert_eq!(cfg.keys.len(), 2);
+        let k = &cfg.keys[1];
+        assert_eq!(k.name, "zhipu-2");
+        assert_eq!(k.zhipu_api_key, "k2");
+        assert_eq!(k.quota_headers.len(), 2);
+        assert_eq!(k.quota_headers[0].key, "Bigmodel-Organization");
+        assert_eq!(k.quota_headers[1].value, "proj-2");
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn 同名key_拒绝追加() {
+        let p = tmp("dup");
+        assert!(append_key(&p, &spec("zhipu-1")).is_err());
+        // 失败时不能留下任何改动
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), SAMPLE);
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn 删除key_只摘掉那一条_其余原样() {
+        let p = tmp("remove");
+        append_key(&p, &spec("zhipu-2")).unwrap();
+        remove_key(&p, "zhipu-2").unwrap();
+        let out = std::fs::read_to_string(&p).unwrap();
+
+        assert!(out.contains("# 顶部注释：别被冲掉"));
+        assert!(out.contains("# 下面是 key 列表"));
+        assert!(!out.contains("zhipu-2"));
+        let cfg: Config = toml::from_str(&out).unwrap();
+        assert_eq!(cfg.keys.len(), 1);
+        assert_eq!(cfg.keys[0].name, "zhipu-1");
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn 删除不存在的key_报错() {
+        let p = tmp("nomatch");
+        assert!(remove_key(&p, "不存在").is_err());
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn 个人套餐_不填selector_则不写quota_headers() {
+        let p = tmp("nosel");
+        append_key(
+            &p,
+            &NewKeySpec {
+                name: "personal".into(),
+                api_key: "k3".into(),
+                org: None,
+                project: Some("  ".into()), // 空白应被当作没填
+            },
+        )
+        .unwrap();
+        let cfg: Config = toml::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert!(cfg.keys[1].quota_headers.is_empty());
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn 阈值非法_启动即失败() {
+        // throttle > exhausted 会让合格集恒空、永不切换 —— 必须在启动时就拦住
+        let p = std::env::temp_dir().join(format!("qt-cfg-{}-bad.toml", std::process::id()));
+        std::fs::write(&p, SAMPLE.replace("throttle_threshold = 95.0", "throttle_threshold = 101.0")).unwrap();
+        assert!(Config::load(&p).is_err());
+        std::fs::remove_file(&p).ok();
     }
 }
