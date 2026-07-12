@@ -615,6 +615,20 @@ fn render_html() -> String {
         gap:8px;flex-wrap:wrap;font-variant-numeric:tabular-nums}
  .lnk{color:var(--accent);cursor:pointer}
  .lnk:hover{text-decoration:underline}
+ .pbtn{margin-left:auto;background:#1b212c;border:1px solid var(--line);color:var(--dim);
+       font:inherit;font-size:11px;padding:4px 10px;border-radius:6px;cursor:pointer;white-space:nowrap}
+ .pbtn:hover:not(:disabled){border-color:var(--accent);color:var(--accent)}
+ .pbtn:disabled{opacity:.35;cursor:not-allowed}
+ .pbtn.on{border-color:rgba(62,207,142,.5);color:var(--ok);background:rgba(62,207,142,.1)}
+ .ban{padding:11px 14px;border-radius:9px;margin-bottom:10px;font-size:13px;
+      display:flex;align-items:center;gap:10px;flex-wrap:wrap;line-height:1.5}
+ .ban-warn{background:rgba(245,185,66,.09);border:1px solid rgba(245,185,66,.38);color:var(--warn)}
+ .ban-info{background:rgba(91,140,255,.09);border:1px solid rgba(91,140,255,.35);color:var(--txt)}
+ .ban .x{margin-left:auto;color:var(--dim);cursor:pointer;font-size:12px}
+ .ban .x:hover{color:var(--txt)}
+ .toast{position:fixed;right:18px;bottom:18px;max-width:440px;padding:11px 14px;border-radius:9px;
+        background:#1b212c;border:1px solid var(--bad);color:var(--txt);font-size:13px;z-index:99;
+        line-height:1.5;box-shadow:0 10px 30px rgba(0,0,0,.45)}
  .tbl{width:100%;border-collapse:collapse;font-size:13px}
  .tbl th{text-align:left;color:var(--dim);font-weight:500;font-size:11px;text-transform:uppercase;
          letter-spacing:.05em;padding:0 12px 9px 0;border-bottom:1px solid var(--line)}
@@ -626,6 +640,7 @@ fn render_html() -> String {
 <header><h1>quota-throttle</h1><span class="tag">智谱 GLM Coding Plan</span></header>
 <div class="sub" id="sub">加载中…</div>
 <div class="chips" id="chips"></div>
+<div id="bans"></div>
 <div class="grid" id="grid"></div>
 <div id="wild"></div>
 <div class="hrow">
@@ -652,6 +667,30 @@ const kfmt=n=>n>=1e6?(n/1e6).toFixed(2)+'M':n>=1e3?(n/1e3).toFixed(1)+'k':String
 const hue=(p,thr)=>p>=thr?'var(--bad)':p>=thr*0.8?'var(--warn)':'var(--ok)';
 const TIER={active:'ACTIVE',standby:'STANDBY',exhausted:'耗尽',unknown:'未知'};
 const LOW=10000000;
+
+/* ——— pin：在「合格集」内表达偏好 ———
+   pin 不是安全豁免——它只能钉自动逻辑判定为**合格**的 key（正常档 <95%，降级档 <100%）。
+   所以不合格的 key，按钮直接置灰：点不了比「点了之后被静默解除」清楚。 */
+async function call(method,path,body){
+  const r=await fetch(path,{method,cache:'no-store',
+    headers:{'Content-Type':'application/json','X-QT-Panel':'1'},   // 自定义头 = 反 CSRF 门槛
+    body:body?JSON.stringify(body):undefined});
+  const j=await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(j.error||('HTTP '+r.status));
+  return j;
+}
+let toastT=null;
+function toast(msg){
+  let el=document.getElementById('toast');
+  if(!el){ el=document.createElement('div'); el.id='toast'; el.className='toast'; document.body.appendChild(el); }
+  el.textContent=msg; clearTimeout(toastT);
+  toastT=setTimeout(()=>el.remove(),6000);
+}
+/* 按钮置灰已挡住绝大多数误操作；但快照到点击之间 key 可能刚好越线 ⇒ 后端仍会 409，如实显示 */
+async function pin(id){ try{ await call('POST','/api/pin',{channel_id:id}); }catch(e){ toast(e.message); } tick(); }
+async function unpin(){ try{ await call('DELETE','/api/pin'); }catch(e){ toast(e.message); } tick(); }
+
+let seenRelease=null;   // 「pin 已自动解除」提示：本地关掉后不再弹，除非又发生了新的一次
 
 function win(label,pct,reset,thr){
   if(pct==null) return `<div><div class="wlab"><span class="l">${label}</span></div><div class="err">查询失败</div></div>`;
@@ -794,26 +833,51 @@ async function tick(){
   const lvOf=id=>(d.live||[]).find(l=>l.channel_id===id);
 
   document.getElementById('sub').textContent=
-    `任一窗口达 ${thr}% 即切换 · 挑新活动 key 要求低于 ${d.restore_threshold}%`;
+    `任一窗口达 ${thr}% 即切换 · 挑新活动 key 要求低于 ${d.restore_threshold}%`
+    + ` · 全部 key 都超线时，榨到 ${d.exhausted_threshold}% 再流转（不硬撞 429）`;
 
   const q=d.newapi_user_quota;
   document.getElementById('chips').innerHTML=`
    <div class="chip"><span class="dot" style="background:${d.new_api_healthy?'var(--ok)':'var(--bad)'}"></span>
      <span class="k">new-api</span><span class="v">${d.new_api_healthy?'健康':'不可达'}</span></div>
    <div class="chip"><span class="k">活动 key</span>
-     <span class="v" style="color:var(--ok)">${act?act.name:'无 · 全部无额度'}</span></div>
+     <span class="v" style="color:var(--ok)">${act?act.name:'无 · 全部无额度'}${d.pinned_channel_id!=null?' 📌':''}</span></div>
    <div class="chip"><span class="k">客户端连接</span>
      <span class="copy" title="点击复制" onclick="navigator.clipboard.writeText('${d.client_endpoint||''}');this.textContent='已复制';setTimeout(()=>this.textContent='${d.client_endpoint||''}',900)">${d.client_endpoint||'—'}</span></div>
    ${(q!=null&&q>=0&&q<LOW)?'<div class="chip" style="border-color:var(--bad)"><span class="v" style="color:var(--bad)">new-api 内部余额即将耗尽</span><span class="k">见底会挡住转发（与智谱额度无关）</span></div>':''}
    ${d.dry_run?'<div class="chip" style="border-color:rgba(245,185,66,.5)"><span class="v" style="color:var(--warn)">dry_run</span><span class="k">只打印决策，不真改 new-api</span></div>':''}`;
 
+  // —— 横幅：降级档 / pin 被自动解除 ——
+  // 提示的去重键只能由数字/冒号组成——它要嵌进 onclick 属性，带引号的 JSON 会把属性截断
+  const rel=d.last_pin_release, relKey=rel?`${rel.channel_id}:${rel.pct}:${rel.limit}`:null;
+  const relName=rel?(d.keys.find(k=>k.channel_id===rel.channel_id)||{}).name||('#'+rel.channel_id):'';
+  document.getElementById('bans').innerHTML=`
+   ${d.regime==='degraded'?`<div class="ban ban-warn">
+      <b>降级档</b>：全部 key 都已越过 ${thr}% 预防线。正在把活动 key 榨到
+      ${d.exhausted_threshold}% 再流转到还有余量的那把——此时撞 429 的风险由 new-api 的 priority 阶梯兜底。
+     </div>`:''}
+   ${(rel&&relKey!==seenRelease)?`<div class="ban ban-info">
+      📌 <b>${relName}</b> 的固定已自动解除：用量 ${rel.pct}% 越过了合格线 ${rel.limit}%，已回到自动选择。
+      <span class="x" onclick="seenRelease='${relKey}';tick()">知道了</span>
+     </div>`:''}`;
+
   // —— 合并卡片：智谱用量 + new-api 渠道状态 + 实时指标，一把 key 全在这 ——
+  const eligible=new Set(d.eligible||[]);
   document.getElementById('grid').innerHTML=d.keys.map(k=>{
     const c=chOf(k.channel_id), l=lvOf(k.channel_id);
     const disabled = c && !c.enabled;
     const mism = c && c.priority!=null && k.priority!=null && c.priority!==k.priority;
     const on = l && l.rpm>0;
     const lastTxt = l&&l.last_request_at ? `最后请求 ${ago(l.last_request_at)}${l.last_request_model?` (${l.last_request_model})`:''}` : '暂无请求记录';
+    // pin 按钮：只有合格的才点得动（pin 是优先级，不是安全豁免）
+    const isPinned = k.channel_id===d.pinned_channel_id;
+    const ok = eligible.has(k.channel_id);
+    const why = k.max_pct==null ? '本轮用量查询失败，状态未知，暂不能固定'
+              : `用量 ${k.max_pct}% 已越过合格线 ${d.regime==='degraded'?d.exhausted_threshold:thr}%，自动逻辑不允许固定`;
+    const btn = isPinned
+      ? `<button class="pbtn on" onclick="unpin()" title="回到自动选择">📌 已固定 · 取消</button>`
+      : `<button class="pbtn" ${ok?'':'disabled'} title="${ok?'把流量钉在这把 key 上（仍受自动逻辑约束：越线会自动解除）':why}"
+           onclick="pin(${k.channel_id})">📌 固定到这把</button>`;
     return `
    <div class="card ${k.tier==='active'?'act':''} ${k.tier==='exhausted'?'dead':''} ${disabled?'off':''}">
      <div class="chead">
@@ -822,6 +886,7 @@ async function tick(){
        <span class="cid">渠道 #${k.channel_id}</span>
        ${c ? (c.enabled ? '<span class="badge b-on">启用</span>'
              : `<span class="badge b-off">已被 new-api 禁用</span>`) : ''}
+       ${btn}
      </div>
      ${disabled?`<div class="err">status=${c.status_raw} · priority 不起作用，流量不会来这把 key</div>`:''}
      ${k.error?`<div class="err">${k.error}</div>`:''}
