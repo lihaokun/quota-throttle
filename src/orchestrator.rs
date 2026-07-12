@@ -35,6 +35,7 @@ use crate::status::{self, KeyStatus, LiveMetric, Shared};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::oneshot;
 use tracing::{debug, error, info, warn};
 
 pub struct Orchestrator {
@@ -49,8 +50,11 @@ pub struct Orchestrator {
     pinned: Option<i64>,
     /// 上一次 pin 被自动解除的事件（供看板提示）
     last_pin_release: Option<PinRelease>,
-    /// 上一轮的档位，仅用于「档位变化时打一行日志」
+    /// 上一轮的档位（判 pin 是否合法时要用它换算合格线）
     regime: Regime,
+    /// 上一轮的合格集与 pct —— pin 命令据此**当场**判定能不能钉，不必等下一轮
+    last_eligible: Vec<i64>,
+    last_pct: HashMap<i64, f64>,
     /// 已下发到 new-api 的 priority（channel_id → priority），幂等用，避免每轮重复 PUT
     applied: HashMap<i64, i64>,
     /// 状态看板共享快照（**只写决策字段**，面板字段由 Panel 循环独占）
@@ -98,6 +102,49 @@ pub struct PinRelease {
     pub pct: f64,
     /// 当时的合格线（正常档=throttle，降级档=exhausted）
     pub limit: f64,
+}
+
+/// 看板（HTTP）→ 控制循环的命令。
+///
+/// **为什么走命令通道而不是给状态加锁**：keys / active / pinned / applied 现在只有
+/// orchestrator 一个写者，无锁、无重入，并发安全性是**显然**的。让 HTTP 直接改这些状态
+/// 会毁掉这个不变量。命令通道把「谁能写」这件事继续锁死在一个地方。
+///
+/// 每条命令带一个 oneshot 回执 ⇒ HTTP 侧能**同步拿到成败**（比如加 key 时智谱的错误原文
+/// 要回显到面板上，而不是让用户去翻日志）。
+#[derive(Debug)]
+pub enum Command {
+    /// 手动钉住某把 key（只在合格集内生效，见 decide）
+    Pin {
+        channel_id: i64,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    /// 取消手动 pin，回到自动选择
+    Unpin {
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+}
+
+/// 命令回执：**主循环在 tick 之后才发出**，于是「HTTP 200 返回」⇔「状态已落地且已发布」。
+pub enum Ack {
+    Unit(oneshot::Sender<Result<(), String>>, Result<(), String>),
+}
+
+impl Ack {
+    /// 命令是否真的改了状态。失败的命令什么也没改 ⇒ 不必再跑一轮 tick
+    /// （tick 会去查智谱，不该被无效命令白白触发）。
+    pub fn changed(&self) -> bool {
+        match self {
+            Ack::Unit(_, r) => r.is_ok(),
+        }
+    }
+    pub fn send(self) {
+        match self {
+            Ack::Unit(tx, r) => {
+                let _ = tx.send(r);
+            }
+        }
+    }
 }
 
 /// 一轮决策的完整结果。
@@ -243,10 +290,61 @@ impl Orchestrator {
             pinned: None,
             last_pin_release: None,
             regime: Regime::Normal,
+            last_eligible: Vec::new(),
+            last_pct: HashMap::new(),
             applied: HashMap::new(),
             snapshot,
             http: reqwest::Client::new(),
         }
+    }
+
+    /// 处理一条看板命令，返回**尚未发出**的回执。
+    ///
+    /// 调用方须：改了状态 → 先跑一轮 tick（priority 秒级下发）→ 再 `ack.send()`。
+    /// 顺序很重要：回执一旦发出，HTTP 就 200 了；若此时 tick 还没跑，前端立刻拉
+    /// `/api/status` 会看到**旧快照**，像是按钮没生效。
+    pub async fn handle(&mut self, cmd: Command) -> Ack {
+        match cmd {
+            Command::Pin { channel_id, reply } => Ack::Unit(reply, self.pin(channel_id)),
+            Command::Unpin { reply } => {
+                if self.pinned.is_some() {
+                    info!("已取消 pin，回到自动选择");
+                }
+                self.pinned = None;
+                self.last_pin_release = None;
+                Ack::Unit(reply, Ok(()))
+            }
+        }
+    }
+
+    /// 钉住某把 key。**只能钉合格集内的** —— pin 是优先级，不是安全豁免：
+    /// 它能覆盖「粘滞 + 挑最低」的选择偏好，但不能把自动逻辑判定为不合格的 key 拉上来用。
+    fn pin(&mut self, id: i64) -> Result<(), String> {
+        let name = self
+            .keys
+            .iter()
+            .find(|k| k.channel_id == id)
+            .map(|k| k.name.clone())
+            .ok_or_else(|| format!("渠道 #{id} 不在管辖的 key 列表里"))?;
+
+        // 判据用**上一轮**的合格集：命令是异步来的，此刻没有更新的证据
+        if !self.last_eligible.contains(&id) {
+            let limit = match self.regime {
+                Regime::Normal => self.cfg.throttle_threshold,
+                Regime::Degraded => self.cfg.exhausted_threshold,
+            };
+            return Err(match self.last_pct.get(&id) {
+                Some(p) => format!(
+                    "{name} 用量 {p}% 已越过合格线 {limit}%，自动逻辑不允许钉住（pin 是优先级，不是安全豁免）"
+                ),
+                None => format!("{name} 本轮用量查询失败，状态未知，暂不能钉住"),
+            });
+        }
+
+        self.pinned = Some(id);
+        self.last_pin_release = None; // 手动重新 pin ⇒ 清掉上一次的「自动解除」提示
+        info!(name = %name, channel_id = id, "已手动钉住 key");
+        Ok(())
     }
 
     /// new-api 健康探测（只入快照，不影响本轮决策）
@@ -317,6 +415,10 @@ impl Orchestrator {
             self.pinned = None;
             self.last_pin_release = Some(rel);
         }
+
+        // 记下本轮判据，供 pin 命令**当场**判合法性（命令是异步来的，不能等下一轮）
+        self.last_eligible = d.eligible.clone();
+        self.last_pct = pct.clone();
 
         if d.regime != self.regime {
             match d.regime {

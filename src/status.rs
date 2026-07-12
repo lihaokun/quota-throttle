@@ -16,12 +16,15 @@
 //! 设计原则：**看板是附属，绝不拖垮主循环**——bind 失败只降级记 error，切换循环照常跑。
 
 use crate::newapi::NewApiClient;
+use crate::orchestrator::Command;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tracing::{debug, error, info};
+use tokio::sync::{mpsc, oneshot};
+use tracing::{debug, error, info, warn};
 
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct KeyStatus {
@@ -230,7 +233,9 @@ struct UsageResponse {
 }
 
 /// 常驻状态服务。bind 失败 → 记 error 并**返回**（降级），主循环不受影响。
-pub async fn serve(addr: String, snap: Shared, api: Arc<NewApiClient>) {
+///
+/// `tx` 是通往控制循环的命令通道（pin / 加 key 等写操作）。
+pub async fn serve(addr: String, snap: Shared, api: Arc<NewApiClient>, tx: mpsc::Sender<Command>) {
     let listener = match TcpListener::bind(&addr).await {
         Ok(l) => l,
         Err(e) => {
@@ -238,14 +243,17 @@ pub async fn serve(addr: String, snap: Shared, api: Arc<NewApiClient>) {
             return;
         }
     };
+    if !addr.starts_with("127.0.0.1") && !addr.starts_with("localhost") {
+        warn!(addr = %addr, "看板绑定在**非回环地址**上：它能改调度状态（后续还会收智谱 key），\
+                             等于把控制面暴露给整个网段。除非你清楚在做什么，否则请改回 127.0.0.1");
+    }
     info!("状态看板已启动 → http://{addr}");
     loop {
         match listener.accept().await {
             Ok((stream, _)) => {
-                let s = snap.clone();
-                let a = api.clone();
+                let (s, a, t) = (snap.clone(), api.clone(), tx.clone());
                 tokio::spawn(async move {
-                    if let Err(e) = handle_conn(stream, s, a).await {
+                    if let Err(e) = handle_conn(stream, s, a, t).await {
                         debug!(error = %e, "看板连接处理失败");
                     }
                 });
@@ -253,6 +261,120 @@ pub async fn serve(addr: String, snap: Shared, api: Arc<NewApiClient>) {
             // accept 出错不退出监听循环
             Err(e) => debug!(error = %e, "accept 失败"),
         }
+    }
+}
+
+/// 解析好的请求。
+struct Req {
+    method: String,
+    path: String,
+    query: String,
+    /// 头名一律小写
+    headers: HashMap<String, String>,
+    body: String,
+}
+
+impl Req {
+    fn header(&self, name: &str) -> Option<&str> {
+        self.headers.get(name).map(|s| s.as_str())
+    }
+}
+
+/// 头 8 KiB / 体 8 KiB 上界：防畸形请求撑爆内存。
+const MAX_HEAD: usize = 8 * 1024;
+const MAX_BODY: usize = 8 * 1024;
+
+/// 读一个完整请求：先读到 `\r\n\r\n`，再按 `Content-Length` 把 body 读满。
+///
+/// ⚠️ 原来的实现是「`read()` 一次 1 KiB 就当整个请求」——对只读 GET 够用，但**带 body 的
+/// POST 会被截断**（TCP 不保证一次 read 拿全）。这是本次必须先修的地基。
+async fn read_request(stream: &mut TcpStream) -> std::io::Result<Result<Req, (&'static str, &'static str)>> {
+    let mut buf: Vec<u8> = Vec::with_capacity(1024);
+    let mut chunk = [0u8; 1024];
+    let head_end = loop {
+        if let Some(p) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+            break p;
+        }
+        if buf.len() > MAX_HEAD {
+            return Ok(Err(("431 Request Header Fields Too Large", "请求头过大")));
+        }
+        let n = stream.read(&mut chunk).await?;
+        if n == 0 {
+            return Ok(Err(("400 Bad Request", "连接提前关闭")));
+        }
+        buf.extend_from_slice(&chunk[..n]);
+    };
+
+    let head = String::from_utf8_lossy(&buf[..head_end]).into_owned();
+    let mut lines = head.lines();
+    let mut start = lines.next().unwrap_or("").split_whitespace();
+    let method = start.next().unwrap_or("").to_string();
+    let target = start.next().unwrap_or("");
+    let (path, query) = target.split_once('?').unwrap_or((target, ""));
+    if method.is_empty() || path.is_empty() {
+        return Ok(Err(("400 Bad Request", "请求行非法")));
+    }
+    let headers: HashMap<String, String> = lines
+        .filter_map(|l| l.split_once(':'))
+        .map(|(k, v)| (k.trim().to_ascii_lowercase(), v.trim().to_string()))
+        .collect();
+
+    let clen: usize = headers
+        .get("content-length")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    if clen > MAX_BODY {
+        return Ok(Err(("413 Payload Too Large", "请求体过大（上限 8 KiB）")));
+    }
+    let mut body = buf[head_end + 4..].to_vec();
+    while body.len() < clen {
+        let n = stream.read(&mut chunk).await?;
+        if n == 0 {
+            break;
+        }
+        body.extend_from_slice(&chunk[..n]);
+    }
+    body.truncate(clen);
+
+    Ok(Ok(Req {
+        method,
+        path: path.to_string(),
+        query: query.to_string(),
+        headers,
+        body: String::from_utf8_lossy(&body).into_owned(),
+    }))
+}
+
+fn err_json(msg: impl AsRef<str>) -> String {
+    serde_json::json!({ "error": msg.as_ref() }).to_string()
+}
+
+/// 把命令投给控制循环并等回执。
+///
+/// - 队列满 → **503 立刻返回**：既不阻塞 HTTP 线程，也不阻塞控制循环。
+/// - 控制循环 10 秒没回 → 504（正常情况下是毫秒级；加 key 要探活智谱，故给足 10 秒）。
+/// - 命令自身失败（如 pin 一把不合格的 key）→ **409 + 原因**，前端直接显示这句话。
+async fn dispatch<T: Serialize>(
+    tx: &mpsc::Sender<Command>,
+    make: impl FnOnce(oneshot::Sender<Result<T, String>>) -> Command,
+    ok_status: &'static str,
+) -> (&'static str, String) {
+    let (rtx, rrx) = oneshot::channel();
+    if tx.try_send(make(rtx)).is_err() {
+        return ("503 Service Unavailable", err_json("控制循环忙，请稍后重试"));
+    }
+    match tokio::time::timeout(Duration::from_secs(10), rrx).await {
+        Ok(Ok(Ok(v))) => {
+            // 无返回值的命令（pin/unpin）序列化成 "null"，前端不好判 ⇒ 统一给 {"ok":true}
+            let mut s = serde_json::to_string(&v).unwrap_or_default();
+            if s == "null" || s.is_empty() {
+                s = r#"{"ok":true}"#.to_string();
+            }
+            (ok_status, s)
+        }
+        Ok(Ok(Err(msg))) => ("409 Conflict", err_json(msg)),
+        Ok(Err(_)) => ("500 Internal Server Error", err_json("控制循环已退出")),
+        Err(_) => ("504 Gateway Timeout", err_json("控制循环超时未响应")),
     }
 }
 
@@ -303,45 +425,96 @@ async fn usage_endpoint(query: &str, api: &NewApiClient) -> (&'static str, Strin
     }
 }
 
+/// 反 CSRF：写操作必须带 `X-QT-Panel` 头。
+///
+/// 看板绑在 127.0.0.1，但那**挡不住浏览器**——用户浏览的任何网页都能朝 127.0.0.1:3001
+/// 发跨域表单 POST。而看板现在能改调度状态（往后还要收智谱 key）。
+/// 自定义头是最省事的门槛：跨域请求带自定义头会先触发 preflight，而我们不回任何 CORS 头，
+/// 浏览器就把它拦下了。同源的看板自己发请求则不受影响。
+const CSRF_HEADER: &str = "x-qt-panel";
+
 async fn handle_conn(
     mut stream: TcpStream,
     snap: Shared,
     api: Arc<NewApiClient>,
+    tx: mpsc::Sender<Command>,
 ) -> std::io::Result<()> {
-    // 上界 1 KiB：请求行 + 头足够，防畸形请求撑爆内存
-    let mut buf = [0u8; 1024];
-    let n = stream.read(&mut buf).await?;
-    let req = String::from_utf8_lossy(&buf[..n]);
-    let target = req
-        .lines()
-        .next()
-        .and_then(|l| l.split_whitespace().nth(1))
-        .unwrap_or("");
-    let (path, query) = target.split_once('?').unwrap_or((target, ""));
+    let req = match read_request(&mut stream).await? {
+        Ok(r) => r,
+        Err((status, msg)) => return respond(&mut stream, status, "text/plain; charset=utf-8", msg).await,
+    };
 
-    let (status, ctype, body) = match path {
-        "/api/status" => {
+    // 写操作一律先过 CSRF 门槛
+    let writing = req.method != "GET";
+    if writing && req.header(CSRF_HEADER).is_none() {
+        let body = err_json("缺少 X-QT-Panel 头（防 CSRF：拒绝来自其它网页的跨域写请求）");
+        return respond(&mut stream, "403 Forbidden", JSON, &body).await;
+    }
+
+    let (status, ctype, body) = match (req.method.as_str(), req.path.as_str()) {
+        ("GET", "/api/status") => {
             let json =
                 serde_json::to_string(&read_snap(&snap)).unwrap_or_else(|_| "{}".to_string());
-            ("200 OK", "application/json; charset=utf-8", json)
+            ("200 OK", JSON, json)
         }
-        "/api/usage" => {
-            let (st, body) = usage_endpoint(query, &api).await;
-            (st, "application/json; charset=utf-8", body)
+        ("GET", "/api/usage") => {
+            let (st, body) = usage_endpoint(&req.query, &api).await;
+            (st, JSON, body)
         }
-        "/" | "/index.html" => ("200 OK", "text/html; charset=utf-8", render_html()),
-        "" => (
-            "400 Bad Request",
-            "text/plain; charset=utf-8",
-            "bad request".to_string(),
-        ),
-        _ => (
+        ("GET", "/") | ("GET", "/index.html") => {
+            ("200 OK", "text/html; charset=utf-8", render_html())
+        }
+
+        // —— 写操作 ——
+        ("POST", "/api/pin") => {
+            let id = serde_json::from_str::<serde_json::Value>(&req.body)
+                .ok()
+                .and_then(|v| v.get("channel_id")?.as_i64());
+            match id {
+                Some(channel_id) => {
+                    let (st, b) = dispatch(
+                        &tx,
+                        |reply| Command::Pin { channel_id, reply },
+                        "200 OK",
+                    )
+                    .await;
+                    (st, JSON, b)
+                }
+                None => (
+                    "400 Bad Request",
+                    JSON,
+                    err_json("请求体需要 {\"channel_id\": <整数>}"),
+                ),
+            }
+        }
+        ("DELETE", "/api/pin") => {
+            let (st, b) = dispatch(&tx, |reply| Command::Unpin { reply }, "200 OK").await;
+            (st, JSON, b)
+        }
+
+        ("GET", _) => (
             "404 Not Found",
             "text/plain; charset=utf-8",
             "not found".to_string(),
         ),
+        _ => (
+            "405 Method Not Allowed",
+            JSON,
+            err_json("不支持的方法"),
+        ),
     };
 
+    respond(&mut stream, status, ctype, &body).await
+}
+
+const JSON: &str = "application/json; charset=utf-8";
+
+async fn respond(
+    stream: &mut TcpStream,
+    status: &str,
+    ctype: &str,
+    body: &str,
+) -> std::io::Result<()> {
     let resp = format!(
         "HTTP/1.1 {status}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\n\
          Connection: close\r\nCache-Control: no-store\r\n\r\n{body}",

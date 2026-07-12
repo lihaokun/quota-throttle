@@ -185,6 +185,10 @@ async fn run_loop(cfg: Config, api: NewApiClient, keys: Vec<ResolvedKey>) -> Res
 
     let api = std::sync::Arc::new(api);
 
+    // 看板 → 控制循环的命令通道（pin 等写操作）。有界(8)：满了 HTTP 侧直接 503，
+    // 既不阻塞看板也不阻塞控制循环。
+    let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::channel(8);
+
     // 状态看板：独立 task，bind 失败只降级（切换循环照常跑）。
     // 持有 api 是为了 /api/usage 能按需查任意区间的用量（不进 5 秒快照）。
     let snapshot: status::Shared = Default::default();
@@ -193,6 +197,7 @@ async fn run_loop(cfg: Config, api: NewApiClient, keys: Vec<ResolvedKey>) -> Res
             cfg.status_addr.clone(),
             snapshot.clone(),
             api.clone(),
+            cmd_tx,
         ));
     }
 
@@ -212,6 +217,13 @@ async fn run_loop(cfg: Config, api: NewApiClient, keys: Vec<ResolvedKey>) -> Res
     loop {
         tokio::select! {
             _ = ticker.tick() => orch.tick().await,
+            // 看板命令：先落地（tick 下发 priority + 发布快照），**再回执**。
+            // 于是「HTTP 200 返回」⇔「/api/status 已能看到这次改动」，前端不会读到旧快照。
+            Some(cmd) = cmd_rx.recv() => {
+                let ack = orch.handle(cmd).await;
+                if ack.changed() { orch.tick().await; }
+                ack.send();
+            }
             _ = tokio::signal::ctrl_c() => {
                 info!("收到中断信号，退出（托管的 new-api 仍在跑，用 down 停）");
                 break;
