@@ -9,8 +9,8 @@ pub struct Config {
     /// 轮询间隔（秒）
     pub poll_interval_secs: u64,
 
-    /// 活动 key 的最大窗口用量达到这个百分比 → 切换到下一把有额度的 key。
-    /// 同时也是「有额度」判定线：pct < throttle 才算还能用。
+    /// **预防线**：活动 key 的最大窗口用量达到这个百分比 → 在撞墙前切到下一把。
+    /// 正常情况下的「还能用」判定线：pct < throttle 才会被选作活动 key。
     #[serde(default = "default_throttle")]
     pub throttle_threshold: f64,
 
@@ -18,6 +18,15 @@ pub struct Config {
     /// 让新活动 key 能撑更久 → 切换更少 → 缓存局部性更好）。
     #[serde(default = "default_restore")]
     pub restore_threshold: f64,
+
+    /// **真·用尽线**：这把 key 真的没余量了。与 throttle 是两条不同的线——
+    /// throttle(95%) 是「还有余量但该提前换了」，exhausted(100%) 是「物理上没了」。
+    /// 全部 key 都过了预防线时（降级档），判定放宽到这条线：只要 pct < exhausted
+    /// 就还能用，避免明知有余量还去撞 429。
+    /// ⚠️ 智谱的 TOKENS_LIMIT 只返回**整数** percentage（无 usage/remaining），
+    /// 所以这里的分辨率就是 1%，取 100 意味着「榨到智谱自己报 100 为止」。
+    #[serde(default = "default_exhausted")]
+    pub exhausted_threshold: f64,
 
     /// 空跑模式：只打印决策，不真的调用 new-api。先用它验证逻辑。
     #[serde(default)]
@@ -70,6 +79,9 @@ fn default_throttle() -> f64 {
 }
 fn default_restore() -> f64 {
     90.0
+}
+fn default_exhausted() -> f64 {
+    100.0
 }
 fn default_windows() -> Vec<Window> {
     vec![Window::FiveHour, Window::Weekly]
@@ -234,6 +246,23 @@ impl Config {
     pub fn load(path: impl AsRef<Path>) -> anyhow::Result<Self> {
         let text = std::fs::read_to_string(path)?;
         let cfg: Config = toml::from_str(&text)?;
+        cfg.validate()?;
         Ok(cfg)
+    }
+
+    /// 阈值必须满足 0 < restore ≤ throttle ≤ exhausted ≤ 100。
+    /// 配错阈值是**静默灾难**（例如 throttle > exhausted 会让合格集恒空、永不切换），
+    /// 所以启动就失败，别等到线上才发现。
+    fn validate(&self) -> anyhow::Result<()> {
+        let (r, t, e) = (
+            self.restore_threshold,
+            self.throttle_threshold,
+            self.exhausted_threshold,
+        );
+        anyhow::ensure!(
+            r > 0.0 && r <= t && t <= e && e <= 100.0,
+            "阈值非法：要求 0 < restore({r}) ≤ throttle({t}) ≤ exhausted({e}) ≤ 100"
+        );
+        Ok(())
     }
 }

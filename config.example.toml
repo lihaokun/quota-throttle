@@ -8,10 +8,16 @@
 
 poll_interval_secs = 60      # 轮询智谱用量的间隔（秒）
 
-# 活动 key 用量达到这个百分比 → 切换到下一把有额度的 key；也是「有额度」判定线。
+# 【预防线】活动 key 用量达到这个百分比 → 在撞墙前切到下一把。
 throttle_threshold = 95.0
 # 挑「新活动 key」时要求用量低于这个值（比 throttle 低，多留余量 → 切换更少 → 缓存更稳）。
 restore_threshold = 90.0
+# 【真·用尽线】物理上没余量了。与预防线是两条不同的线：
+#   · 正常情况下只在 pct < throttle 的 key 里选（还有 5% 余量就该提前换，护缓存）。
+#   · 但当**全部 key 都越过预防线**时，判定放宽到这条线——只要 pct < exhausted 就还能用。
+#     否则会出现「明知另一把 96% 还有余量，却继续钉着已经 100% 的 key 撞 429」。
+# ⚠️ 智谱只返回整数 percentage（无 usage/remaining），所以这里的分辨率就是 1%。
+exhausted_threshold = 100.0
 
 dry_run = true               # 先 true 空跑验证日志；确认无误再改 false 真正生效
 watch_windows = ["five_hour", "weekly"]   # 同时盯 5 小时和每周窗口，取最大使用率

@@ -110,15 +110,34 @@ pub struct ModelUsage {
     pub count: i64,
 }
 
+/// pin 因越出合格线被自动解除的事件（供看板提示）。
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct PinReleaseInfo {
+    pub channel_id: i64,
+    pub pct: f64,
+    /// 当时的合格线（正常档=throttle，降级档=exhausted）
+    pub limit: f64,
+}
+
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct StatusSnapshot {
     pub updated_at: i64,
     pub dry_run: bool,
+    /// 预防线：还有余量就提前换走
     pub throttle_threshold: f64,
     pub restore_threshold: f64,
+    /// 真·用尽线：物理上没余量了。降级档下的合格线
+    pub exhausted_threshold: f64,
     pub new_api_base: String,
     pub new_api_healthy: bool,
     pub active_channel_id: Option<i64>,
+    /// 用户手动 pin 的渠道（只在合格集内生效）
+    pub pinned_channel_id: Option<i64>,
+    /// "normal" | "degraded"
+    pub regime: String,
+    /// 合格集：自动逻辑允许把流量放上去的渠道。前端据此决定 pin 按钮灰不灰
+    pub eligible: Vec<i64>,
+    pub last_pin_release: Option<PinReleaseInfo>,
     pub keys: Vec<KeyStatus>,
     /// 客户端应连的地址（= new_api_base + /v1）
     pub client_endpoint: String,

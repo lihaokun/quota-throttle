@@ -5,16 +5,28 @@
 //!
 //! 路由杠杆用 priority（不是 weight）：new-api 优先路由最高 priority 的渠道。
 //!   - active   (最高档)：所有正常流量都走它。
-//!   - standby  (中档)  ：有额度、平时不碰，只作 429 反应式兜底目标。
-//!   - exhausted(最低档)：逼近/超阈值，最后手段。
+//!   - standby  (中档)  ：合格但非活动，平时不碰，只作 429 反应式兜底目标。
+//!   - exhausted(最低档)：不合格，最后手段。
 //! 用 priority 而非 weight=0，是为了在活动 key 撞墙时，new-api 仍能沿 priority 阶梯
 //! 自动跌到还有额度的 standby 渠道——weight=0 会把渠道从选择集里抹掉，破坏这层兜底。
 //!
-//! 切换策略（贴合缓存局部性：能不换就不换）：
-//!   - 当前活动 key 只要 pct < throttle 就继续钉住。
-//!   - 活动 key ≥ throttle 才切走，在「有额度」的其余 key 里挑 pct 最低（剩余最多）的当新活动。
-//!   - 本轮查询失败的 key 不参与决策，也不去动它的 priority；活动 key 查询失败时保持不变，
-//!     避免一次瞬时抖动就切换、白白丢缓存。
+//! ## 两条线，不是一条
+//!
+//! throttle(95%) 是**预防线**——还有余量，但该提前换走了（护缓存 + 别撞墙）。
+//! exhausted(100%) 是**真·用尽线**——物理上没了。
+//! 二者据此分出两档「合格集」（= 自动逻辑允许把流量放上去的 key）：
+//!   - **正常档**：有 key < throttle ⇒ 只在这些宽裕的里选。
+//!   - **降级档**：全员 ≥ throttle ⇒ 放宽到「只要 < exhausted 就能用」。
+//!     否则会出现「明知 96% 那把还有余量，却继续钉着已经 100% 的活动 key 撞 429」。
+//!
+//! ## 选择策略（贴合缓存局部性：能不换就不换）
+//!
+//!   - **pin**（用户从看板手动指定）只在合格集内生效：它是**优先级**，不是安全豁免——
+//!     能覆盖「粘滞 + 挑最低」的选择偏好，但**不能把不合格的 key 拉上来用**，越线即自动解除。
+//!   - **粘滞**：现任只要还在合格集里就不换（两档皆然；降级档下就是「榨干到 100% 再流转」）。
+//!   - **挑选**：只在合格集内挑 pct 最低的（正常档优先要求 < restore，多留余量 → 切换更少）。
+//!   - **抖动保护**：本轮查询失败的 key 不进合格集（不会被主动选中），也不动它的 priority；
+//!     但若它恰好是现任或被 pin 的，则保持不变——一次瞬时失败不该丢缓存、也不该抖掉 pin。
 
 use crate::config::{Config, ResolvedKey};
 use crate::newapi::NewApiClient;
@@ -33,6 +45,12 @@ pub struct Orchestrator {
     keys: Vec<ResolvedKey>,
     /// 当前钉住的活动渠道 id
     active: Option<i64>,
+    /// 用户从看板手动 pin 的渠道（只在合格集内生效，见 decide）
+    pinned: Option<i64>,
+    /// 上一次 pin 被自动解除的事件（供看板提示）
+    last_pin_release: Option<PinRelease>,
+    /// 上一轮的档位，仅用于「档位变化时打一行日志」
+    regime: Regime,
     /// 已下发到 new-api 的 priority（channel_id → priority），幂等用，避免每轮重复 PUT
     applied: HashMap<i64, i64>,
     /// 状态看板共享快照（**只写决策字段**，面板字段由 Panel 循环独占）
@@ -54,6 +72,160 @@ fn max_watch_pct(cfg: &Config, status: &QuotaStatus) -> f64 {
     max_pct
 }
 
+/// 合格集是在哪一档算出来的。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Regime {
+    /// 还有 key 低于预防线 ⇒ 只在这些宽裕的 key 里选
+    Normal,
+    /// 全员都过了预防线 ⇒ 放宽到「只要还有余量（< exhausted）就能用」
+    Degraded,
+}
+
+impl Regime {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Regime::Normal => "normal",
+            Regime::Degraded => "degraded",
+        }
+    }
+}
+
+/// pin 因越出合格线被**自动解除**的事件（供看板提示）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PinRelease {
+    pub channel_id: i64,
+    /// 解除时该 key 的 pct
+    pub pct: f64,
+    /// 当时的合格线（正常档=throttle，降级档=exhausted）
+    pub limit: f64,
+}
+
+/// 一轮决策的完整结果。
+#[derive(Debug, Clone, PartialEq)]
+pub struct Decision {
+    /// 本轮活动 key。`None` = 无人合格 ⇒ 调用方**保留原活动**（不清空）
+    pub active: Option<i64>,
+    /// 合格集：自动逻辑允许把流量放上去的 key
+    pub eligible: Vec<i64>,
+    pub regime: Regime,
+    /// 非空则调用方须把 `pinned` 置 None
+    pub pin_release: Option<PinRelease>,
+}
+
+/// 算合格集 —— **自动逻辑的地盘，pin 无权染指**。
+///
+/// - 已知集 = 本轮成功查到 pct 的 key（查询失败的不在其中，状态未知）
+/// - 正常集 = 已知集里 pct < throttle 的；非空 ⇒ 正常档，合格集 = 正常集
+/// - 否则   ⇒ 降级档，合格集 = 已知集里 pct < exhausted 的（还有余量就能用）
+///
+/// 全部查询失败（已知集为空）⇒ 返回空集 + 正常档：没有任何证据表明降级了。
+fn eligible_set(
+    ids: &[i64],
+    pct: &HashMap<i64, f64>,
+    throttle: f64,
+    exhausted: f64,
+) -> (Vec<i64>, Regime) {
+    let under = |limit: f64| -> Vec<i64> {
+        ids.iter()
+            .copied()
+            .filter(|id| pct.get(id).is_some_and(|p| *p < limit))
+            .collect()
+    };
+    if !ids.iter().any(|id| pct.contains_key(id)) {
+        return (Vec::new(), Regime::Normal);
+    }
+    let normal = under(throttle);
+    if !normal.is_empty() {
+        return (normal, Regime::Normal);
+    }
+    (under(exhausted), Regime::Degraded)
+}
+
+/// 选活动 key。**纯函数**（分支多、又是安全核心，必须可单测）。
+///
+/// 三层，从强到弱：
+///   1. pin —— 只在合格集内生效。pin 是**优先级**，不是安全豁免：它能覆盖「粘滞 + 挑最低」
+///      这个选择偏好，但**不能把自动逻辑判定为不合格的 key 拉上来用**。越线即自动解除。
+///   2. 粘滞 —— 现任只要还合格就不换（护 prompt 缓存：能不换就不换）。
+///   3. 挑选 —— 只在合格集内挑 pct 最低的（正常档优先要求 < restore，多留余量）。
+///
+/// **抖动保护**：本轮查询失败的 key 不进合格集（不会被主动选中），但若它恰好是 current
+/// 或 pinned，则**保持不变** —— 一次瞬时失败不该丢缓存，也不该抖掉用户的 pin。
+/// 反过来说，解除 pin 必须基于「查到了 **且** 确实超线」这个正面证据。
+fn decide(
+    ids: &[i64],
+    pct: &HashMap<i64, f64>,
+    current: Option<i64>,
+    pinned: Option<i64>,
+    throttle: f64,
+    restore: f64,
+    exhausted: f64,
+) -> Decision {
+    let (eligible, regime) = eligible_set(ids, pct, throttle, exhausted);
+    let mut pin_release = None;
+    let done = |active, eligible, pin_release| Decision {
+        active,
+        eligible,
+        regime,
+        pin_release,
+    };
+
+    // 1. pin（只在合格集内）
+    if let Some(p) = pinned.filter(|p| ids.contains(p)) {
+        match pct.get(&p) {
+            // 查询失败 → 保持 pin（抖动保护）
+            None => return done(Some(p), eligible, None),
+            Some(_) if eligible.contains(&p) => return done(Some(p), eligible, None),
+            // 越线 → 解除 pin，落到自动逻辑
+            Some(&pp) => {
+                let limit = match regime {
+                    Regime::Normal => throttle,
+                    Regime::Degraded => exhausted,
+                };
+                pin_release = Some(PinRelease {
+                    channel_id: p,
+                    pct: pp,
+                    limit,
+                });
+            }
+        }
+    }
+
+    // 2. 粘滞
+    if let Some(c) = current.filter(|c| ids.contains(c)) {
+        match pct.get(&c) {
+            // 查询失败 → 保持（抖动保护）
+            None => return done(Some(c), eligible, pin_release),
+            Some(_) if eligible.contains(&c) => return done(Some(c), eligible, pin_release),
+            Some(_) => {}
+        }
+    }
+
+    // 3. 在合格集内挑 pct 最低
+    let lowest = |cands: &[i64]| -> Option<i64> {
+        cands
+            .iter()
+            .copied()
+            .min_by(|a, b| pct[a].total_cmp(&pct[b]))
+    };
+    let active = match regime {
+        Regime::Normal => {
+            // 优先挑余量更足的（< restore），让新活动 key 撑更久 → 切换更少
+            let roomy: Vec<i64> = eligible
+                .iter()
+                .copied()
+                .filter(|id| pct[id] < restore)
+                .collect();
+            lowest(&roomy).or_else(|| lowest(&eligible))
+        }
+        // 降级档全员已 ≥ throttle，restore 在这一档没有意义
+        Regime::Degraded => lowest(&eligible),
+    };
+
+    // 4. active == None ⇒ 合格集为空（全员 ≥ exhausted 或全查询失败）⇒ 调用方保留原活动
+    done(active, eligible, pin_release)
+}
+
 impl Orchestrator {
     pub fn new(
         cfg: Config,
@@ -68,6 +240,9 @@ impl Orchestrator {
             api,
             keys,
             active: None,
+            pinned: None,
+            last_pin_release: None,
+            regime: Regime::Normal,
             applied: HashMap::new(),
             snapshot,
             http: reqwest::Client::new(),
@@ -111,53 +286,73 @@ impl Orchestrator {
 
         let throttle = self.cfg.throttle_threshold;
         let restore = self.cfg.restore_threshold;
+        let exhausted = self.cfg.exhausted_threshold;
 
-        // 2. 选出活动 key（sticky）
-        //    - 当前活动：已知 pct<throttle 才留；本轮没查到（瞬时失败）也留，不因抖动切换。
-        let keep = self.active.filter(|id| match pct.get(id) {
-            Some(p) => *p < throttle,
-            None => true,
-        });
-        //    - 需要换：在有额度的 key 里挑 pct 最低的。优先要求 pct<restore（多留余量）；
-        //      若没有那么宽裕的，退而取 pct<throttle 里最低的。
-        let active = keep.or_else(|| {
-            let pick = |limit: f64| -> Option<i64> {
-                keys.iter()
-                    .map(|k| k.channel_id)
-                    .filter(|id| pct.get(id).map_or(false, |p| *p < limit))
-                    .min_by(|a, b| pct[a].total_cmp(&pct[b]))
-            };
-            pick(restore).or_else(|| pick(throttle))
-        });
+        // 2. 选出活动 key（合格集 + pin + 粘滞，见 decide 的文档）
+        let ids: Vec<i64> = keys.iter().map(|k| k.channel_id).collect();
+        let name_of = |id: i64| -> &str {
+            keys.iter()
+                .find(|k| k.channel_id == id)
+                .map_or("?", |k| k.name.as_str())
+        };
+        let d = decide(
+            &ids,
+            &pct,
+            self.active,
+            self.pinned,
+            throttle,
+            restore,
+            exhausted,
+        );
 
-        if active != self.active {
-            match (self.active, active) {
-                (_, Some(id)) => {
-                    let name = keys
-                        .iter()
-                        .find(|k| k.channel_id == id)
-                        .map(|k| k.name.as_str())
-                        .unwrap_or("?");
-                    info!(name, channel_id = id, "切换活动 key");
-                }
+        // pin 越线 → 自动解除（pin 不得覆盖自动逻辑）
+        if let Some(rel) = d.pin_release {
+            warn!(
+                name = name_of(rel.channel_id),
+                channel_id = rel.channel_id,
+                pct = rel.pct,
+                limit = rel.limit,
+                "pin 的 key 已越出合格线，自动解除 pin，回到自动选择"
+            );
+            self.pinned = None;
+            self.last_pin_release = Some(rel);
+        }
+
+        if d.regime != self.regime {
+            match d.regime {
+                Regime::Degraded => warn!(
+                    throttle,
+                    exhausted, "进入降级档：全部 key 均已越过预防线，将榨干活动 key 至用尽再流转"
+                ),
+                Regime::Normal => info!("回到正常档：已有 key 低于预防线"),
+            }
+            self.regime = d.regime;
+        }
+
+        if d.active != self.active {
+            match (self.active, d.active) {
+                (_, Some(id)) => info!(name = name_of(id), channel_id = id, "切换活动 key"),
                 (Some(prev), None) => {
                     warn!(prev, "所有 key 都无额度，保留原活动并交给 new-api 429 兜底")
                 }
                 (None, None) => warn!("暂无任何可用 key"),
             }
             // 全无额度时不要把 active 清空（清空会误把原活动降到 exhausted），保留原值。
-            if active.is_some() {
-                self.active = active;
+            if d.active.is_some() {
+                self.active = d.active;
             }
         }
         let active = self.active;
 
-        // 3. 计算每个渠道的目标 priority，仅在与已下发值不同时才 PUT（幂等）
+        // 3. 计算每个渠道的目标 priority，仅在与已下发值不同时才 PUT（幂等）。
+        //    单一规则（正常档下与旧的三分支逐字节等价；降级档下自动变准——**还有余量**的
+        //    key 拿 standby 而非 exhausted，于是万一活动 key 仍撞 429，new-api 的 priority
+        //    阶梯会优先跌到还有余量的那把，而不是随机跌到一把已经死透的）。
         for k in &keys {
             let id = k.channel_id;
             let target = if Some(id) == active {
                 self.cfg.priority_active
-            } else if pct.get(&id).map_or(false, |p| *p < throttle) {
+            } else if d.eligible.contains(&id) {
                 self.cfg.priority_standby
             } else if pct.contains_key(&id) {
                 self.cfg.priority_exhausted
@@ -200,9 +395,10 @@ impl Orchestrator {
                 let id = k.channel_id;
                 let w = windows.get(&id);
                 let max = pct.get(&id).copied();
+                // 档位与 priority 下发规则同源（合格集），两者永不打架
                 let tier = if Some(id) == active {
                     "active"
-                } else if max.is_some_and(|p| p < throttle) {
+                } else if d.eligible.contains(&id) {
                     "standby"
                 } else if max.is_some() {
                     "exhausted"
@@ -230,9 +426,18 @@ impl Orchestrator {
             s.dry_run = self.cfg.dry_run;
             s.throttle_threshold = throttle;
             s.restore_threshold = restore;
+            s.exhausted_threshold = exhausted;
             s.new_api_base = self.cfg.new_api.base_url.clone();
             s.new_api_healthy = healthy;
             s.active_channel_id = active;
+            s.pinned_channel_id = self.pinned;
+            s.regime = d.regime.as_str().to_string();
+            s.eligible = d.eligible.clone();
+            s.last_pin_release = self.last_pin_release.map(|r| status::PinReleaseInfo {
+                channel_id: r.channel_id,
+                pct: r.pct,
+                limit: r.limit,
+            });
             s.keys = key_statuses;
             s.client_endpoint = client_endpoint;
         });
@@ -342,5 +547,182 @@ impl Panel {
             s.hourly = hourly;
             s.model_usage = model_usage;
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const THROTTLE: f64 = 95.0;
+    const RESTORE: f64 = 90.0;
+    const EXHAUSTED: f64 = 100.0;
+
+    /// pct 列表 → (ids, map)。`None` 表示该 key 本轮**查询失败**（状态未知）。
+    fn setup(pcts: &[(i64, Option<f64>)]) -> (Vec<i64>, HashMap<i64, f64>) {
+        let ids = pcts.iter().map(|(id, _)| *id).collect();
+        let map = pcts
+            .iter()
+            .filter_map(|(id, p)| p.map(|p| (*id, p)))
+            .collect();
+        (ids, map)
+    }
+
+    fn decide_with(
+        pcts: &[(i64, Option<f64>)],
+        current: Option<i64>,
+        pinned: Option<i64>,
+    ) -> Decision {
+        let (ids, pct) = setup(pcts);
+        decide(
+            &ids, &pct, current, pinned, THROTTLE, RESTORE, EXHAUSTED,
+        )
+    }
+
+    // ——— 正常档：与改造前的行为必须逐条等价（防回归）———
+
+    #[test]
+    fn 正常档_粘滞_现任未越预防线就不换() {
+        // 现任 94%（快到线了但没过），另一把才 10% —— 依然不换，护 prompt 缓存
+        let d = decide_with(&[(1, Some(94.0)), (2, Some(10.0))], Some(1), None);
+        assert_eq!(d.active, Some(1));
+        assert_eq!(d.regime, Regime::Normal);
+    }
+
+    #[test]
+    fn 正常档_现任越线_换到余量最足的() {
+        let d = decide_with(
+            &[(1, Some(95.0)), (2, Some(60.0)), (3, Some(30.0))],
+            Some(1),
+            None,
+        );
+        assert_eq!(d.active, Some(3), "该挑 pct 最低的");
+        assert!(!d.eligible.contains(&1), "越线的不该进合格集");
+    }
+
+    #[test]
+    fn 正常档_没有低于restore的_退而取低于throttle里最低的() {
+        // 都在 90~95 之间：没有「宽裕」的候选，但它们仍然合格
+        let d = decide_with(&[(1, Some(96.0)), (2, Some(93.0)), (3, Some(91.0))], Some(1), None);
+        assert_eq!(d.active, Some(3));
+        assert_eq!(d.regime, Regime::Normal, "只要有人 < throttle 就还是正常档");
+    }
+
+    #[test]
+    fn 正常档_首次选择_无现任() {
+        let d = decide_with(&[(1, Some(60.0)), (2, Some(30.0))], None, None);
+        assert_eq!(d.active, Some(2));
+    }
+
+    // ——— 降级档：本次要修的漏洞 ———
+
+    #[test]
+    fn 降级档_全员越预防线但现任还有余量_继续榨干不换() {
+        // 用户提的场景的前半段：全员 >95%，现任 97% 还有余量 → 不换（护缓存）
+        let d = decide_with(&[(1, Some(97.0)), (2, Some(96.0))], Some(1), None);
+        assert_eq!(d.regime, Regime::Degraded);
+        assert_eq!(d.active, Some(1), "降级档同样粘滞：能不换就不换");
+        assert_eq!(d.eligible, vec![1, 2], "有余量的都合格");
+    }
+
+    #[test]
+    fn 降级档_现任真用尽_流转到还有余量的() {
+        // 用户提的场景：全员 >95%，现任到了 100% → 必须流转到 96% 那把，而不是继续钉着死 key
+        let d = decide_with(&[(1, Some(100.0)), (2, Some(96.0)), (3, Some(98.0))], Some(1), None);
+        assert_eq!(d.regime, Regime::Degraded);
+        assert_eq!(d.active, Some(2), "流转到还有余量里 pct 最低的");
+        assert!(!d.eligible.contains(&1), "100% 的不合格");
+    }
+
+    #[test]
+    fn 全员真用尽_保留原活动交给429兜底() {
+        let d = decide_with(&[(1, Some(100.0)), (2, Some(100.0))], Some(1), None);
+        assert_eq!(d.active, None, "None ⇒ 调用方保留原活动，不清空");
+        assert!(d.eligible.is_empty());
+    }
+
+    #[test]
+    fn 有key低于预防线就该回到正常档() {
+        let d = decide_with(&[(1, Some(99.0)), (2, Some(50.0))], Some(1), None);
+        assert_eq!(d.regime, Regime::Normal);
+        assert_eq!(d.active, Some(2), "现任 99% 已越预防线 → 换到 50% 那把");
+    }
+
+    // ——— 抖动保护 ———
+
+    #[test]
+    fn 现任查询失败_保持不变() {
+        let d = decide_with(&[(1, None), (2, Some(10.0))], Some(1), None);
+        assert_eq!(d.active, Some(1), "一次瞬时失败不该丢缓存");
+        assert!(!d.eligible.contains(&1), "但它不进合格集（状态未知）");
+    }
+
+    #[test]
+    fn 全部查询失败_不算降级档() {
+        let d = decide_with(&[(1, None), (2, None)], Some(1), None);
+        assert_eq!(d.regime, Regime::Normal, "没有任何证据表明降级了");
+        assert_eq!(d.active, Some(1));
+    }
+
+    // ——— pin：合格集内的偏好，不能覆盖自动逻辑 ———
+
+    #[test]
+    fn pin_覆盖挑最低的偏好() {
+        // 自动逻辑本会选 3（最低），但用户 pin 了 2 → 听用户的
+        let d = decide_with(&[(1, Some(96.0)), (2, Some(60.0)), (3, Some(30.0))], Some(1), Some(2));
+        assert_eq!(d.active, Some(2));
+        assert_eq!(d.pin_release, None);
+    }
+
+    #[test]
+    fn pin_覆盖粘滞() {
+        // 现任 1 还合格（粘滞本会留它），但用户 pin 了 2
+        let d = decide_with(&[(1, Some(50.0)), (2, Some(60.0))], Some(1), Some(2));
+        assert_eq!(d.active, Some(2));
+    }
+
+    #[test]
+    fn pin_不能把不合格的key拉上来用() {
+        // 正常档下 pin 一把 96% 的 → 不合格 → 自动解除，回到自动选择
+        let d = decide_with(&[(1, Some(50.0)), (2, Some(96.0))], Some(1), Some(2));
+        assert_eq!(
+            d.pin_release,
+            Some(PinRelease { channel_id: 2, pct: 96.0, limit: THROTTLE })
+        );
+        assert_eq!(d.active, Some(1), "回到自动逻辑（粘滞留现任）");
+    }
+
+    #[test]
+    fn pin_在降级档下的合格线是exhausted而非throttle() {
+        // 全员 >95%：96% 的 key 在降级档里是**合格**的 → pin 得以保持
+        let d = decide_with(&[(1, Some(97.0)), (2, Some(96.0))], Some(1), Some(2));
+        assert_eq!(d.regime, Regime::Degraded);
+        assert_eq!(d.active, Some(2), "降级档下 96% 合格，pin 生效");
+        assert_eq!(d.pin_release, None);
+    }
+
+    #[test]
+    fn pin_的key真用尽_自动解除() {
+        let d = decide_with(&[(1, Some(96.0)), (2, Some(100.0))], Some(1), Some(2));
+        assert_eq!(
+            d.pin_release,
+            Some(PinRelease { channel_id: 2, pct: 100.0, limit: EXHAUSTED })
+        );
+        assert_eq!(d.active, Some(1));
+    }
+
+    #[test]
+    fn pin_的key查询失败_保持pin不解除() {
+        // 解除 pin 必须基于「查到了且确实超线」的正面证据，不能被一次抖动抖掉
+        let d = decide_with(&[(1, Some(50.0)), (2, None)], Some(1), Some(2));
+        assert_eq!(d.active, Some(2));
+        assert_eq!(d.pin_release, None);
+    }
+
+    #[test]
+    fn pin_指向已被删除的key_忽略() {
+        let d = decide_with(&[(1, Some(50.0))], Some(1), Some(99));
+        assert_eq!(d.active, Some(1));
+        assert_eq!(d.pin_release, None, "不该为不存在的 key 报解除事件");
     }
 }
