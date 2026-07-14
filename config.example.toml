@@ -22,6 +22,27 @@ exhausted_threshold = 100.0
 dry_run = true               # 先 true 空跑验证日志；确认无误再改 false 真正生效
 watch_windows = ["five_hour", "weekly"]   # 同时盯 5 小时和每周窗口，取最大使用率
 
+# 状态看板：浏览器打开 http://127.0.0.1:3001 看每把 key 的 5h/周 用量、档位、当前活动 key，
+# 还能固定活动 key、加/删 key。同地址下 /api/status 是 JSON 接口（外部消费者读它）。
+# 留空则不启用看板。
+# ⚠️ 看板能改调度状态、还收智谱 key —— **只绑回环地址**。绑 0.0.0.0 等于把控制面暴露给整个网段。
+status_addr = "127.0.0.1:3001"
+
+# 看板**面板数据**（渠道实况 / rpm/tpm / 请求流水 / 近 24h 曲线）的刷新间隔（秒）。
+# 与智谱用量轮询 poll_interval_secs **分离**：new-api 是本地服务（毫秒级纯读）可以高频；
+# 智谱是外部 API，该低频。
+panel_interval_secs = 5
+
+# 三档 priority（一般不用改）。new-api 优先路由最高 priority 的渠道：
+# active 独占最高档吃走所有正常流量；standby 作 429 兜底；exhausted 是最后手段。
+priority_active = 100
+priority_standby = 10
+priority_exhausted = 0
+
+# ⚠️ 以下都是「表」（[xxx] 开头）。TOML 规则：表头一旦出现，后面所有裸 key = value 都归它，
+#    直到下一个表头。所以**顶层配置项必须全部写在这行以上**，写到下面会被静默吞进某个表里
+#    （程序不报错，只是那项走默认值——最阴的那类 bug，我踩过）。
+
 # ——— 智谱高峰时段（只在看板上显示，不参与调度决策）———
 # 这不是限额，是**扣减系数**：同一个请求在高峰期烧掉的额度更多。
 # 依据（2026-07 官方文档 docs.bigmodel.cn/cn/coding-plan/faq，已交叉验证）：
@@ -31,6 +52,7 @@ watch_windows = ["five_hour", "weekly"]   # 同时盯 5 小时和每周窗口，
 #   · GLM-4.7 等普通模型：1 倍（不必列出）
 # ⚠️ 智谱没有任何接口能查「现在是不是高峰」，只能按时钟算。窗口按 UTC+8 定义，
 #    所以这里配的是 tz_offset_hours 而不是用本机时区——换台机器也不会算错。
+# 不需要这块就整段删掉，看板会自动不显示。
 [peak]
 start_hour = 14
 end_hour = 18
@@ -45,16 +67,6 @@ off_peak = 1.0
 model = "glm-5-turbo"
 peak = 3.0
 off_peak = 1.0
-
-# 状态看板：浏览器打开 http://127.0.0.1:3001 看每把 key 的 5h/周 用量、档位、当前活动 key。
-# 同地址下 /api/status 是 JSON 接口（opencode 插件等外部消费者读它）。留空则不启用看板。
-status_addr = "127.0.0.1:3001"
-
-# 三档 priority（一般不用改）。new-api 优先路由最高 priority 的渠道：
-# active 独占最高档吃走所有正常流量；standby 作 429 兜底；exhausted 是最后手段。
-priority_active = 100
-priority_standby = 10
-priority_exhausted = 0
 
 [zhipu]
 # ⚠️ 团体套餐必须带 ?type=2（团队额度作用域），否则返回「当前用户不存在coding plan」。
@@ -75,6 +87,12 @@ admin_token = ""
 # admin_token 为空时用它登录 new-api。首启会用它创建管理员（密码需 ≥8 位）。请改成你自己的。
 root_username = "root"
 root_password = "changeme123"
+
+# 部分 new-api 版本的管理 API 还要额外 header（如 New-Api-User: <管理员 user id>）。
+# 一般不用配；若管理 API 返回 401 就 F12 抄一下浏览器发的头填这里。
+# [[new_api.extra_headers]]
+# key = "New-Api-User"
+# value = "1"
 
 # —— 让本工具自己下载并托管 new-api 原生进程（不用容器）——
 # 配了这段，up/sync 会在 new-api 不在跑时按平台下载 release 二进制（sha256 校验）并启动。
