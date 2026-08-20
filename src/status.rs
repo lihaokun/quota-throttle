@@ -31,6 +31,9 @@ use tracing::{debug, error, info, warn};
 pub struct KeyStatus {
     pub name: String,
     pub channel_id: i64,
+    /// 该 key 的 claude 渠道（`<name>-cc`）id。None = 无 CC 侧。
+    /// 仅供看板认领展示（渠道实况/live 指标合并进卡片）；决策身份永远是主 channel_id。
+    pub claude_channel_id: Option<i64>,
     /// 5 小时窗口已用%；None = 本轮未取到
     pub five_hour_pct: Option<f64>,
     /// 每周窗口已用%
@@ -179,8 +182,11 @@ pub struct StatusSnapshot {
     /// 智谱高峰时段（只显示，不参与调度决策）
     pub peak: PeakInfo,
     pub keys: Vec<KeyStatus>,
-    /// 客户端应连的地址（= new_api_base + /v1）
+    /// opencode 客户端应连的地址（= new_api_base + /v1）
     pub client_endpoint: String,
+    /// Claude Code 应填的 ANTHROPIC_BASE_URL（= new_api_base）。
+    /// 空串 = 未配 claude 模板（功能关），前端隐藏对应 chip。
+    pub claude_endpoint: String,
     /// new-api **内部虚拟余额**（root 用户）。它按「按量付费倍率」给包月套餐虚构记账，
     /// 一旦见底会**直接挡住转发**（「预扣费额度失败」），跟智谱额度毫无关系。
     /// 低于阈值时看板告警，避免无声卡死。
@@ -203,14 +209,14 @@ fn read_snap(snap: &Shared) -> StatusSnapshot {
     snap.read().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
-/// 当前管辖的渠道 id。面板循环据此拉实时指标——**从快照读而不是自持一份副本**，
-/// 这样看板加/删 key 之后无需重启，面板数据就能跟上。
+/// 当前管辖的渠道 id（**含各 key 的 claude 渠道**）。面板循环据此拉实时指标——
+/// **从快照读而不是自持一份副本**，这样看板加/删 key 之后无需重启，面板数据就能跟上。
 pub fn tracked_channels(snap: &Shared) -> Vec<i64> {
     snap.read()
         .unwrap_or_else(|e| e.into_inner())
         .keys
         .iter()
-        .map(|k| k.channel_id)
+        .flat_map(|k| [Some(k.channel_id), k.claude_channel_id].into_iter().flatten())
         .collect()
 }
 
@@ -798,7 +804,7 @@ document.getElementById('addf').addEventListener('submit',async e=>{
   msg.innerHTML='<div class="ban ban-info">正在探活……（用这把 key + selector 真查一次智谱用量）</div>';
   try{
     const j=await call('POST','/api/keys',body);
-    msg.innerHTML=`<div class="ban ban-info">✅ 已添加 <b>${body.name}</b>（渠道 #${j.channel_id}）
+    msg.innerHTML=`<div class="ban ban-info">✅ 已添加 <b>${body.name}</b>（渠道 #${j.channel_id}${j.claude_channel_id!=null?` · CC #${j.claude_channel_id}`:''}）
       · 套餐 <b>${j.level||'—'}</b> · 5 小时窗口 <b>${j.five_hour_pct??'—'}%</b> · 每周 <b>${j.weekly_pct??'—'}%</b>
       · 已写回 config.toml，重启后仍在。以 standby 入场，下一轮自动决策决定要不要转正。</div>`;
     e.target.reset(); tick();
@@ -989,8 +995,10 @@ async function tick(){
      <span class="k">new-api</span><span class="v">${d.new_api_healthy?'健康':'不可达'}</span></div>
    <div class="chip"><span class="k">活动 key</span>
      <span class="v" style="color:var(--ok)">${act?act.name:'无 · 全部无额度'}${d.pinned_channel_id!=null?' 📌':''}</span></div>
-   <div class="chip"><span class="k">客户端连接</span>
+   <div class="chip"><span class="k">opencode</span>
      <span class="copy" title="点击复制" onclick="navigator.clipboard.writeText('${d.client_endpoint||''}');this.textContent='已复制';setTimeout(()=>this.textContent='${d.client_endpoint||''}',900)">${d.client_endpoint||'—'}</span></div>
+   ${d.claude_endpoint?`<div class="chip"><span class="k">Claude Code</span>
+     <span class="copy" title="点击复制 ANTHROPIC_BASE_URL 的值" onclick="navigator.clipboard.writeText('${d.claude_endpoint}');this.textContent='已复制';setTimeout(()=>this.textContent='${d.claude_endpoint}',900)">${d.claude_endpoint}</span></div>`:''}
    ${peakChip(d.peak)}
    ${(q!=null&&q>=0&&q<LOW)?'<div class="chip" style="border-color:var(--bad)"><span class="v" style="color:var(--bad)">new-api 内部余额即将耗尽</span><span class="k">见底会挡住转发（与智谱额度无关）</span></div>':''}
    ${d.dry_run?'<div class="chip" style="border-color:rgba(245,185,66,.5)"><span class="v" style="color:var(--warn)">dry_run</span><span class="k">只打印决策，不真改 new-api</span></div>':''}`;
@@ -1013,10 +1021,16 @@ async function tick(){
   const eligible=new Set(d.eligible||[]);
   document.getElementById('grid').innerHTML=d.keys.map(k=>{
     const c=chOf(k.channel_id), l=lvOf(k.channel_id);
+    // cc 渠道（Claude Code 侧）：认领进卡片，别让它流落到「野生渠道」区
+    const cc=k.claude_channel_id!=null?chOf(k.claude_channel_id):null;
+    const ccl=k.claude_channel_id!=null?lvOf(k.claude_channel_id):null;
     const disabled = c && !c.enabled;
     const mism = c && c.priority!=null && k.priority!=null && c.priority!==k.priority;
-    const on = l && l.rpm>0;
-    const lastTxt = l&&l.last_request_at ? `最后请求 ${ago(l.last_request_at)}${l.last_request_model?` (${l.last_request_model})`:''}` : '暂无请求记录';
+    // cc 渠道与主渠道 priority 应恒同（联动双写）；不等 = 联动出了问题，晒出来
+    const ccMism = cc && cc.priority!=null && k.priority!=null && cc.priority!==k.priority;
+    const on = (l && l.rpm>0) || (ccl && ccl.rpm>0);
+    const lastOf=[l,ccl].filter(Boolean).sort((a,b)=>(b.last_request_at||0)-(a.last_request_at||0))[0];
+    const lastTxt = lastOf&&lastOf.last_request_at ? `最后请求 ${ago(lastOf.last_request_at)}${lastOf.last_request_model?` (${lastOf.last_request_model})`:''}` : '暂无请求记录';
     // pin 按钮：只有合格的才点得动（pin 是优先级，不是安全豁免）
     const isPinned = k.channel_id===d.pinned_channel_id;
     const ok = eligible.has(k.channel_id);
@@ -1032,6 +1046,8 @@ async function tick(){
        <span class="name">${k.name}</span>
        <span class="tier t-${k.tier}">${TIER[k.tier]||k.tier}</span>
        <span class="cid">渠道 #${k.channel_id}</span>
+       ${k.claude_channel_id!=null?`<span class="cid">CC #${k.claude_channel_id}</span>`:''}
+       ${cc&&!cc.enabled?'<span class="badge b-off">CC 渠道被禁用</span>':''}
        ${c ? (c.enabled ? '<span class="badge b-on">启用</span>'
              : `<span class="badge b-off">已被 new-api 禁用</span>`) : ''}
        ${btn}
@@ -1042,7 +1058,9 @@ async function tick(){
      <div class="live">
        <span class="${on?'pulse':'idle'}"></span>
        <span><b>${l?l.rpm:0}</b> req/min</span><span>·</span>
-       <span><b>${kfmt(l?l.tpm:0)}</b> tok/min</span><span>·</span>
+       <span><b>${kfmt(l?l.tpm:0)}</b> tok/min</span>
+       ${ccl&&ccl.rpm>0?`<span>·</span><span>CC <b>${ccl.rpm}</b> req/min</span>`:''}
+       <span>·</span>
        <span>${lastTxt}</span>
      </div>
 
@@ -1053,14 +1071,15 @@ async function tick(){
 
      <div class="meta">
        <span>priority <b style="color:${mism?'var(--warn)':'var(--txt)'}">${k.priority??'—'}</b>${mism?` <span class="warn">（new-api 侧是 ${c.priority}，不一致！）</span>`:''}</span>
+       ${cc?`<span>CC P=<b style="color:${ccMism?'var(--warn)':'var(--txt)'}">${cc.priority??'—'}</b>${ccMism?' <span class="warn">（联动不一致！）</span>':''}</span>`:''}
        ${c?`<span>分组 ${c.group||'—'}</span><span>auto_ban ${c.auto_ban?'开':'关'}</span><span style="opacity:.7">${c.models||''}</span>`:''}
        <button class="del" style="margin-left:auto" onclick="delKey(${k.channel_id},'${k.name}')"
          title="从 config.toml 移除并停止调度；new-api 渠道保留">✕ 停止调度</button>
      </div>
    </div>`}).join('');
 
-  // 野生渠道：new-api 里有、但不在我们管辖的 keys 里 —— 可能偷偷接到流量
-  const mine=new Set(d.keys.map(k=>k.channel_id));
+  // 野生渠道：new-api 里有、但不在我们管辖的 keys 里（含各 key 的 cc 渠道）—— 可能偷偷接到流量
+  const mine=new Set(d.keys.flatMap(k=>k.claude_channel_id!=null?[k.channel_id,k.claude_channel_id]:[k.channel_id]));
   const wild=(d.channels||[]).filter(c=>!mine.has(c.id));
   document.getElementById('wild').innerHTML = !wild.length ? '' : `
     <h2>野生渠道（不在 config.keys 里，我们不管它）</h2>

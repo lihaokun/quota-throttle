@@ -114,6 +114,27 @@ base_url = "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions"
 models = "glm-4.7,glm-5.1,glm-5.2,glm-5-turbo,glm-5v-turbo,glm-4.6v,glm-4.5-air"
 group = "default"
 
+# —— Claude Code 渠道模板（可选；配上 = 开启双渠道）——
+# 配了它，sync 会给每把 key 额外建一个 "<name>-cc" 的 Anthropic 格式渠道（type 14），
+# 指到智谱 Claude 兼容口；并自动建绑定 claude 分组的专用令牌、打印接入说明。
+# 切换循环会把同一 priority 联动写到两种渠道 ⇒ opencode 和 Claude Code 同时切 key。
+# Claude Code 侧只需改两个 env（其余如 ANTHROPIC_DEFAULT_*_MODEL 与直连配置完全一致）：
+#   ANTHROPIC_BASE_URL=http://127.0.0.1:3000
+#   ANTHROPIC_AUTH_TOKEN=<sync 打印的令牌>
+# ⚠️ group 必须与上面 [new_api.channel_template].group 不同：new-api 按 (group, model) 选
+#    渠道、不按请求格式过滤，同 group 两种格式渠道会互抢流量做跨格式转换（启动校验会拦）。
+# 不需要 Claude Code 就整段删掉，行为与原来完全一致。
+[new_api.channel_template_claude]
+type = 14
+base_url = "https://open.bigmodel.cn/api/anthropic"
+# 模型表按需配。⚠️ 实测（2026-08）：智谱 anthropic 口不认带 [1m] 后缀的名字（1214），
+# Claude Code 客户端会把 ANTHROPIC_DEFAULT_*_MODEL 里的 [1m] 后缀剥掉再发纯名——
+# 所以表里放纯名即可，带后缀的变体只是无害冗余。
+models = "glm-4.7,glm-5.1,glm-5.2,glm-5.2[1m],glm-5.3,glm-5.3[1m],glm-5-turbo,glm-5v-turbo,glm-4.6v,glm-4.5-air"
+group = "claude"
+name_suffix = "-cc"          # claude 渠道名 = <key 名> + 后缀
+token_name = "claude-code"   # CC 专用令牌名（自动创建，绑定 claude 分组，无限额度）
+
 # —— 一把智谱 key = 一个独立渠道 ——
 # name 同时用作 new-api 渠道名，sync 靠它解析/创建渠道。channel_id 可留空，交给 sync 自动解析。
 # 只有 >=2 把 key 时本工具才有意义（轮着用）。

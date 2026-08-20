@@ -57,6 +57,11 @@ cargo run --release -- down config.toml    # 停 new-api
   **selector 按 key 配**（不同 key 可能属不同组织/项目）。依据：CodexBar `docs/zai.md` + 实测。
   返回：`level`(如 max) + `limits[]`，`unit=3&number=5`→5小时窗口、`unit=6&number=1`→每周窗口、
   `TIME_LIMIT`(unit=5)=MCP 搜索次数（非用量窗口，须过滤）。
+  **⚠️ 窗口 type 有两种计费模式（2026-08 双团队实测）**：`TOKENS_LIMIT`（token 型）与
+  `CREDIT_LIMIT`（积分型），窗口语义相同（unit/number 定窗口、percentage=已用%），**都要算用量**；
+  只认 TOKENS_LIMIT 会让积分型团队的 key 永远「limits 为空」不参与决策（踩过）。
+  另：selector 决定查的是**哪个团队**的额度——账号属多个团队时，同一把 key 配不同 selector
+  会查到不同团队的窗口（都能查通但语义变了），务必按 key 所属团队配。
 - **⚠️ 教训（本项目最大的坑不是技术，是流程）**：我曾因用错鉴权（裸 key、缺 type/selector）就断言「用量读不到」，
   进而设计出「推理探测」的弯路，被用户三次打断。**根因是跳过调研直接下结论**。
   凡是「某接口不行」的结论，必须先查官方文档 + 社区实现 + 实测三者交叉验证，再下结论。
@@ -65,7 +70,16 @@ cargo run --release -- down config.toml    # 停 new-api
 - **new-api 建渠道 payload** 要 `{mode:"single", channel:{...}}` 包裹；`channel` 是指针，平铺会 nil-panic 500。字段：`type/key/base_url/models(逗号串)/group/priority/weight/status`。
 - **new-api PUT /api/channel 拒绝带 `status` 字段**的请求体（判 Invalid parameters）；改字段前必须 `obj.remove("status")`。GET 单渠道返回的 `key` 是空串，PUT 空 key 会保留原值（安全）。
 - **new-api 首启无默认 root/123456**：需先 `POST /api/setup {username,password,confirmPassword,SelfUseModeEnabled}`（密码≥8位、用户名≤12）建管理员，再登录拿会话。
-- **new-api 令牌 key 在列表里打码**（`aK1A****7H3Z`），真实值从 SQLite `tokens.key` 读；POST/PUT 到 `/api/xxx/` 要带**尾斜杠**（否则 307，reqwest 会自动跟随、urllib 不会）。
+- **new-api 令牌 key 在列表里打码**（`aK1A****7H3Z`），真实值从 SQLite `tokens.key` 读（或 `POST /api/token/:id/key` 直接回完整值）；POST/PUT 到 `/api/xxx/` 要带**尾斜杠**（否则 307，reqwest 会自动跟随、urllib 不会）；会话鉴权还要带 `New-Api-User: <用户id>` 头。
+- **new-api 管理面没有「调用户余额」的 API**：PUT /api/user/ 的 EditWithTx 白名单只有
+  username/display_name/group/remark/password（**quota 改不动、还回 success=true**）；
+  ManageUser 只有 enable/disable/delete 等。最短路径：直写 SQLite
+  `UPDATE users SET quota=… WHERE id=1` + **重启 new-api**（用户缓存靠重启失效；
+  quota 单位 = 货币数 × QuotaPerUnit(500000)）。
+- **⚠️ 已知遗留（2026-08 验收时发现，待修）**：new-api **重启会作废本工具的管理会话**，
+  而客户端不会在 401 后自动重登——之后面板读数全空（channels=0/quota=-1）、priority PUT
+  全失败（决策本身不坏：已下发的 priority 在 new-api 落了库）。临时处置：重启本工具进程。
+  正确修法：NewApiClient 检测管理调用 401 → 重登一次重试。
 - **new-api release 有独立二进制**（linux/arm64/macos/win），自带 SQLite，`PORT` env 指定端口；默认只在 **401** 自动禁用渠道（429/耗尽不禁），耗尽报文是中文「已达到…使用上限」不撞其英文禁用关键词 → 恢复干净。
 - **智谱 quota 返回只有整数 percentage**：`TOKENS_LIMIT` 窗口**没有** `usage`/`remaining` 字段（那俩只出现在
   `TIME_LIMIT`/MCP 搜索计数上，而它本就该被过滤掉）。⇒「还剩多少余量」的分辨率**就是 1%**，做不了更细的判断。
@@ -89,6 +103,24 @@ cargo run --release -- down config.toml    # 停 new-api
   · **没有任何接口能查当前是否高峰**（`quota/limit` 响应无此字段；官方文档也无该接口）——只能按时钟算。
     因窗口按 **UTC+8** 定义，代码里必须按 `tz_offset` 算而**不是本机时区**（本机恰好 UTC+8 会掩盖这个 bug）。
 - **探测成本坑**：glm 是推理模型，`max_tokens:1` 挡不住思考（烧 ~660 token）；`thinking:{type:"disabled"}` 才压到 ~7 token。
+- **Claude Code 双渠道（claude-code-routing）**：每把 key 双渠道——`<name>`(type 8, opencode) + `<name>-cc`
+  (type 14, 智谱 anthropic 口 `https://open.bigmodel.cn/api/anthropic`，new-api 自动拼 `/v1/messages`)，
+  切换循环对两侧写**同一 priority**（I1 联动）。要点（细节见 docs/design/claude-code-routing/）：
+  · **group 隔离是安全前提**：new-api 分发器按 (group, model) 选渠道、**不按请求格式过滤**——
+    两种格式渠道同 group 会互抢流量做跨格式转换。CC 令牌绑定 `claude` group ⇒ 物理隔离。
+    config 启动校验拦「同 group」「suffix 撞另一把 key 主渠道名」。
+  · **决策身份永远是主 channel_id**（active/pinned/eligible 都以它为键）；pin/remove 入口把
+    cc id 归一化到主 id；remove 必须**双渠道都压 exhausted** 再动 config（防孤儿高优先级渠道偷流量）。
+  · **令牌完整 key**：列表打码，但 `POST /api/token/:id/key` 直接回完整值（GetTokenKey）——
+    每次 sync 现取现用，不落 config。AddToken 服务端生成 key、搬运 group 字段。
+  · **⚠️ 智谱 anthropic 口不认 `[1m]` 后缀模型名**（实测 2026-08：`glm-5.3[1m]`/`glm-5.2[1m]`
+    直连都报 1214「modelCode 不存在」，纯 `glm-5.3` 通）。CC 客户端自己剥后缀发纯名——
+    所以渠道 models 表里的 `[1m]` 变体只是无害冗余（永不匹配），**别把带后缀的名字发给上游**。
+  · CC 接入只改两个 env：`ANTHROPIC_BASE_URL=http://127.0.0.1:3000` + `ANTHROPIC_AUTH_TOKEN=<sync 打印的令牌>`。
+  · **令牌 group 要过两道门**（ensure_group 都会注册）：① `UserUsableGroups`（用户可用组，
+    option 平铺 map）——缺了 TokenAuth 直接 **403「无权访问 x 分组」**（auth.go:421-435，
+    实测踩过）；② 分组倍率（旧形态 `GroupRatio` / 新形态 `group_ratio_setting.group_ratio`，
+    计费层）。两处失败均 warn 不阻断 sync（第①处失败 CC 会 403，提示里有 UI 修复路径）。
 - **认证**：智谱各口用 `Authorization: Bearer <裸 key>`（coding/推理口）；monitor 口社区脚本用裸 key（无 Bearer），但对团体 coding plan 无效。
 
 ## 工作流程

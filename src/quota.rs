@@ -82,6 +82,17 @@ impl RawLimit {
     }
 }
 
+/// 哪些 limit 类型算「用量窗口」。
+///
+/// 实测（2026-08，两把不同团队的 key）：套餐有**计费模式差异**——有的团队返回
+/// `TOKENS_LIMIT`（token 型），有的返回 `CREDIT_LIMIT`（积分型）。两者窗口语义完全
+/// 相同（unit/number 定窗口、percentage 是已用%），都必须参与调度决策；
+/// 只把积分型滤掉的话，那把 key 会永远「limits 为空」⇒ 永不参与决策。
+/// `TIME_LIMIT` 是 MCP 搜索次数计数，不是用量窗口，必须排除。
+fn is_usage_limit(kind: &str) -> bool {
+    kind == "TOKENS_LIMIT" || kind == "CREDIT_LIMIT"
+}
+
 pub struct QuotaProbe {
     client: reqwest::Client,
     url: String,
@@ -132,11 +143,11 @@ impl QuotaProbe {
         }
         let data = raw.data.context("响应缺少 data 字段")?;
 
-        // 只看 TOKENS_LIMIT（TIME_LIMIT 是 MCP 搜索次数，不是用量窗口）。
+        // 只看用量窗口（TIME_LIMIT 是 MCP 搜索次数，不是用量窗口）。
         let token_limits: Vec<RawLimit> = data
             .limits
             .into_iter()
-            .filter(|l| l.kind == "TOKENS_LIMIT")
+            .filter(|l| is_usage_limit(&l.kind))
             .collect();
 
         // success=true 但没有任何 TOKENS_LIMIT ⇒ **必须报错，绝不能返回空 status**。
@@ -190,5 +201,20 @@ impl QuotaProbe {
             }
         }
         Ok(status)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 回归：积分型团队套餐（CREDIT_LIMIT）的窗口也算用量，否则那把 key
+    /// 永远「limits 为空」不参与决策（2026-08 实测踩坑）。
+    #[test]
+    fn 用量窗口_同时接受token与credit型() {
+        assert!(is_usage_limit("TOKENS_LIMIT"), "token 型：用量窗口");
+        assert!(is_usage_limit("CREDIT_LIMIT"), "积分型：也是用量窗口（同语义）");
+        assert!(!is_usage_limit("TIME_LIMIT"), "MCP 搜索次数：不是用量窗口");
+        assert!(!is_usage_limit(""), "未知类型不接受（宁可报错也不猜）");
     }
 }
