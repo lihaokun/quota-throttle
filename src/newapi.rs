@@ -726,32 +726,6 @@ impl NewApiClient {
         Ok(extract_items(&body))
     }
 
-    /// 【看板】某渠道**最近 60 秒**的 (rpm, tpm)。纯读。
-    ///
-    /// 依据：new-api `model/log.go` 的 `SumUsedQuota` —— `// 只统计最近60秒的rpm和tpm`，
-    /// 且 `rpmTpmQuery.Where("channel_id = ?", channel)` 支持按渠道过滤。
-    /// **rpm > 0 ⟺ 流量正在走这把 key**（「有没有连上」的直接答案）。
-    pub async fn channel_rate(&self, channel_id: i64) -> Result<(i64, i64)> {
-        // type=2 = LogTypeConsume；start/end 只影响 quota 字段，rpm/tpm 的 60s 窗口由服务端固定
-        let url = format!(
-            "{}/api/log/stat?type=2&channel={channel_id}&start_timestamp=0&end_timestamp=9999999999",
-            self.base_url
-        );
-        let body: Value = self
-            .apply_headers(self.client.get(&url))
-            .send()
-            .await
-            .context("拉取渠道实时速率失败")?
-            .json()
-            .await
-            .context("解析实时速率失败")?;
-        let d = body.get("data");
-        Ok((
-            d.and_then(|x| x.get("rpm")).and_then(|v| v.as_i64()).unwrap_or(0),
-            d.and_then(|x| x.get("tpm")).and_then(|v| v.as_i64()).unwrap_or(0),
-        ))
-    }
-
     /// 【看板】用量统计（new-api 自己按**小时**聚合好的 `quota_data`）。纯读。
     /// 返回 (model, hour_epoch_sec, tokens, count)。供时序曲线 + 按模型汇总两用。
     ///

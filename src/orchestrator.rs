@@ -31,7 +31,7 @@
 use crate::config::{Config, NewKeySpec, ResolvedKey};
 use crate::newapi::NewApiClient;
 use crate::quota::{QuotaProbe, QuotaStatus};
-use crate::status::{self, KeyStatus, LiveMetric, Shared};
+use crate::status::{self, KeyStatus, LiveMetric, RequestLog, Shared};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -840,32 +840,29 @@ impl Panel {
         // new-api 内部虚拟余额（见底会直接挡住转发）
         let newapi_user_quota = self.api.user_quota().await.unwrap_or(-1);
 
-        // 每把 key 的实时速率（最近 60 秒，服务端固定窗口）。
-        // 渠道列表**从快照读**（决策循环发布的），而不是自己攥一份副本 ——
-        // 这样面板加/删 key 之后无需重启，实时指标就能跟上。
-        let mut live: Vec<LiveMetric> = Vec::new();
-        for channel_id in status::tracked_channels(&self.snapshot) {
-            let (rpm, tpm) = self.api.channel_rate(channel_id).await.unwrap_or((0, 0));
-            live.push(LiveMetric {
-                channel_id,
-                rpm,
-                tpm,
-                last_request_at: None,
-                last_request_model: None,
-            });
-        }
-        // 最后一次请求：日志按时间倒序，每个渠道首次出现即最新
-        if let Ok(logs) = self.api.recent_logs(50).await {
-            for l in &logs {
-                if let Some(m) = live
-                    .iter_mut()
-                    .find(|m| m.channel_id == l.channel && m.last_request_at.is_none())
-                {
-                    m.last_request_at = Some(l.created_at);
-                    m.last_request_model = Some(l.model_name.clone());
-                }
+        // 每渠道实时指标：**全部从 recent_logs 一次请求推导**（rpm/tpm = 最近 60 秒内
+        // 的条数与 token 和；最后请求 = 该渠道最新一条）。
+        // ⚠️ 不再逐渠道调 /api/log/stat：new-api 对 /api 有全局限流（默认 360 次/180s
+        // ≈ 2 次/秒），逐渠道轮询在渠道数多时（双渠道 × N 把 key）**单面板就超预算**，
+        // 会把控制循环的 priority 写入饿出 429、渠道 priority 卡在旧值（2026-08-24 实测踩坑）。
+        // 渠道列表**从快照读**（决策循环发布的）——加/删 key 后无需重启，指标就能跟上。
+        let tracked = status::tracked_channels(&self.snapshot);
+        let live = match self.api.recent_logs(100).await {
+            Ok(logs) => live_metrics_from_logs(&tracked, &logs),
+            Err(e) => {
+                debug!(error = %e, "面板：拉取请求日志失败");
+                tracked
+                    .into_iter()
+                    .map(|channel_id| LiveMetric {
+                        channel_id,
+                        rpm: 0,
+                        tpm: 0,
+                        last_request_at: None,
+                        last_request_model: None,
+                    })
+                    .collect()
             }
-        }
+        };
 
         // 用量统计（new-api 自己按小时聚合的 quota_data）：近 24h 时序 + 按模型汇总
         let now = std::time::SystemTime::now()
@@ -888,6 +885,38 @@ impl Panel {
             s.model_usage = model_usage;
         });
     }
+}
+
+/// 从请求日志推导每渠道实时指标。纯函数（可单测）。
+///
+/// · `logs` 按时间**倒序**（`recent_logs` 已保证），每渠道第一条即最后请求；
+/// · rpm/tpm 只统计最近 **60 秒**内的条目（与原 /api/log/stat 的固定窗口语义一致；
+///   受拉取条数上界约束，高流量渠道可能略有低估——显示用途，可接受）。
+fn live_metrics_from_logs(tracked: &[i64], logs: &[RequestLog]) -> Vec<LiveMetric> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    tracked
+        .iter()
+        .map(|&cid| {
+            let mut m = LiveMetric {
+                channel_id: cid,
+                ..Default::default()
+            };
+            for l in logs.iter().filter(|l| l.channel == cid) {
+                if m.last_request_at.is_none() {
+                    m.last_request_at = Some(l.created_at);
+                    m.last_request_model = Some(l.model_name.clone());
+                }
+                if now - l.created_at <= 60 {
+                    m.rpm += 1;
+                    m.tpm += l.prompt_tokens + l.completion_tokens;
+                }
+            }
+            m
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -1064,6 +1093,53 @@ mod tests {
         let d = decide_with(&[(1, Some(50.0))], Some(1), Some(99));
         assert_eq!(d.active, Some(1));
         assert_eq!(d.pin_release, None, "不该为不存在的 key 报解除事件");
+    }
+
+    // ——— 面板实时指标：从日志推导（2026-08-24 限流踩坑后改的）———
+
+    fn log_at(channel: i64, age_secs: i64, tokens: i64) -> RequestLog {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        RequestLog {
+            created_at: now - age_secs,
+            channel,
+            channel_name: format!("c{channel}"),
+            model_name: "glm-5.3".into(),
+            prompt_tokens: tokens,
+            completion_tokens: tokens / 2,
+            ..Default::default()
+        }
+    }
+
+    /// 回归：rpm/tpm 只统计最近 60 秒；最后请求取倒序首条；未跟踪渠道不产出指标。
+    /// 这替代了逐渠道 /api/log/stat 轮询（那个会把 /api 全局限流吃光，饿死 priority 写入）。
+    #[test]
+    fn 实时指标_从日志推导_窗口与最后请求正确() {
+        let logs = vec![
+            log_at(1, 10, 100),  // 渠道1：60s 内 → 计入 rpm/tpm；最新
+            log_at(1, 300, 900), // 渠道1：窗口外 → 只算「最后请求」的更早候选，不计 rpm
+            log_at(3, 30, 40),   // 渠道3：60s 内
+            log_at(9, 5000, 1),  // 未跟踪渠道
+        ];
+        let out = live_metrics_from_logs(&[1, 2, 3], &logs);
+        let get = |id: i64| out.iter().find(|m| m.channel_id == id).unwrap();
+
+        let m1 = get(1);
+        assert_eq!(m1.rpm, 1, "300 秒前那条不计入 rpm");
+        assert_eq!(m1.tpm, 150, "只有 60s 内那条的 tokens");
+        assert_eq!(m1.last_request_model.as_deref(), Some("glm-5.3"));
+
+        let m2 = get(2);
+        assert_eq!((m2.rpm, m2.tpm), (0, 0), "无日志的渠道给零值");
+
+        let m3 = get(3);
+        assert_eq!(m3.rpm, 1);
+        assert_eq!(m3.tpm, 60);
+
+        assert!(out.iter().all(|m| m.channel_id != 9), "未跟踪渠道不产出指标");
+        assert_eq!(out.len(), 3, "tracked 顺序一一对应");
     }
 
     // ——— 高峰时段（智谱：每日 14:00–18:00 UTC+8）———

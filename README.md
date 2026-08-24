@@ -56,6 +56,63 @@ cargo run --release -- up config.toml  # 起 new-api + 建渠道 + 进入切换�
 
 数据（SQLite / 二进制 / 日志 / PID）都在 `./.newapi/`。日志级别用 `RUST_LOG` 控制。
 
+## Key 配置与重载（日常操作）
+
+**没有热加载**：`config.toml` 只在启动时读一次，改完必须重启循环。看板上的加/删 key 是例外（走运行时命令通道，自动写回 config，不用重启）。
+
+### config.toml 里每把 key 长什么样
+
+```toml
+[[keys]]
+name = "zhipu-1"                                    # 同时用作渠道名；claude 渠道自动叫 zhipu-1-cc
+zhipu_api_key = "xxxxxxxx.yyyyyyyy"                 # 智谱编程套餐页建的 key（长串、中间一个点）
+[[keys.quota_headers]]                              # 团体套餐必需的 selector（个人套餐删掉这两段）
+key = "Bigmodel-Organization"
+value = "org-..."
+[[keys.quota_headers]]
+key = "Bigmodel-Project"
+value = "proj_..."
+```
+
+每把 key 会自动建**两个渠道**：`<name>`（OpenAI 格式，opencode 用）+ `<name>-cc`（Anthropic 格式，Claude Code 用），切换时 priority 联动。
+
+### org / project 的值在智谱网页上怎么取（每把 key 配一次）
+
+`quota_headers` 里的两个 selector 决定**查的是哪个团队的额度**，必须在智谱网页上用 F12 抄：
+
+1. 浏览器登录 [bigmodel.cn](https://bigmodel.cn)，打开 `https://bigmodel.cn/coding-plan/team/usage-stats`
+2. ⚠️ **先在页面上把团队/组织切到这把 key 所属的那个**——账号属多个团队时，切错了抄到的就是别家的 org/project（照样能查通，但查的是别家的额度，调度全乱）
+3. 按 **F12**（或右键 → 检查）→ 顶部切到 **Network / 网络** 标签 → 按 **F5** 刷新页面
+4. 在 Network 的过滤框输入 `quota`，点击列表里名为 `quota/limit` 的那条请求
+5. 右侧选 **Headers / 标头** → 往下翻到 **Request Headers / 请求标头**，找到这两行，抄引号里的值：
+   - `Bigmodel-Organization: org-xxxxxxxx` → 填到第一条 `[[keys.quota_headers]]` 的 `value`
+   - `Bigmodel-Project: proj_xxxxxxxx` → 填到第二条的 `value`
+6. **每把 key 各抄各的**（不同 key 可能属不同团队/项目，回到第 2 步换团队上下文再抄一遍）
+
+为什么这步不能省：团队套餐缺 selector 时智谱**不报错**，只是安静地返回空 `limits`——那把 key 会被误判成「查询失败」，永远不参与调度（好在本工具启动探活会把它挡下来并明说）。原理详见下面「三个必须知道的坑」第 1 条。
+
+### 重载方法（改完 config.toml 后）
+
+```bash
+pkill -f 'quota-throttle up'
+nohup ./target/release/quota-throttle up config.toml >> .newapi/quota-throttle.log 2>&1 &
+tail -f .newapi/quota-throttle.log     # 看它起来后的渠道映射与首轮决策
+```
+
+`up` 幂等：已存在的渠道跳过，缺的补建；Claude Code 的接入令牌不变（每次启动现取并打印）。
+
+### 三种 key 变更
+
+| 场景 | 步骤 |
+|------|------|
+| **新增 key** | config 加一条 `[[keys]]` → 重载。sync 自动建双渠道、纳入调度 |
+| **替换同名 key 的值**（换新 key 但沿用名字） | ⚠️ **sync 按名幂等，不会更新已存在渠道里的旧 key！** 除了改 config + 重载，还须更新渠道里的 key：new-api 管理页（`http://127.0.0.1:3000`，登录后 渠道 → 编辑 `zhipu-N` **和** `zhipu-N-cc` → 粘贴新 key），或直写 SQLite `UPDATE channels SET key='<新key>' WHERE name IN ('zhipu-N','zhipu-N-cc');` |
+| **移除 key** | config 删掉那条 `[[keys]]` → 重载。**new-api 渠道会留下来**（保历史用量）且不再被管理——它会出现在看板「野生渠道」区，务必把它的 priority 压到 0（否则 429 兜底时可能把流量漏给一把你不想要的 key）。更省事的做法：直接在看板卡片上点「✕ 停止调度」（自动压 priority + 写回 config，一步到位） |
+
+### 常驻运行
+
+`up` 循环建议用 `nohup` 脱离终端跑（上面的重载命令即是）。它**不会开机自启**；停它用 `pkill -f 'quota-throttle up'`（new-api 是独立进程，不受影响；`down` 子命令才是停 new-api）。
+
 ## 状态看板
 
 `http://127.0.0.1:3001`（`status_addr` 可配，留空则不启用）

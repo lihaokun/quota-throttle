@@ -76,6 +76,12 @@ cargo run --release -- down config.toml    # 停 new-api
   ManageUser 只有 enable/disable/delete 等。最短路径：直写 SQLite
   `UPDATE users SET quota=… WHERE id=1` + **重启 new-api**（用户缓存靠重启失效；
   quota 单位 = 货币数 × QuotaPerUnit(500000)）。
+- **⚠️ new-api `/api` 全局限流：360 次/180 秒（≈2 次/秒，env `GLOBAL_API_RATE_LIMIT`，不在 option 系统里）**。
+  2026-08-24 踩坑：面板曾**逐渠道**轮询 `/api/log/stat` 拉 rpm/tpm（双渠道 × N 把 key），
+  单面板就吃光预算 → 控制循环的 GET→PUT 被 429（且 429 响应体非 JSON，报「解析渠道响应失败」）
+  → 渠道 priority 卡旧值（出现过双 active 平分流量的实际伤害）。**已改**：面板实时指标全部从
+  `recent_logs` 单请求推导（`live_metrics_from_logs`）。教训：**任何面板改动都别引入逐渠道轮询**；
+  管理 API 预算要留给控制循环。login 另有 CriticalRateLimit（20 次/20 分钟），脚本反复登录会把自己锁死。
 - **⚠️ 已知遗留（2026-08 验收时发现，待修）**：new-api **重启会作废本工具的管理会话**，
   而客户端不会在 401 后自动重登——之后面板读数全空（channels=0/quota=-1）、priority PUT
   全失败（决策本身不坏：已下发的 priority 在 new-api 落了库）。临时处置：重启本工具进程。
