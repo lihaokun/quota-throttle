@@ -48,6 +48,12 @@ pub struct Config {
     #[serde(default = "default_panel_interval")]
     pub panel_interval_secs: u64,
 
+    /// 周窗口重置进入这个时间窗（小时）内的 key 视为「临期」：切换时优先选它
+    /// （先烧快清零的额度，最大化使用效率）。0 = 关闭本策略（行为与旧版完全一致）。
+    /// 建议 6–48h；上限 7 天（周窗口最长一周，再大等于全年轮询）。
+    #[serde(default = "default_weekly_lookahead")]
+    pub weekly_reset_lookahead_hours: u64,
+
     /// 监控哪些窗口。默认同时看 5 小时和每周（取最大使用率）。
     #[serde(default = "default_windows")]
     pub watch_windows: Vec<Window>,
@@ -136,6 +142,9 @@ fn default_restore() -> f64 {
 }
 fn default_exhausted() -> f64 {
     100.0
+}
+fn default_weekly_lookahead() -> u64 {
+    24
 }
 fn default_windows() -> Vec<Window> {
     vec![Window::FiveHour, Window::Weekly]
@@ -487,6 +496,12 @@ impl Config {
             r > 0.0 && r <= t && t <= e && e <= 100.0,
             "阈值非法：要求 0 < restore({r}) ≤ throttle({t}) ≤ exhausted({e}) ≤ 100"
         );
+        // 周临期时间窗：0 = 关闭；上限 7 天 = 周窗口周期（再大等于把全部 key 都算临期）
+        anyhow::ensure!(
+            self.weekly_reset_lookahead_hours <= 24 * 7,
+            "weekly_reset_lookahead_hours 非法：{}（要求 0–168；0 = 关闭临期优先，168 = 一周 = 全临期）",
+            self.weekly_reset_lookahead_hours
+        );
         if let Some(p) = &self.peak {
             anyhow::ensure!(
                 (0..=24).contains(&p.start_hour)
@@ -654,6 +669,36 @@ value = "org-1"
         let p = std::env::temp_dir().join(format!("qt-cfg-{}-bad.toml", std::process::id()));
         std::fs::write(&p, SAMPLE.replace("throttle_threshold = 95.0", "throttle_threshold = 101.0")).unwrap();
         assert!(Config::load(&p).is_err());
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn 周临期时间窗_缺省24_填0合法_超一周失败() {
+        // 缺省 = 24（策略默认开）
+        let p = tmp("lk-default");
+        let cfg = Config::load(&p).unwrap();
+        assert_eq!(cfg.weekly_reset_lookahead_hours, 24);
+        std::fs::remove_file(&p).ok();
+
+        // 0 = 显式关闭（⚠️ 必须写在 [[keys]] 之前——TOML 里 key 归属最近的表头，
+        // 追加在 keys 表之后会被挂进 keys.quota_headers 而不是顶层）
+        let p = tmp("lk-zero");
+        std::fs::write(
+            &p,
+            SAMPLE.replace("poll_interval_secs", "weekly_reset_lookahead_hours = 0\npoll_interval_secs"),
+        )
+        .unwrap();
+        assert_eq!(Config::load(&p).unwrap().weekly_reset_lookahead_hours, 0);
+        std::fs::remove_file(&p).ok();
+
+        // 168 = 一周（上限，合法）；169 = 手误，启动即失败
+        let p = tmp("lk-max");
+        std::fs::write(
+            &p,
+            SAMPLE.replace("poll_interval_secs", "weekly_reset_lookahead_hours = 169\npoll_interval_secs"),
+        )
+        .unwrap();
+        assert!(Config::load(&p).is_err(), "169h 超过周周期，应拦截");
         std::fs::remove_file(&p).ok();
     }
 

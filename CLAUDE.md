@@ -14,6 +14,8 @@ src/
   orchestrator.rs  — 控制循环：按用量选活动 key、重排 priority
 docs/
   workflow.md      — 开发工作流程规范（@docs/workflow.md）
+  research/key-rotation-research.md   — 调研：周窗口临期优先（keyrot-1）
+  design/key-rotation/                — 架构 + 细化设计（keyrot-1）
 config.example.toml / config.toml(gitignored)
 ```
 
@@ -89,6 +91,14 @@ cargo run --release -- down config.toml    # 停 new-api
 - **new-api release 有独立二进制**（linux/arm64/macos/win），自带 SQLite，`PORT` env 指定端口；默认只在 **401** 自动禁用渠道（429/耗尽不禁），耗尽报文是中文「已达到…使用上限」不撞其英文禁用关键词 → 恢复干净。
 - **智谱 quota 返回只有整数 percentage**：`TOKENS_LIMIT` 窗口**没有** `usage`/`remaining` 字段（那俩只出现在
   `TIME_LIMIT`/MCP 搜索计数上，而它本就该被过滤掉）。⇒「还剩多少余量」的分辨率**就是 1%**，做不了更细的判断。
+- **周窗口重置时刻 = `limits[].nextResetTime`（epoch 毫秒，绝对时刻）**，探针原样透传为
+  `WindowStatus.next_reset_time`（`quota.rs`）。keyrot-1（周临期优先）用它做 EDF：`reset_ms - now_ms ∈ (0, lookahead]`
+  且周窗口、5h 窗口都有余量 ⇒ 临期，切换时优先选。⚠️ **临期集只扩合格集、永不改档位**（`eligible_set`）：
+  全员 ≥ throttle 时即便有临期 key 仍是 Degraded——档位是「全局谁越预防线」的事实，不是合格集的性质
+  （2026-08-25 实测踩过：先写成「有临期 ⇒ Normal」，降级档场景全错）。另外**临期判定用周窗口自己的 pct**、
+  可服务性用 max_pct（5h=100% 的 key 不算临期，选了立即 429）。**已知限制**：`watch_windows`
+  若配成只盯单窗口（默认盯两个），max_pct 不再是「5h 与周取大」，临期可服务性判定会退化——
+  该组合下整个调度语义本来就偏离设计假设，慎改。
 - **🔥「limits 为空」必须当错误抛，绝不能返回空 status**（`quota.rs` 曾经只 warn，是个潜伏的灾难）：
   配错 selector 时智谱**不报错**——它 `success=true` 地回一个空 `data`。若探针把它当成「查到了，但没有窗口」，
   `max_watch_pct()` 会算出 **0.0**，于是这把 key 在调度器眼里就是**「用量 0%」**：它会被选成活动 key 并且

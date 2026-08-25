@@ -77,6 +77,35 @@ fn max_watch_pct(cfg: &Config, status: &QuotaStatus) -> f64 {
     max_pct
 }
 
+/// 周窗口的决策用快照。仅决策层使用，不进快照结构。
+#[derive(Debug, Clone, Copy)]
+struct WeeklyInfo {
+    /// 周窗口重置时刻（epoch **毫秒**，探针原样——注意与 now_secs 单位不同）
+    reset_ms: i64,
+    /// 周窗口已用%（临期判定的「没用完」依据）
+    pct: f64,
+    /// max_watch_pct（5h 与周取大）——判定「现在能不能服务」（5h 已 100% 则不可服务）
+    max_pct: f64,
+}
+
+/// 是否临期：周窗口即将重置、且还有真实余量、且现在还能服务。
+///
+/// 四条件缺一不可（见研究文档 §5 H1–H4）：
+///   1. 查到了周窗口（调用方构造了 WeeklyInfo ⇒ 隐含满足）；
+///   2. `reset_ms ∈ (now, now + lookahead]` —— 左开右闭：恰好此刻清零→窗口已开始新周期，
+///      不算临期；恰好 lookahead 整点→还剩 0 秒也算（端点含，避免边界抖动）；
+///   3. 周窗口已用 < exhausted（还有额度可用；100% 即「没用完」的取反）；
+///   4. max_pct < exhausted（5h 窗口死了 = 现在接不了流量，选了立即 429，不算可用）。
+///
+/// 纯函数，零网络调用。lookahead = 0 ⇒ 恒 false（条件 2 与「reset > now」互斥）⇒ 策略关闭。
+fn imminent(weekly: &WeeklyInfo, now_ms: i64, lookahead_ms: i64, exhausted: f64) -> bool {
+    if weekly.pct >= exhausted || weekly.max_pct >= exhausted {
+        return false;
+    }
+    let until = weekly.reset_ms - now_ms;
+    until > 0 && until <= lookahead_ms
+}
+
 /// 现在是不是高峰时段 + 下次切换的时刻（epoch **秒**）。**纯函数**，零网络调用。
 ///
 /// 智谱没有任何接口能查这个（quota/limit 的响应里没有该字段，官方文档也没有该接口），
@@ -209,6 +238,9 @@ pub struct Decision {
     pub active: Option<i64>,
     /// 合格集：自动逻辑允许把流量放上去的 key
     pub eligible: Vec<i64>,
+    /// 临期集：合格集里「周窗口即将重置且还有余量」的 key（本次切换的优先对象）。
+    /// 空 = 无人临期（含 lookahead=0 策略关闭）。仅供日志/看板，决策身份仍是 active。
+    pub imminent: Vec<i64>,
     pub regime: Regime,
     /// 非空则调用方须把 `pinned` 置 None
     pub pin_release: Option<PinRelease>,
@@ -219,11 +251,19 @@ pub struct Decision {
 /// - 已知集 = 本轮成功查到 pct 的 key（查询失败的不在其中，状态未知）
 /// - 正常集 = 已知集里 pct < throttle 的；非空 ⇒ 正常档，合格集 = 正常集
 /// - 否则   ⇒ 降级档，合格集 = 已知集里 pct < exhausted 的（还有余量就能用）
+/// - **临期扩展**：无论哪档，临期 key（周窗口即将重置且还有余量，见 `imminent`）并入合格集
+///   ——快清零的额度用掉比浪费强（用户拍板：95–100% 之间但临期的 key 也算可用）。
+///   临期 key 的「合格线」天然是 exhausted（imminent 条件 3/4），与降级档一致；
+///   正常档下它 pct ≥ throttle 也能入池，这正是本功能与旧行为的分水岭。
 ///
 /// 全部查询失败（已知集为空）⇒ 返回空集 + 正常档：没有任何证据表明降级了。
+#[allow(clippy::too_many_arguments)]
 fn eligible_set(
     ids: &[i64],
     pct: &HashMap<i64, f64>,
+    weekly: &HashMap<i64, WeeklyInfo>,
+    now_ms: i64,
+    lookahead_ms: i64,
     throttle: f64,
     exhausted: f64,
 ) -> (Vec<i64>, Regime) {
@@ -233,14 +273,39 @@ fn eligible_set(
             .filter(|id| pct.get(id).is_some_and(|p| *p < limit))
             .collect()
     };
+    // 临期集：`imminent` 判定与 Regime 无关（它是额度生命周期事实，不是档位概念）
+    let imminents: Vec<i64> = ids
+        .iter()
+        .copied()
+        .filter(|id| weekly.get(id).is_some_and(|w| imminent(w, now_ms, lookahead_ms, exhausted)))
+        .collect();
     if !ids.iter().any(|id| pct.contains_key(id)) {
         return (Vec::new(), Regime::Normal);
     }
     let normal = under(throttle);
     if !normal.is_empty() {
-        return (normal, Regime::Normal);
+        // 正常档合格集 = 正常集 ∪ 临期集（先算好要补的，再 extend——避免闭包借用冲突）
+        let mut merged = normal;
+        let extra: Vec<i64> = imminents
+            .iter()
+            .copied()
+            .filter(|id| !merged.contains(id))
+            .collect();
+        merged.extend(extra);
+        return (merged, Regime::Normal);
     }
-    (under(exhausted), Regime::Degraded)
+    // 降级档：**regime 由「全员是否过预防线」决定，临期集不改变它**——
+    // 无非正常 key（正常集空）但存在临期 key 时，仍是降级档（全局事实），
+    // 只是合格集里多了临期的那把。临期集 ⊆ under(exhausted)（imminent 条件 3 保证），
+    // 并入无冗余；还是显式并入，不依赖这个推导——万一条件将来变了，这里仍安全。
+    let mut deg = under(exhausted);
+    let extra: Vec<i64> = imminents
+        .iter()
+        .copied()
+        .filter(|id| !deg.contains(id))
+        .collect();
+    deg.extend(extra);
+    (deg, Regime::Degraded)
 }
 
 /// 选活动 key。**纯函数**（分支多、又是安全核心，必须可单测）。
@@ -249,25 +314,39 @@ fn eligible_set(
 ///   1. pin —— 只在合格集内生效。pin 是**优先级**，不是安全豁免：它能覆盖「粘滞 + 挑最低」
 ///      这个选择偏好，但**不能把自动逻辑判定为不合格的 key 拉上来用**。越线即自动解除。
 ///   2. 粘滞 —— 现任只要还合格就不换（护 prompt 缓存：能不换就不换）。
-///   3. 挑选 —— 只在合格集内挑 pct 最低的（正常档优先要求 < restore，多留余量）。
+///   3. 挑选 —— 只在合格集内挑（keyrot-1：**临期 key 优先**，按周重置时刻升序——先烧快清零的；
+///      无临期则回到旧策略：正常档优先要求 < restore，再挑 pct 最低）。
 ///
 /// **抖动保护**：本轮查询失败的 key 不进合格集（不会被主动选中），但若它恰好是 current
 /// 或 pinned，则**保持不变** —— 一次瞬时失败不该丢缓存，也不该抖掉用户的 pin。
 /// 反过来说，解除 pin 必须基于「查到了 **且** 确实超线」这个正面证据。
+///
+/// keyrot-1 的 pin 说明：临期 key 恒在合格集（不变量 I1），pin 它不会触发越线解除；
+/// 非临期 key 的 pin 门限仍按档位取（throttle/exhausted），与旧版一致——无需特判。
+#[allow(clippy::too_many_arguments)]
 fn decide(
     ids: &[i64],
     pct: &HashMap<i64, f64>,
+    weekly: &HashMap<i64, WeeklyInfo>,
+    now_ms: i64,
+    lookahead_ms: i64,
     current: Option<i64>,
     pinned: Option<i64>,
     throttle: f64,
     restore: f64,
     exhausted: f64,
 ) -> Decision {
-    let (eligible, regime) = eligible_set(ids, pct, throttle, exhausted);
+    let (eligible, regime) = eligible_set(ids, pct, weekly, now_ms, lookahead_ms, throttle, exhausted);
+    let imminents: Vec<i64> = eligible
+        .iter()
+        .copied()
+        .filter(|id| weekly.get(id).is_some_and(|w| imminent(w, now_ms, lookahead_ms, exhausted)))
+        .collect();
     let mut pin_release = None;
-    let done = |active, eligible, pin_release| Decision {
+    let done = |active, eligible, imminents, pin_release| Decision {
         active,
         eligible,
+        imminent: imminents,
         regime,
         pin_release,
     };
@@ -276,9 +355,10 @@ fn decide(
     if let Some(p) = pinned.filter(|p| ids.contains(p)) {
         match pct.get(&p) {
             // 查询失败 → 保持 pin（抖动保护）
-            None => return done(Some(p), eligible, None),
-            Some(_) if eligible.contains(&p) => return done(Some(p), eligible, None),
-            // 越线 → 解除 pin，落到自动逻辑
+            None => return done(Some(p), eligible, imminents, None),
+            Some(_) if eligible.contains(&p) => return done(Some(p), eligible, imminents, None),
+            // 越线 → 解除 pin，落到自动逻辑。临期 key 恒在合格集 ⇒ 走不到这里（见文档），
+            // 所以门限仍按档位取，与旧版一致。
             Some(&pp) => {
                 let limit = match regime {
                     Regime::Normal => throttle,
@@ -297,35 +377,49 @@ fn decide(
     if let Some(c) = current.filter(|c| ids.contains(c)) {
         match pct.get(&c) {
             // 查询失败 → 保持（抖动保护）
-            None => return done(Some(c), eligible, pin_release),
-            Some(_) if eligible.contains(&c) => return done(Some(c), eligible, pin_release),
+            None => return done(Some(c), eligible, imminents, pin_release),
+            Some(_) if eligible.contains(&c) => return done(Some(c), eligible, imminents, pin_release),
             Some(_) => {}
         }
     }
 
-    // 3. 在合格集内挑 pct 最低
+    // 3. 在合格集内挑。keyrot-1：临期者优先（EDF——周重置时刻升序，平手取 max_pct 低者，多留安全垫）。
+    //    无临期 ⇒ 完全沿用旧策略（正常档 restore 优先，降级档最低）。
     let lowest = |cands: &[i64]| -> Option<i64> {
         cands
             .iter()
             .copied()
             .min_by(|a, b| pct[a].total_cmp(&pct[b]))
     };
-    let active = match regime {
-        Regime::Normal => {
-            // 优先挑余量更足的（< restore），让新活动 key 撑更久 → 切换更少
-            let roomy: Vec<i64> = eligible
-                .iter()
-                .copied()
-                .filter(|id| pct[id] < restore)
-                .collect();
-            lowest(&roomy).or_else(|| lowest(&eligible))
+    let active = if !imminents.is_empty() {
+        imminents
+            .iter()
+            .copied()
+            .min_by(|a, b| {
+                let wa = &weekly[a];
+                let wb = &weekly[b];
+                wa.reset_ms
+                    .cmp(&wb.reset_ms)
+                    .then_with(|| wa.max_pct.total_cmp(&wb.max_pct))
+            })
+    } else {
+        match regime {
+            Regime::Normal => {
+                // 优先挑余量更足的（< restore），让新活动 key 撑更久 → 切换更少
+                let roomy: Vec<i64> = eligible
+                    .iter()
+                    .copied()
+                    .filter(|id| pct[id] < restore)
+                    .collect();
+                lowest(&roomy).or_else(|| lowest(&eligible))
+            }
+            // 降级档全员已 ≥ throttle，restore 在这一档没有意义
+            Regime::Degraded => lowest(&eligible),
         }
-        // 降级档全员已 ≥ throttle，restore 在这一档没有意义
-        Regime::Degraded => lowest(&eligible),
     };
 
     // 4. active == None ⇒ 合格集为空（全员 ≥ exhausted 或全查询失败）⇒ 调用方保留原活动
-    done(active, eligible, pin_release)
+    done(active, eligible, imminents, pin_release)
 }
 
 impl Orchestrator {
@@ -586,12 +680,24 @@ impl Orchestrator {
         let mut pct: HashMap<i64, f64> = HashMap::new();
         let mut windows: HashMap<i64, QuotaStatus> = HashMap::new();
         let mut errors: HashMap<i64, String> = HashMap::new();
+        // keyrot-1：周窗口快照（决策层用）。查询失败或周窗口缺失 ⇒ 无条目 ⇒ 非临期。
+        let mut weekly: HashMap<i64, WeeklyInfo> = HashMap::new();
         for k in &keys {
             match self.probe.query(&k.zhipu_api_key, &k.quota_headers).await {
                 Ok(status) => {
                     let p = max_watch_pct(&self.cfg, &status);
                     info!(name = %k.name, channel_id = k.channel_id, pct = p, "用量");
                     pct.insert(k.channel_id, p);
+                    if let Some(w) = &status.weekly {
+                        weekly.insert(
+                            k.channel_id,
+                            WeeklyInfo {
+                                reset_ms: w.next_reset_time,
+                                pct: w.percentage,
+                                max_pct: p,
+                            },
+                        );
+                    }
                     windows.insert(k.channel_id, status);
                 }
                 Err(e) => {
@@ -604,8 +710,13 @@ impl Orchestrator {
         let throttle = self.cfg.throttle_threshold;
         let restore = self.cfg.restore_threshold;
         let exhausted = self.cfg.exhausted_threshold;
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        let lookahead_ms = self.cfg.weekly_reset_lookahead_hours as i64 * 3_600_000;
 
-        // 2. 选出活动 key（合格集 + pin + 粘滞，见 decide 的文档）
+        // 2. 选出活动 key（合格集 + pin + 粘滞 + 临期优先，见 decide 的文档）
         let ids: Vec<i64> = keys.iter().map(|k| k.channel_id).collect();
         let name_of = |id: i64| -> &str {
             keys.iter()
@@ -615,6 +726,9 @@ impl Orchestrator {
         let d = decide(
             &ids,
             &pct,
+            &weekly,
+            now_ms,
+            lookahead_ms,
             self.active,
             self.pinned,
             throttle,
@@ -652,7 +766,16 @@ impl Orchestrator {
 
         if d.active != self.active {
             match (self.active, d.active) {
-                (_, Some(id)) => info!(name = name_of(id), channel_id = id, "切换活动 key"),
+                (_, Some(id)) => {
+                    // 切换原因：临期优先（EDF）还是旧策略（低 pct）——日志里说清楚
+                    let switched_for_imminent = d.imminent.contains(&id);
+                    info!(
+                        name = name_of(id),
+                        channel_id = id,
+                        imminent = switched_for_imminent,
+                        "切换活动 key"
+                    );
+                }
                 (Some(prev), None) => {
                     warn!(prev, "所有 key 都无额度，保留原活动并交给 new-api 429 兜底")
                 }
@@ -775,6 +898,8 @@ impl Orchestrator {
                     five_hour_reset: w.and_then(|q| q.five_hour.as_ref().map(|x| x.next_reset_time)),
                     weekly_reset: w.and_then(|q| q.weekly.as_ref().map(|x| x.next_reset_time)),
                     max_pct: max,
+                    // keyrot-1：临期状态与决策同源（在合格集里且满足 imminent 四条件）
+                    imminent: d.imminent.contains(&id),
                     tier: tier.to_string(),
                     priority: self.applied.get(&id).copied(),
                     error: errors.get(&id).cloned(),
@@ -789,6 +914,7 @@ impl Orchestrator {
             s.throttle_threshold = throttle;
             s.restore_threshold = restore;
             s.exhausted_threshold = exhausted;
+            s.weekly_reset_lookahead_hours = self.cfg.weekly_reset_lookahead_hours;
             s.new_api_base = self.cfg.new_api.base_url.clone();
             s.new_api_healthy = healthy;
             s.active_channel_id = active;
@@ -926,6 +1052,10 @@ mod tests {
     const THROTTLE: f64 = 95.0;
     const RESTORE: f64 = 90.0;
     const EXHAUSTED: f64 = 100.0;
+    /// 测试用固定「现在」（epoch ms）：只用于 reset_ms - now_ms 的差值，绝对值无意义
+    const NOW_MS: i64 = 1_800_000_000_000;
+    const HOUR_MS: i64 = 3_600_000;
+    const LOOKAHEAD_H: i64 = 24;
 
     /// pct 列表 → (ids, map)。`None` 表示该 key 本轮**查询失败**（状态未知）。
     fn setup(pcts: &[(i64, Option<f64>)]) -> (Vec<i64>, HashMap<i64, f64>) {
@@ -937,6 +1067,24 @@ mod tests {
         (ids, map)
     }
 
+    /// 每把 key 的周窗口：reset 距现在的小时数（负数 = 已重置）+ 周 pct + max_pct。
+    fn weekly_of(pairs: &[(i64, i64, f64, f64)]) -> HashMap<i64, WeeklyInfo> {
+        pairs
+            .iter()
+            .map(|(id, in_hours, pct, max_pct)| {
+                (
+                    *id,
+                    WeeklyInfo {
+                        reset_ms: NOW_MS + in_hours * HOUR_MS,
+                        pct: *pct,
+                        max_pct: *max_pct,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    /// 旧接口语义：不传周窗口 ⇒ 无临期 ⇒ 行为与 keyrot-1 之前逐字节等价。
     fn decide_with(
         pcts: &[(i64, Option<f64>)],
         current: Option<i64>,
@@ -944,7 +1092,59 @@ mod tests {
     ) -> Decision {
         let (ids, pct) = setup(pcts);
         decide(
-            &ids, &pct, current, pinned, THROTTLE, RESTORE, EXHAUSTED,
+            &ids,
+            &pct,
+            &HashMap::new(),
+            NOW_MS,
+            LOOKAHEAD_H * HOUR_MS,
+            current,
+            pinned,
+            THROTTLE,
+            RESTORE,
+            EXHAUSTED,
+        )
+    }
+
+    /// 带周窗口数据的 decide。
+    fn decide_weekly(
+        pcts: &[(i64, Option<f64>)],
+        weekly: &[(i64, i64, f64, f64)], // (id, reset_in_hours, week_pct, max_pct)
+        current: Option<i64>,
+        pinned: Option<i64>,
+    ) -> Decision {
+        let (ids, pct) = setup(pcts);
+        decide(
+            &ids,
+            &pct,
+            &weekly_of(weekly),
+            NOW_MS,
+            LOOKAHEAD_H * HOUR_MS,
+            current,
+            pinned,
+            THROTTLE,
+            RESTORE,
+            EXHAUSTED,
+        )
+    }
+
+    /// lookahead 可变的 decide（测 0 = 关闭策略的等价性）。
+    fn decide_weekly_lookahead(
+        pcts: &[(i64, Option<f64>)],
+        weekly: &[(i64, i64, f64, f64)],
+        lookahead_hours: i64,
+    ) -> Decision {
+        let (ids, pct) = setup(pcts);
+        decide(
+            &ids,
+            &pct,
+            &weekly_of(weekly),
+            NOW_MS,
+            lookahead_hours * HOUR_MS,
+            None,
+            None,
+            THROTTLE,
+            RESTORE,
+            EXHAUSTED,
         )
     }
 
@@ -1093,6 +1293,194 @@ mod tests {
         let d = decide_with(&[(1, Some(50.0))], Some(1), Some(99));
         assert_eq!(d.active, Some(1));
         assert_eq!(d.pin_release, None, "不该为不存在的 key 报解除事件");
+    }
+
+    // ——— keyrot-1：周窗口临期优先（EDF）———
+
+    #[test]
+    fn 正常档切换_临期98压过非临期30() {
+        // 用户原话场景：key1 周窗口 98%、2 小时后重置（临期）；key2 30%（非临期）。
+        // 旧策略挑 2（pct 最低）；今该挑 1——快清零的额度用掉比浪费强。
+        let d = decide_weekly(
+            &[(1, Some(98.0)), (2, Some(30.0))],
+            &[(1, 2, 98.0, 98.0)],
+            None,
+            None,
+        );
+        assert_eq!(d.active, Some(1));
+        assert_eq!(d.regime, Regime::Normal, "key2 在 throttle 下 ⇒ 仍是正常档");
+        assert!(d.eligible.contains(&1), "临期 key 必在合格集（I1）");
+        assert_eq!(d.imminent, vec![1]);
+    }
+
+    #[test]
+    fn 临期内部_先烧最先重置的() {
+        // EDF：20h 后重置的 85%（临期）先于 23h 后重置的 80%（临期）——
+        // 即使后者 pct 更低（旧策略会选它）。
+        let d = decide_weekly(
+            &[(1, Some(85.0)), (2, Some(80.0)), (3, Some(20.0))],
+            &[(1, 20, 85.0, 85.0), (2, 23, 80.0, 80.0)],
+            None,
+            None,
+        );
+        assert_eq!(d.active, Some(1));
+        assert_eq!(d.imminent, vec![1, 2]);
+    }
+
+    #[test]
+    fn 临期平手_取max_pct低者() {
+        // 重置时刻相同 → 余量多的（max_pct 低）先上，多留安全垫
+        let d = decide_weekly(
+            &[(1, Some(80.0)), (2, Some(60.0))],
+            &[(1, 10, 80.0, 80.0), (2, 10, 60.0, 60.0)],
+            None,
+            None,
+        );
+        assert_eq!(d.active, Some(2));
+    }
+
+    #[test]
+    fn 临期边界_左开右闭() {
+        // 左开：恰好 now 重置 = 窗口已走完新周期，不算临期
+        let w = WeeklyInfo { reset_ms: NOW_MS, pct: 50.0, max_pct: 50.0 };
+        assert!(!imminent(&w, NOW_MS, LOOKAHEAD_H * HOUR_MS, EXHAUSTED));
+        // 右闭：恰好 lookahead 整点 = 还剩 0 秒，算（避免边界抖动）
+        let w = WeeklyInfo { reset_ms: NOW_MS + LOOKAHEAD_H * HOUR_MS, pct: 50.0, max_pct: 50.0 };
+        assert!(imminent(&w, NOW_MS, LOOKAHEAD_H * HOUR_MS, EXHAUSTED));
+        // 超窗 1ms：不算
+        let w = WeeklyInfo { reset_ms: NOW_MS + LOOKAHEAD_H * HOUR_MS + 1, pct: 50.0, max_pct: 50.0 };
+        assert!(!imminent(&w, NOW_MS, LOOKAHEAD_H * HOUR_MS, EXHAUSTED));
+    }
+
+    #[test]
+    fn 临期三线_各拒一种() {
+        // 周 pct 已 100%：没有「没用完」可言
+        let w = WeeklyInfo { reset_ms: NOW_MS + HOUR_MS, pct: 100.0, max_pct: 100.0 };
+        assert!(!imminent(&w, NOW_MS, LOOKAHEAD_H * HOUR_MS, EXHAUSTED));
+        // max_pct 100（5h 窗口死了）：现在接不了流量，不算可用
+        let w = WeeklyInfo { reset_ms: NOW_MS + HOUR_MS, pct: 98.0, max_pct: 100.0 };
+        assert!(!imminent(&w, NOW_MS, LOOKAHEAD_H * HOUR_MS, EXHAUSTED));
+        // 满一周才重置：不在 lookahead 内
+        let w = WeeklyInfo { reset_ms: NOW_MS + 168 * HOUR_MS, pct: 50.0, max_pct: 50.0 };
+        assert!(!imminent(&w, NOW_MS, LOOKAHEAD_H * HOUR_MS, EXHAUSTED));
+    }
+
+    #[test]
+    fn 无周窗口_非临期_行为同旧版() {
+        // key1 96%（无周窗口数据，可能是只有 5h 窗口的套餐）；key2 94%。
+        // 旧策略：2 在 throttle 下 ⇒ 正常档挑 2；1 不进合格集（96 ≥ 95）。
+        let d = decide_weekly(&[(1, Some(96.0)), (2, Some(94.0))], &[], None, None);
+        assert_eq!(d.active, Some(2));
+        assert_eq!(d.imminent, Vec::<i64>::new());
+        assert!(!d.eligible.contains(&1));
+    }
+
+    #[test]
+    fn 周98但5h已100_不可服务_不纳入() {
+        // key1：周窗口 98%、2h 后重置，但 max_pct=100（5h 死了）→ 不算临期、不进合格集
+        let d = decide_weekly(
+            &[(1, Some(100.0)), (2, Some(60.0))],
+            &[(1, 2, 98.0, 100.0)],
+            None,
+            None,
+        );
+        assert_eq!(d.active, Some(2));
+        assert_eq!(d.imminent, Vec::<i64>::new());
+        assert!(!d.eligible.contains(&1));
+    }
+
+    #[test]
+    fn 粘滞_现任临期_不换() {
+        // 现任 1 是临期且合格 → 粘滞优先，不切（哪怕 2 更宽裕）
+        let d = decide_weekly(
+            &[(1, Some(94.0)), (2, Some(30.0))],
+            &[(1, 2, 94.0, 94.0)],
+            Some(1),
+            None,
+        );
+        assert_eq!(d.active, Some(1));
+    }
+
+    #[test]
+    fn 粘滞_现任98临期_不换() {
+        // 现任 98% 但临期（在合格集）→ 粘滞继续用（降级档语义：有余量就继续榨）
+        let d = decide_weekly(
+            &[(1, Some(98.0)), (2, Some(96.0))],
+            &[(1, 2, 98.0, 98.0), (2, 100, 96.0, 96.0)],
+            Some(1),
+            None,
+        );
+        assert_eq!(d.regime, Regime::Degraded, "全员 ≥95 ⇒ 降级档（98 临期 + 96 常规）");
+        assert_eq!(d.active, Some(1), "粘滞留临期现任");
+    }
+
+    #[test]
+    fn 降级档_临期优先于低pct() {
+        // 全员 ≥95：旧策略挑 96%（最低）；EDF 挑 2h 后重置的 97%
+        let d = decide_weekly(
+            &[(1, Some(97.0)), (2, Some(96.0)), (3, Some(98.0))],
+            &[(1, 2, 97.0, 97.0), (2, 30, 96.0, 96.0), (3, 100, 98.0, 98.0)],
+            None,
+            None,
+        );
+        assert_eq!(d.regime, Regime::Degraded);
+        assert_eq!(d.active, Some(1));
+        assert_eq!(d.imminent, vec![1], "只有 key1 在 24h 内重置");
+    }
+
+    #[test]
+    fn 降级档_无临期_回到旧策略() {
+        let d = decide_weekly(
+            &[(1, Some(97.0)), (2, Some(96.0))],
+            &[(1, 100, 97.0, 97.0), (2, 30, 96.0, 96.0)],
+            None,
+            None,
+        );
+        assert_eq!(d.regime, Regime::Degraded);
+        assert_eq!(d.active, Some(2), "无临期 ⇒ 挑 pct 最低（旧行为）");
+        assert_eq!(d.imminent, Vec::<i64>::new());
+    }
+
+    #[test]
+    fn lookahead为0_策略关闭_等价旧版() {
+        // 即便有 2h 后重置的 98%，lookahead=0 应完全忽略临期：96% 的才是活动 key
+        let d = decide_weekly_lookahead(
+            &[(1, Some(98.0)), (2, Some(96.0)), (3, Some(90.0))],
+            &[(1, 2, 98.0, 98.0)],
+            0,
+        );
+        assert_eq!(d.regime, Regime::Normal, "90% 在 throttle 下 ⇒ 正常档");
+        assert_eq!(d.active, Some(3), "无临期 ⇒ 挑 restore 以下最低的（旧行为）");
+        assert_eq!(d.imminent, Vec::<i64>::new());
+    }
+
+    #[test]
+    fn pin_临期key_保持不解除() {
+        // 用户 pin 一把 98% 但临期的 key：它在合格集 ⇒ pin 生效（不被 95 线误解除）
+        let d = decide_weekly(
+            &[(1, Some(50.0)), (2, Some(98.0))],
+            &[(2, 2, 98.0, 98.0)],
+            Some(1),
+            Some(2),
+        );
+        assert_eq!(d.active, Some(2));
+        assert_eq!(d.pin_release, None);
+    }
+
+    #[test]
+    fn pin_非临期98_照旧解除() {
+        // 对照：同样 98% 但**不临期**（一周后才重置）→ 正常档越 95 线，pin 必解除
+        let d = decide_weekly(
+            &[(1, Some(50.0)), (2, Some(98.0))],
+            &[(2, 168, 98.0, 98.0)],
+            Some(1),
+            Some(2),
+        );
+        assert_eq!(
+            d.pin_release,
+            Some(PinRelease { channel_id: 2, pct: 98.0, limit: THROTTLE })
+        );
+        assert_eq!(d.active, Some(1), "回到自动逻辑（粘滞留现任）");
     }
 
     // ——— 面板实时指标：从日志推导（2026-08-24 限流踩坑后改的）———

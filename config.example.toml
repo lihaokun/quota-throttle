@@ -19,6 +19,13 @@ restore_threshold = 90.0
 # ⚠️ 智谱只返回整数 percentage（无 usage/remaining），所以这里的分辨率就是 1%。
 exhausted_threshold = 100.0
 
+# 【周临期优先】周窗口重置进入这个时间窗（小时）内的 key 视为「临期」：
+#   切换时会优先选它——快清零的额度用掉比浪费强（最大化额度使用效率）。
+#   · 判定条件：周窗口将在 N 小时内重置 ∧ 周窗口还有余量(<exhausted) ∧ 5h 窗口也还有余量。
+#   · 只在**发生切换**时影响排序；现任合格就不换（粘滞政策不变）。
+#   · 0 = 关闭本策略（行为与旧版完全一致）。建议 6–48h；上限 168（一周）。
+weekly_reset_lookahead_hours = 24
+
 dry_run = true               # 先 true 空跑验证日志；确认无误再改 false 真正生效
 watch_windows = ["five_hour", "weekly"]   # 同时盯 5 小时和每周窗口，取最大使用率
 

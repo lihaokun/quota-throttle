@@ -43,6 +43,9 @@ pub struct KeyStatus {
     pub weekly_reset: Option<i64>,
     /// 监控窗口取最大（决策依据）；None = 查询失败（**不是 0%**）
     pub max_pct: Option<f64>,
+    /// keyrot-1：是否临期（周窗口即将重置且还有余量）。与决策同源，仅供看板/日志。
+    #[serde(default)]
+    pub imminent: bool,
     /// "active" | "standby" | "exhausted" | "unknown"
     pub tier: String,
     /// 本工具最近成功下发的 priority
@@ -178,6 +181,9 @@ pub struct StatusSnapshot {
     pub regime: String,
     /// 合格集：自动逻辑允许把流量放上去的渠道。前端据此决定 pin 按钮灰不灰
     pub eligible: Vec<i64>,
+    /// keyrot-1：周窗口临期时间窗（小时）。0 = 策略关闭（前端显示「周临期优先 关」）
+    #[serde(default)]
+    pub weekly_reset_lookahead_hours: u64,
     pub last_pin_release: Option<PinReleaseInfo>,
     /// 智谱高峰时段（只显示，不参与调度决策）
     pub peak: PeakInfo,
@@ -640,6 +646,7 @@ fn render_html() -> String {
  .badge{padding:2px 8px;border-radius:6px;font-size:11px;font-weight:700}
  .b-on{background:rgba(62,207,142,.13);color:var(--ok)}
  .b-off{background:rgba(242,85,90,.22);color:var(--bad)}
+ .b-imminent{background:rgba(91,140,255,.15);color:var(--accent)}
  .cid{color:var(--dim);font-size:12px;font-variant-numeric:tabular-nums}
  .live{display:flex;align-items:center;gap:9px;margin:12px 0 16px;font-size:13px;
        font-variant-numeric:tabular-nums;color:var(--dim)}
@@ -987,7 +994,8 @@ async function tick(){
 
   document.getElementById('sub').textContent=
     `任一窗口达 ${thr}% 即切换 · 挑新活动 key 要求低于 ${d.restore_threshold}%`
-    + ` · 全部 key 都超线时，榨到 ${d.exhausted_threshold}% 再流转（不硬撞 429）`;
+    + ` · 全部 key 都超线时，榨到 ${d.exhausted_threshold}% 再流转（不硬撞 429）`
+    + ` · 周临期优先 ${d.weekly_reset_lookahead_hours>0?d.weekly_reset_lookahead_hours+' 小时内重置的 key': '关'}`;
 
   const q=d.newapi_user_quota;
   document.getElementById('chips').innerHTML=`
@@ -1045,6 +1053,7 @@ async function tick(){
      <div class="chead">
        <span class="name">${k.name}</span>
        <span class="tier t-${k.tier}">${TIER[k.tier]||k.tier}</span>
+       ${k.imminent?'<span class="badge b-imminent" title="周窗口即将重置且还有余量 — 切换时会优先烧它">⏳ 临期</span>':''}
        <span class="cid">渠道 #${k.channel_id}</span>
        ${k.claude_channel_id!=null?`<span class="cid">CC #${k.claude_channel_id}</span>`:''}
        ${cc&&!cc.enabled?'<span class="badge b-off">CC 渠道被禁用</span>':''}
