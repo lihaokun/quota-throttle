@@ -266,6 +266,28 @@ pub struct ChannelTemplate {
     /// 分组名
     #[serde(default = "default_group")]
     pub group: String,
+    /// 可选的上游 `/models` 发现。成功结果是权威目录；`models` 仅作新建时 fallback。
+    #[serde(default)]
+    pub model_discovery: Option<ModelDiscoveryConfig>,
+}
+
+/// 上游模型目录的鉴权形态。不同 OpenAI 兼容网关并不统一：智谱用 Bearer，
+/// 火山自定义 APIG 实测使用原始 Authorization。
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelDiscoveryAuth {
+    #[default]
+    Bearer,
+    AuthorizationRaw,
+    XApiKey,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Hash)]
+pub struct ModelDiscoveryConfig {
+    /// 完整 models URL，例如 https://open.bigmodel.cn/api/coding/paas/v4/models
+    pub url: String,
+    #[serde(default)]
+    pub auth: ModelDiscoveryAuth,
 }
 
 fn default_channel_type() -> i64 {
@@ -292,8 +314,7 @@ pub struct ClaudeChannelTemplate {
     /// 智谱 Claude 兼容口（官方文档）：https://open.bigmodel.cn/api/anthropic
     #[serde(default = "default_claude_base_url")]
     pub base_url: String,
-    /// 逗号分隔模型名。⚠️ 必须含 `[1m]` 后缀变体——Claude Code 配了
-    /// `ANTHROPIC_DEFAULT_*_MODEL=glm-5.3[1m]` 时实际发出的就是带后缀的名字（实测基线）。
+    /// 逗号分隔模型名，仅在关闭发现或新建渠道发现失败时作 fallback。
     #[serde(default = "default_claude_models")]
     pub models: String,
     /// 专用分组。⚠️ 必须与 [new_api.channel_template].group 不同（validate 拦截）。
@@ -305,6 +326,9 @@ pub struct ClaudeChannelTemplate {
     /// CC 专用令牌名（绑定 claude group、无限额度；sync 时自动创建并打印完整 key）。
     #[serde(default = "default_claude_token_name")]
     pub token_name: String,
+    /// 可选的上游 `/models` 发现；通常与同一 key 的 OpenAI 模板共用 URL/auth。
+    #[serde(default)]
+    pub model_discovery: Option<ModelDiscoveryConfig>,
 }
 
 impl ClaudeChannelTemplate {
@@ -321,9 +345,8 @@ fn default_claude_base_url() -> String {
     "https://open.bigmodel.cn/api/anthropic".to_string()
 }
 fn default_claude_models() -> String {
-    // 与 OpenAI 模板同源（models.dev），外加 [1m] 1M 上下文变体（Claude Code 实际会发的名字）
-    "glm-4.7,glm-5.1,glm-5.2,glm-5.2[1m],glm-5.3,glm-5.3[1m],glm-5-turbo,glm-5v-turbo,glm-4.6v,glm-4.5-air"
-        .to_string()
+    // 仅作发现失败时的新渠道 fallback；基线取自智谱 Coding Plan /models 实测结果。
+    "glm-4.5,glm-4.5-air,glm-4.6,glm-4.7,glm-5,glm-5-turbo,glm-5.1,glm-5.2,glm-5.3,glm-5.3-flash".to_string()
 }
 fn default_claude_group() -> String {
     "claude".to_string()
@@ -427,6 +450,22 @@ fn write_atomic(path: &str, bytes: &[u8]) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn validate_model_discovery(label: &str, cfg: Option<&ModelDiscoveryConfig>) -> anyhow::Result<()> {
+    let Some(cfg) = cfg else { return Ok(()) };
+    anyhow::ensure!(
+        !cfg.url.trim().is_empty() && cfg.url == cfg.url.trim(),
+        "{label}.model_discovery.url 非法：不能为空或带首尾空白"
+    );
+    let url = reqwest::Url::parse(&cfg.url)
+        .with_context(|| format!("{label}.model_discovery.url 不是合法绝对 URL: {}", cfg.url))?;
+    anyhow::ensure!(
+        matches!(url.scheme(), "http" | "https") && url.has_host(),
+        "{label}.model_discovery.url 只允许带主机的 http/https 绝对 URL: {}",
+        cfg.url
+    );
+    Ok(())
+}
+
 /// 往 config.toml 追加一条 `[[keys]]`。
 ///
 /// 用 **toml_edit**（格式保留式编辑）而不是 `toml::to_string` 重新序列化——后者会把用户
@@ -524,6 +563,20 @@ impl Config {
                 p.end_hour
             );
         }
+        validate_model_discovery(
+            "[new_api.channel_template]",
+            self.new_api
+                .channel_template
+                .as_ref()
+                .and_then(|t| t.model_discovery.as_ref()),
+        )?;
+        validate_model_discovery(
+            "[new_api.channel_template_claude]",
+            self.new_api
+                .channel_template_claude
+                .as_ref()
+                .and_then(|t| t.model_discovery.as_ref()),
+        )?;
         // —— claude 渠道模板三条不变量（细化设计 §5.1 C2）——
         if let Some(cc) = &self.new_api.channel_template_claude {
             if cc.name_suffix.trim().is_empty() || cc.name_suffix != cc.name_suffix.trim() {
@@ -799,8 +852,94 @@ group = "default"
         assert_eq!(cc.group, "claude");
         assert_eq!(cc.name_suffix, "-cc");
         assert_eq!(cc.token_name, "claude-code");
-        assert!(cc.models.contains("glm-5.3[1m]"), "默认模型表必须含 [1m] 变体");
+        assert!(cc.models.contains("glm-5.3-flash"));
+        assert!(cc.model_discovery.is_none());
         assert_eq!(cc.channel_name("zhipu-1"), "zhipu-1-cc");
         std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn 模型发现_旧配置兼容且鉴权默认bearer() {
+        let p = claude_cfg(&format!(
+            "{OPENAI_TPL}\n[new_api.channel_template.model_discovery]\n\
+             url = \"https://open.bigmodel.cn/api/coding/paas/v4/models\"\n"
+        ));
+        let cfg = Config::load(&p).unwrap();
+        let discovery = cfg
+            .new_api
+            .channel_template
+            .as_ref()
+            .unwrap()
+            .model_discovery
+            .as_ref()
+            .unwrap();
+        assert_eq!(discovery.auth, ModelDiscoveryAuth::Bearer);
+        std::fs::remove_file(&p).ok();
+
+        let p = claude_cfg(OPENAI_TPL);
+        let cfg = Config::load(&p).unwrap();
+        assert!(cfg
+            .new_api
+            .channel_template
+            .as_ref()
+            .unwrap()
+            .model_discovery
+            .is_none());
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn 模型发现_支持raw与x_api_key鉴权() {
+        for (auth, expected) in [
+            ("authorization_raw", ModelDiscoveryAuth::AuthorizationRaw),
+            ("x_api_key", ModelDiscoveryAuth::XApiKey),
+        ] {
+            let p = claude_cfg(&format!(
+                "{OPENAI_TPL}\n[new_api.channel_template.model_discovery]\n\
+                 url = \"https://gateway.example/v1/models\"\n\
+                 auth = \"{auth}\"\n"
+            ));
+            let cfg = Config::load(&p).unwrap();
+            assert_eq!(
+                cfg.new_api
+                    .channel_template
+                    .as_ref()
+                    .unwrap()
+                    .model_discovery
+                    .as_ref()
+                    .unwrap()
+                    .auth,
+                expected
+            );
+            std::fs::remove_file(&p).ok();
+        }
+    }
+
+    #[test]
+    fn 模型发现_非法url启动即失败() {
+        for url in ["models", "file:///tmp/models", " https://example/models"] {
+            let p = claude_cfg(&format!(
+                "{OPENAI_TPL}\n[new_api.channel_template.model_discovery]\nurl = \"{url}\"\n"
+            ));
+            assert!(Config::load(&p).is_err(), "应拒绝 URL: {url}");
+            std::fs::remove_file(&p).ok();
+        }
+    }
+
+    #[test]
+    fn 示例配置可解析且默认开启智谱模型发现() {
+        let cfg: Config = toml::from_str(include_str!("../config.example.toml")).unwrap();
+        cfg.validate().unwrap();
+        let openai = cfg.new_api.channel_template.as_ref().unwrap();
+        let claude = cfg.new_api.channel_template_claude.as_ref().unwrap();
+        assert_eq!(
+            openai.model_discovery.as_ref(),
+            claude.model_discovery.as_ref(),
+            "同一把 key 的双渠道应复用同一发现目标"
+        );
+        assert_eq!(
+            openai.model_discovery.as_ref().unwrap().auth,
+            ModelDiscoveryAuth::Bearer
+        );
     }
 }

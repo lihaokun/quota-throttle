@@ -1,5 +1,6 @@
 mod boot;
 mod config;
+mod model_catalog;
 mod newapi;
 mod orchestrator;
 mod quota;

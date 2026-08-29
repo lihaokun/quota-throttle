@@ -174,7 +174,17 @@ Bigmodel-Project: proj_...
 [new_api.channel_template]
 type = 8
 base_url = "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions"
+models = "glm-4.5,glm-4.5-air,glm-4.6,glm-4.7,glm-5,glm-5-turbo,glm-5.1,glm-5.2,glm-5.3,glm-5.3-flash" # 探测失败时 fallback
+group = "default"
+
+[new_api.channel_template.model_discovery]
+url = "https://open.bigmodel.cn/api/coding/paas/v4/models"
+auth = "bearer"
 ```
+
+`up` / `sync` 会用每把 key 调一次 `/models`：新渠道采用实时结果，存量渠道发生增删时只更新
+`models`；探测失败不会改存量渠道，新建渠道才使用上面的 fallback。该探测不进入 quota 或看板
+轮询。
 
 ### 3. opencode 接入：改 provider 的 baseURL，并清掉 auth.json 里的智谱 key
 
@@ -197,7 +207,8 @@ opencode 的 `zhipuai-coding-plan` 是 **OpenAI 兼容** provider（`@ai-sdk/ope
 
 **同时要把 `~/.local/share/opencode/auth.json` 里的 `zhipuai-coding-plan` 条目清掉**（备份后置空即可）——否则 opencode 可能优先用 auth.json 里的智谱 key 去连 new-api，被拒 401。
 
-**模型名**只能用 opencode 该 provider 的这几个：`glm-4.7` `glm-5.1` `glm-5.2` `glm-5-turbo` `glm-5v-turbo` `glm-4.6v` `glm-4.5-air`（**没有 `glm-4.6`**）。
+**模型名以当前 key 的 `/models` 返回为准**。运行 `sync` 后，new-api 渠道会自动收敛到该 key
+实际可用的集合；客户端自己的 provider 注册表若尚未展示新模型，可在客户端配置中显式补充。
 
 ## 设计要点
 

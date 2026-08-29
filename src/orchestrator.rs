@@ -199,6 +199,8 @@ pub struct AddKeyOk {
     pub level: Option<String>,
     pub five_hour_pct: Option<f64>,
     pub weekly_pct: Option<f64>,
+    /// `discovered` = 采用该 key 的实时 `/models`；`fallback` = 探测不可用时用静态配置。
+    pub models_source: String,
 }
 
 /// 命令回执：**主循环在 tick 之后才发出**，于是「HTTP 200 返回」⇔「状态已落地且已发布」。
@@ -480,8 +482,15 @@ impl Orchestrator {
             .channel_template
             .as_ref()
             .ok_or("配置里没有 [new_api.channel_template]，无法自动建渠道")?;
-        self.api
-            .create_channel(&name, &spec.api_key, self.cfg.priority_standby, &tpl.into())
+        let models_source = self
+            .api
+            .create_channel_resolving_models(
+                &name,
+                &name,
+                &spec.api_key,
+                self.cfg.priority_standby,
+                &tpl.into(),
+            )
             .await
             .map_err(|e| format!("建渠道失败：{e}"))?;
         let claude_tpl = self.cfg.new_api.channel_template_claude.as_ref();
@@ -489,7 +498,13 @@ impl Orchestrator {
             let cc_name = ct.channel_name(&name);
             if let Err(e) = self
                 .api
-                .create_channel(&cc_name, &spec.api_key, self.cfg.priority_standby, &ct.into())
+                .create_channel_resolving_models(
+                    &cc_name,
+                    &name,
+                    &spec.api_key,
+                    self.cfg.priority_standby,
+                    &ct.into(),
+                )
                 .await
             {
                 warn!(name = %cc_name, error = %e, "建 claude 渠道失败，降级：这把 key 暂无 Claude Code 侧");
@@ -532,7 +547,14 @@ impl Orchestrator {
             claude_channel_id,
             quota_headers: headers,
         });
-        info!(name = %name, channel_id, claude_channel_id, level = ?status.level, "已加入新 key（探活通过）");
+        info!(
+            name = %name,
+            channel_id,
+            claude_channel_id,
+            level = ?status.level,
+            models_source = models_source.as_str(),
+            "已加入新 key（探活通过）"
+        );
 
         Ok(AddKeyOk {
             channel_id,
@@ -540,6 +562,7 @@ impl Orchestrator {
             level: status.level,
             five_hour_pct: status.five_hour.as_ref().map(|w| w.percentage),
             weekly_pct: status.weekly.as_ref().map(|w| w.percentage),
+            models_source: models_source.as_str().to_string(),
         })
     }
 

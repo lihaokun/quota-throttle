@@ -46,7 +46,7 @@ cargo run --release -- down config.toml    # 停 new-api
 
 - **new-api**（`QuantumNous/new-api`，旧名 `Calcium-Ion/new-api`）：管理 API、渠道类型码、setup 契约。源码用 `gh api repos/QuantumNous/new-api/contents/<path>?ref=<tag>` 拉。
 - **opencode**（`sst/opencode`）：`zhipuai-coding-plan` provider 定义、config/auth 优先级。
-- **models.dev**：opencode 的 provider 注册表（本机缓存 `~/.cache/opencode/models.json`）。
+- **上游 `/models`**：渠道模型目录的权威来源；models.dev 只用于核对 opencode 客户端是否展示该模型。
 
 ## 已知限制与注意事项（血泪，务必先读再动手）
 
@@ -119,6 +119,8 @@ cargo run --release -- down config.toml    # 停 new-api
   · **没有任何接口能查当前是否高峰**（`quota/limit` 响应无此字段；官方文档也无该接口）——只能按时钟算。
     因窗口按 **UTC+8** 定义，代码里必须按 `tz_offset` 算而**不是本机时区**（本机恰好 UTC+8 会掩盖这个 bug）。
 - **探测成本坑**：glm 是推理模型，`max_tokens:1` 挡不住思考（烧 ~660 token）；`thinking:{type:"disabled"}` 才压到 ~7 token。
+- **模型目录**：`up` / `sync` / AddKey 才调用每把 key 的 `/models`，不进 quota/面板周期。
+  成功结果权威；失败时存量渠道不动，新渠道才用模板 `models` fallback。鉴权值不得进日志。
 - **Claude Code 双渠道（claude-code-routing）**：每把 key 双渠道——`<name>`(type 8, opencode) + `<name>-cc`
   (type 14, 智谱 anthropic 口 `https://open.bigmodel.cn/api/anthropic`，new-api 自动拼 `/v1/messages`)，
   切换循环对两侧写**同一 priority**（I1 联动）。要点（细节见 docs/design/claude-code-routing/）：
@@ -131,7 +133,7 @@ cargo run --release -- down config.toml    # 停 new-api
     每次 sync 现取现用，不落 config。AddToken 服务端生成 key、搬运 group 字段。
   · **⚠️ 智谱 anthropic 口不认 `[1m]` 后缀模型名**（实测 2026-08：`glm-5.3[1m]`/`glm-5.2[1m]`
     直连都报 1214「modelCode 不存在」，纯 `glm-5.3` 通）。CC 客户端自己剥后缀发纯名——
-    所以渠道 models 表里的 `[1m]` 变体只是无害冗余（永不匹配），**别把带后缀的名字发给上游**。
+    所以 `/models` 同步只挂上游返回的纯模型名，**别把带后缀的名字发给上游**。
   · CC 接入只改两个 env：`ANTHROPIC_BASE_URL=http://127.0.0.1:3000` + `ANTHROPIC_AUTH_TOKEN=<sync 打印的令牌>`。
   · **令牌 group 要过两道门**（ensure_group 都会注册）：① `UserUsableGroups`（用户可用组，
     option 平铺 map）——缺了 TokenAuth 直接 **403「无权访问 x 分组」**（auth.go:421-435，

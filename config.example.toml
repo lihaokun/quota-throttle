@@ -117,9 +117,13 @@ repo = "QuantumNous/new-api"
 # 类型(8) 原样透传全路径；OpenAI 类型(1) 会拼成 /v4/v1/... 报 404。
 type = 8
 base_url = "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions"
-# opencode zhipuai-coding-plan 的全部模型（取自 models.dev）
-models = "glm-4.7,glm-5.1,glm-5.2,glm-5.3,glm-5.3-flash,glm-5-turbo,glm-5v-turbo,glm-4.6v,glm-4.5-air"
+# 仅作 /models 探测失败时的新渠道 fallback；平时以每把 key 的实时返回为准。
+models = "glm-4.5,glm-4.5-air,glm-4.6,glm-4.7,glm-5,glm-5-turbo,glm-5.1,glm-5.2,glm-5.3,glm-5.3-flash"
 group = "default"
+
+[new_api.channel_template.model_discovery]
+url = "https://open.bigmodel.cn/api/coding/paas/v4/models"
+auth = "bearer"              # Authorization: Bearer <key>
 
 # —— Claude Code 渠道模板（可选；配上 = 开启双渠道）——
 # 配了它，sync 会给每把 key 额外建一个 "<name>-cc" 的 Anthropic 格式渠道（type 14），
@@ -134,13 +138,15 @@ group = "default"
 [new_api.channel_template_claude]
 type = 14
 base_url = "https://open.bigmodel.cn/api/anthropic"
-# 模型表按需配。⚠️ 实测（2026-08）：智谱 anthropic 口不认带 [1m] 后缀的名字（1214），
-# Claude Code 客户端会把 ANTHROPIC_DEFAULT_*_MODEL 里的 [1m] 后缀剥掉再发纯名——
-# 所以表里放纯名即可，带后缀的变体只是无害冗余。
-models = "glm-4.7,glm-5.1,glm-5.2,glm-5.2[1m],glm-5.3,glm-5.3[1m],glm-5-turbo,glm-5v-turbo,glm-4.6v,glm-4.5-air"
+# 同样只作失败 fallback；成功时与主渠道复用同一把 key 的 /models 结果。
+models = "glm-4.5,glm-4.5-air,glm-4.6,glm-4.7,glm-5,glm-5-turbo,glm-5.1,glm-5.2,glm-5.3,glm-5.3-flash"
 group = "claude"
 name_suffix = "-cc"          # claude 渠道名 = <key 名> + 后缀
 token_name = "claude-code"   # CC 专用令牌名（自动创建，绑定 claude 分组，无限额度）
+
+[new_api.channel_template_claude.model_discovery]
+url = "https://open.bigmodel.cn/api/coding/paas/v4/models"
+auth = "bearer"
 
 # —— 一把智谱 key = 一个独立渠道 ——
 # name 同时用作 new-api 渠道名，sync 靠它解析/创建渠道。channel_id 可留空，交给 sync 自动解析。

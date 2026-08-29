@@ -816,7 +816,7 @@ document.getElementById('addf').addEventListener('submit',async e=>{
   try{
     const j=await call('POST','/api/keys',body);
     msg.innerHTML=`<div class="ban ban-info">✅ 已添加 <b>${body.name}</b>（渠道 #${j.channel_id}${j.claude_channel_id!=null?` · CC #${j.claude_channel_id}`:''}）
-      · 套餐 <b>${j.level||'—'}</b> · 5 小时窗口 <b>${j.five_hour_pct??'—'}%</b> · 每周 <b>${j.weekly_pct??'—'}%</b>
+      · 套餐 <b>${j.level||'—'}</b> · 模型 <b>${j.models_source==='discovered'?'实时探测':'配置 fallback'}</b> · 5 小时窗口 <b>${j.five_hour_pct??'—'}%</b> · 每周 <b>${j.weekly_pct??'—'}%</b>
       · 已写回 config.toml，重启后仍在。以 standby 入场，下一轮自动决策决定要不要转正。</div>`;
     e.target.reset(); tick();
   }catch(err){
