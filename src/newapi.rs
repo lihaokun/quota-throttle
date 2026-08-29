@@ -843,6 +843,7 @@ mod tests {
             name: name.into(),
             zhipu_api_key: format!("k-{name}"),
             channel_id: None,
+            note: String::new(),
             quota_headers: Vec::new(),
         }
     }

@@ -30,6 +30,8 @@ use tracing::{debug, error, info, warn};
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct KeyStatus {
     pub name: String,
+    /// 人类可读备注（如持有人名字），只显示；空则前端不渲染
+    pub note: String,
     pub channel_id: i64,
     /// 该 key 的 claude 渠道（`<name>-cc`）id。None = 无 CC 侧。
     /// 仅供看板认领展示（渠道实况/live 指标合并进卡片）；决策身份永远是主 channel_id。
@@ -638,6 +640,8 @@ fn render_html() -> String {
  .card.off{border-color:rgba(242,85,90,.5);background:linear-gradient(180deg,rgba(242,85,90,.08),transparent 60%),var(--card)}
  .chead{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
  .name{font-size:16px;font-weight:650}
+ .note{margin-left:7px;padding:2px 8px;border-radius:999px;background:rgba(91,140,255,.14);
+       color:var(--accent);font-size:12px;font-weight:600;vertical-align:middle}
  .tier{padding:2px 10px;border-radius:999px;font-size:11px;font-weight:700;letter-spacing:.04em}
  .t-active{background:rgba(62,207,142,.16);color:var(--ok)}
  .t-standby{background:rgba(139,148,163,.16);color:#aeb6c2}
@@ -1051,7 +1055,7 @@ async function tick(){
     return `
    <div class="card ${k.tier==='active'?'act':''} ${k.tier==='exhausted'?'dead':''} ${disabled?'off':''}">
      <div class="chead">
-       <span class="name">${k.name}</span>
+       <span class="name">${k.name}</span>${k.note?`<span class="note">${k.note}</span>`:''}
        <span class="tier t-${k.tier}">${TIER[k.tier]||k.tier}</span>
        ${k.imminent?'<span class="badge b-imminent" title="周窗口即将重置且还有余量 — 切换时会优先烧它">⏳ 临期</span>':''}
        <span class="cid">渠道 #${k.channel_id}</span>

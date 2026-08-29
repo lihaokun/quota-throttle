@@ -251,19 +251,13 @@ pub struct Decision {
 /// - 已知集 = 本轮成功查到 pct 的 key（查询失败的不在其中，状态未知）
 /// - 正常集 = 已知集里 pct < throttle 的；非空 ⇒ 正常档，合格集 = 正常集
 /// - 否则   ⇒ 降级档，合格集 = 已知集里 pct < exhausted 的（还有余量就能用）
-/// - **临期扩展**：无论哪档，临期 key（周窗口即将重置且还有余量，见 `imminent`）并入合格集
-///   ——快清零的额度用掉比浪费强（用户拍板：95–100% 之间但临期的 key 也算可用）。
-///   临期 key 的「合格线」天然是 exhausted（imminent 条件 3/4），与降级档一致；
-///   正常档下它 pct ≥ throttle 也能入池，这正是本功能与旧行为的分水岭。
+/// - 临期**不改变合格线**，只在当前档位的合格集内改变挑选顺序：正常档仍严格 `< throttle`；
+///   只有全员都越过预防线进入降级档后，才允许使用 `< exhausted` 的 95–100% key。
 ///
 /// 全部查询失败（已知集为空）⇒ 返回空集 + 正常档：没有任何证据表明降级了。
-#[allow(clippy::too_many_arguments)]
 fn eligible_set(
     ids: &[i64],
     pct: &HashMap<i64, f64>,
-    weekly: &HashMap<i64, WeeklyInfo>,
-    now_ms: i64,
-    lookahead_ms: i64,
     throttle: f64,
     exhausted: f64,
 ) -> (Vec<i64>, Regime) {
@@ -273,39 +267,14 @@ fn eligible_set(
             .filter(|id| pct.get(id).is_some_and(|p| *p < limit))
             .collect()
     };
-    // 临期集：`imminent` 判定与 Regime 无关（它是额度生命周期事实，不是档位概念）
-    let imminents: Vec<i64> = ids
-        .iter()
-        .copied()
-        .filter(|id| weekly.get(id).is_some_and(|w| imminent(w, now_ms, lookahead_ms, exhausted)))
-        .collect();
     if !ids.iter().any(|id| pct.contains_key(id)) {
         return (Vec::new(), Regime::Normal);
     }
     let normal = under(throttle);
     if !normal.is_empty() {
-        // 正常档合格集 = 正常集 ∪ 临期集（先算好要补的，再 extend——避免闭包借用冲突）
-        let mut merged = normal;
-        let extra: Vec<i64> = imminents
-            .iter()
-            .copied()
-            .filter(|id| !merged.contains(id))
-            .collect();
-        merged.extend(extra);
-        return (merged, Regime::Normal);
+        return (normal, Regime::Normal);
     }
-    // 降级档：**regime 由「全员是否过预防线」决定，临期集不改变它**——
-    // 无非正常 key（正常集空）但存在临期 key 时，仍是降级档（全局事实），
-    // 只是合格集里多了临期的那把。临期集 ⊆ under(exhausted)（imminent 条件 3 保证），
-    // 并入无冗余；还是显式并入，不依赖这个推导——万一条件将来变了，这里仍安全。
-    let mut deg = under(exhausted);
-    let extra: Vec<i64> = imminents
-        .iter()
-        .copied()
-        .filter(|id| !deg.contains(id))
-        .collect();
-    deg.extend(extra);
-    (deg, Regime::Degraded)
+    (under(exhausted), Regime::Degraded)
 }
 
 /// 选活动 key。**纯函数**（分支多、又是安全核心，必须可单测）。
@@ -321,8 +290,8 @@ fn eligible_set(
 /// 或 pinned，则**保持不变** —— 一次瞬时失败不该丢缓存，也不该抖掉用户的 pin。
 /// 反过来说，解除 pin 必须基于「查到了 **且** 确实超线」这个正面证据。
 ///
-/// keyrot-1 的 pin 说明：临期 key 恒在合格集（不变量 I1），pin 它不会触发越线解除；
-/// 非临期 key 的 pin 门限仍按档位取（throttle/exhausted），与旧版一致——无需特判。
+/// keyrot-1 的 pin 说明：临期只影响合格集内排序，不放宽 pin 门限；正常档仍是 throttle，
+/// 降级档仍是 exhausted，与旧版一致。
 #[allow(clippy::too_many_arguments)]
 fn decide(
     ids: &[i64],
@@ -336,7 +305,7 @@ fn decide(
     restore: f64,
     exhausted: f64,
 ) -> Decision {
-    let (eligible, regime) = eligible_set(ids, pct, weekly, now_ms, lookahead_ms, throttle, exhausted);
+    let (eligible, regime) = eligible_set(ids, pct, throttle, exhausted);
     let imminents: Vec<i64> = eligible
         .iter()
         .copied()
@@ -357,8 +326,7 @@ fn decide(
             // 查询失败 → 保持 pin（抖动保护）
             None => return done(Some(p), eligible, imminents, None),
             Some(_) if eligible.contains(&p) => return done(Some(p), eligible, imminents, None),
-            // 越线 → 解除 pin，落到自动逻辑。临期 key 恒在合格集 ⇒ 走不到这里（见文档），
-            // 所以门限仍按档位取，与旧版一致。
+            // 越线 → 解除 pin，落到自动逻辑。临期不放宽门限，仍按档位取。
             Some(&pp) => {
                 let limit = match regime {
                     Regime::Normal => throttle,
@@ -560,6 +528,7 @@ impl Orchestrator {
             name: name.clone(),
             zhipu_api_key: spec.api_key.clone(),
             channel_id,
+            note: spec.note.trim().to_string(),
             claude_channel_id,
             quota_headers: headers,
         });
@@ -891,6 +860,7 @@ impl Orchestrator {
                 };
                 KeyStatus {
                     name: k.name.clone(),
+                    note: k.note.clone(),
                     channel_id: id,
                     claude_channel_id: k.claude_channel_id,
                     five_hour_pct: w.and_then(|q| q.five_hour.as_ref().map(|x| x.percentage)),
@@ -1298,19 +1268,18 @@ mod tests {
     // ——— keyrot-1：周窗口临期优先（EDF）———
 
     #[test]
-    fn 正常档切换_临期98压过非临期30() {
-        // 用户原话场景：key1 周窗口 98%、2 小时后重置（临期）；key2 30%（非临期）。
-        // 旧策略挑 2（pct 最低）；今该挑 1——快清零的额度用掉比浪费强。
+    fn 正常档_临期98不能越过预防线() {
+        // 仍有 30% 的正常 key 时，98% 即使临期也不能绕过 95% 预防线。
         let d = decide_weekly(
             &[(1, Some(98.0)), (2, Some(30.0))],
             &[(1, 2, 98.0, 98.0)],
             None,
             None,
         );
-        assert_eq!(d.active, Some(1));
+        assert_eq!(d.active, Some(2));
         assert_eq!(d.regime, Regime::Normal, "key2 在 throttle 下 ⇒ 仍是正常档");
-        assert!(d.eligible.contains(&1), "临期 key 必在合格集（I1）");
-        assert_eq!(d.imminent, vec![1]);
+        assert!(!d.eligible.contains(&1), "正常档不能把 98% 临期 key 拉回合格集");
+        assert_eq!(d.imminent, Vec::<i64>::new());
     }
 
     #[test]
@@ -1455,16 +1424,19 @@ mod tests {
     }
 
     #[test]
-    fn pin_临期key_保持不解除() {
-        // 用户 pin 一把 98% 但临期的 key：它在合格集 ⇒ pin 生效（不被 95 线误解除）
+    fn 正常档_pin临期98仍按预防线解除() {
+        // 正常档还有 50% key：98% 即使临期，pin 仍须按 95% 预防线解除。
         let d = decide_weekly(
             &[(1, Some(50.0)), (2, Some(98.0))],
             &[(2, 2, 98.0, 98.0)],
             Some(1),
             Some(2),
         );
-        assert_eq!(d.active, Some(2));
-        assert_eq!(d.pin_release, None);
+        assert_eq!(d.active, Some(1));
+        assert_eq!(
+            d.pin_release,
+            Some(PinRelease { channel_id: 2, pct: 98.0, limit: THROTTLE })
+        );
     }
 
     #[test]

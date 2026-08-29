@@ -12,11 +12,10 @@ tick()（每 poll_interval_secs 一轮）
        └─ weekly 缺失 → 该 key 无 WeeklyInfo（非临期）
      ↓
   decide()（纯函数）
-     ├─ eligible_set(): 原合格集 ∪ 临期集（临期 = 周窗口还在(+∞, lookahead] 且 pct<exhausted 且 max_pct<exhausted）
+     ├─ eligible_set(): 原合格集不变（正常档 <95%；全员越线后降级档 <100%）
      ├─ 粘滞：现任合格即不换（不变）
-     ├─ pin：临期 key 的合格线 = exhausted（该 key 属临期 ⇒ 越线解除门限为 exhausted，
-     │        避免 95–100 的临期 key 被「95 越线」误解除）→ pin_release 带 limit
-     └─ pick：临期集合非空 → 升序 rst，平手 pct 低者；否则照旧
+     ├─ pin：门限仍由档位决定（正常档 95%；降级档 100%）
+     └─ pick：当前合格集内的临期集合非空 → 升序 reset，平手 pct 低者；否则照旧
      ↓
   priority 三档下发（active/standby/exhausted，双渠道联动）→ 快照发布
 ```
@@ -66,8 +65,7 @@ decide(ids, pct, weekly_map, now, lookahead, current, pinned, throttle, restore,
   pre: 全部参数合法（lookahead ≥ 0；weekly_map 键 ⊆ ids）
   post:
     (a) pinned 且该 key ∈ 合格集 ⇒ active = pinned（pin 优先级）
-    (b) pinned 越线（**非临期** key：门限按档位取——normal=throttle, degraded=exhausted；临期 key
-        恒在合格集（I1）⇒ 走「保持」分支、到不了越线分支，无需特判——见细化设计 §5.2.4）⇒
+    (b) pinned 越线（门限按档位取——normal=throttle, degraded=exhausted；临期不放宽门限）⇒
         pin_release=Some，回归自动逻辑
     (c) current 且 ∈ 合格集 ⇒ active = current（粘滞；抖动保护：current 查询失败 ⇒ 保持）
     (d) 否则在合格集内：
@@ -75,12 +73,11 @@ decide(ids, pct, weekly_map, now, lookahead, current, pinned, throttle, restore,
         临期集空 ⇒ 现状：正常档 min_by pct（restore 优先）；降级档 min_by pct
     (e) 无合格者 ⇒ active = None（调用方保留原值）
 
-eligible_set(ids, pct, weekly_map, now, lookahead, throttle, exhausted) -> (Vec<i64>, Regime)
-  pre: 同上
+eligible_set(ids, pct, throttle, exhausted) -> (Vec<i64>, Regime)
+  pre: 阈值合法
   post: 正常运行：
-    正常档合格集 = {known_ids : max_pct < throttle} ∪ imminent_keys
-    （≥1 known 且 ≥1 正常候选 ⇒ Normal）
-    否则降级档合格集 = {known_ids : max_pct < exhausted}（此时 imminent ⊆ 它，等价并入）
+    正常档合格集 = {known_ids : max_pct < throttle}
+    否则降级档合格集 = {known_ids : max_pct < exhausted}
     全部查询失败 ⇒ (空, Normal)【不变】
 
 imminent(weekly: Option<&WeeklyInfo>, now_ms, lookahead_ms, exhausted) -> bool
@@ -109,9 +106,9 @@ StatusSnapshot.weekly_lookahead_hours: u64 — 传递给看板，显示策略开
 |---|---|
 | **临期优先只在切换发生时应用**（不主动抢先切） | 保住「能不换就不换」的缓存局部性决策路径；用户拍板 |
 | **临期判定只看周窗口**（5h 不参与） | 用户明确「周限额」；5h 是滑动窗口，reset 频繁，引入会疯狂切换 |
-| **临期 key 纳入合格集（95–100 也进）** | 用户拍板：快清零的额度用掉比浪费强；防止「98%/2h 明明合格却永远在合格集外」 |
+| **临期只在当前合格集内排序** | 95% 预防线不变；只有全员都 ≥95% 进入降级档后，95–100% 的 key 才可继续使用 |
 | **临期 key 的其他 key 采用「周窗口 pct < exhausted 且 max_pct < exhausted」** | 5h 若 100% = 不可服务，排除（不可服务 = 选了立即 429） |
-| **pin 的越线门限在临期 key 上取 exhausted** | 95–100% 的临期 key 若被 pin，走 normal 档的 throttle(95) 会立刻被自动解除——违背「临期也算合格」的语义 |
+| **pin 门限不因临期改变** | 正常档仍取 throttle，降级档仍取 exhausted；临期只是选择偏好，不是安全豁免 |
 | **不加第 4 档 priority** | 三档已覆盖：临期非 active ⇒ standby(10)；active ⇒ 100。加档引入新不变量，收益低 |
 | **lookahead 配置化且 0=关闭** | 用户要的「强/中/弱」调节空间；0 时全路径短路，与旧版逐字节一致（回归保险）；上限 168h（7 天 = 周窗口周期）防手误 |
 | **EDF（按 reset_ms 升序）** | 经典单机调度直觉；无需引入评分公式 |
@@ -136,8 +133,7 @@ StatusSnapshot.weekly_lookahead_hours: u64 — 传递给看板，显示策略开
   H5（lookahead=0 等价旧版）——见研究文档 §5。
 
 ### 模块级 invariant
-- I1：`imminent` ⊆ `eligible`（临期 key 必进合格集；否则 EDF 排序空集恒被跳过——决策底层不变式）
-  — 维护方：eligible_set ∪ 逻辑。
+- I1：`Decision.imminent` ⊆ `eligible`（只从当前合格集筛临期候选）— 维护方：decide。
 - I2：`Decision.active ∈ eligible ∪ ∅`（活动 key 恒在合格集或空）— 维护方：decide。
 - I3：决策身份 key = 主 channel_id（现有）不变 — 维护方：各入口归一化。
 

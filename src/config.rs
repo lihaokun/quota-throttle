@@ -351,6 +351,10 @@ pub struct KeyMapping {
     #[serde(default)]
     pub channel_id: Option<i64>,
 
+    /// 人类可读的备注（如持有人名字），只在看板显示，不参与任何逻辑。留空即不显示。
+    #[serde(default)]
+    pub note: String,
+
     /// 该 key 查询用量时附加的 selector header。团体套餐必需
     /// （Bigmodel-Organization / Bigmodel-Project）——**不同 key 可能属于不同组织/项目，
     /// 故按 key 配置**。留空则回退到 [zhipu].extra_headers 的全局兜底。
@@ -364,6 +368,8 @@ pub struct ResolvedKey {
     pub name: String,
     pub zhipu_api_key: String,
     pub channel_id: i64,
+    /// 人类可读的备注（透传自 KeyMapping），只显示不参与逻辑
+    pub note: String,
     /// 该 key 的 claude 渠道（`<name>-cc`）id。None = 没有 claude 侧
     /// （未配模板 / 建失败 / 未 sync），该 key 只在 openai 侧受管。
     /// **决策身份永远是主 channel_id**——active/pinned/eligible 都以它为键。
@@ -377,6 +383,9 @@ pub struct ResolvedKey {
 pub struct NewKeySpec {
     pub name: String,
     pub api_key: String,
+    /// 人类可读备注（如持有人名字），可选
+    #[serde(default)]
+    pub note: String,
     /// 团体套餐的 selector。个人套餐留空。
     #[serde(default)]
     pub org: Option<String>,
@@ -442,6 +451,9 @@ pub fn append_key(path: &str, spec: &NewKeySpec) -> anyhow::Result<()> {
     let mut t = toml_edit::Table::new();
     t["name"] = toml_edit::value(spec.name.clone());
     t["zhipu_api_key"] = toml_edit::value(spec.api_key.clone());
+    if !spec.note.trim().is_empty() {
+        t["note"] = toml_edit::value(spec.note.trim());
+    }
     let hs = spec.headers();
     if !hs.is_empty() {
         let mut arr = toml_edit::ArrayOfTables::new();
@@ -584,6 +596,7 @@ value = "org-1"
         NewKeySpec {
             name: name.into(),
             api_key: "k2".into(),
+            note: String::new(),
             org: Some("org-2".into()),
             project: Some("proj-2".into()),
         }
@@ -653,6 +666,7 @@ value = "org-1"
             &NewKeySpec {
                 name: "personal".into(),
                 api_key: "k3".into(),
+                note: String::new(),
                 org: None,
                 project: Some("  ".into()), // 空白应被当作没填
             },

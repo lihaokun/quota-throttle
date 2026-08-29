@@ -79,41 +79,27 @@ imminent: bool — 决策层同源（tick 构建 weekly_map 后推导）
     设定：智谱窗口中 `reset` 到点即清零，此刻仍有一瞬窗口存在 ⇒ 算临期（含端点）；
     而 `reset = now`（刚清零）⇒ 新 window 已经走了，不算。⇒ 左开右闭 = 精确语义。
 
-#### 5.2.2 `fn eligible_set(ids, pct, weekly: &HashMap<i64, WeeklyInfo>, now_ms, lookahead_ms, throttle, exhausted) -> (Vec<i64>, Regime)`
-- 功能：合格集 = 原逻辑 ∪ 临期集（临期 key 95–100 也能入池）。
+#### 5.2.2 `fn eligible_set(ids, pct, throttle, exhausted) -> (Vec<i64>, Regime)`
+- 功能：合格集完全沿用原逻辑；临期不放宽 95%/100% 门限。
 - 实现：
   1. `known_set` = pct 存在的 key（查询失败不在内）— 原样
-  2. `imminent_ids` = ids.iter().filter(weekly 存在 && imminent)。**注意 temporal**：
-     now_ms/lookahead_ms 每轮从调用方传（decide 的入参）。
-  3. `normal` = known ∩ pct < throttle；`deg` = known ∩ pct < exhausted
-  4. 返回：
+  2. `normal` = known ∩ pct < throttle；`deg` = known ∩ pct < exhausted
+  3. 返回：
      - known 空 → (∅, Normal)
-     - `normal ∪ imminent_ids` 非空 → 该并集, Normal
-     - 否则 → `deg ∪ imminent_ids`, Degraded
-     - （实现细节：`imminent_ids` 用 Vec 保序，并入 eligible 时不破坏顺序）
+     - `normal` 非空 → (normal, Normal)
+     - 否则 → (deg, Degraded)
 - 正确性：
-  - 不变式 I1：imminent ⊆ eligible 由构造保证（3/4 两个返回分支都显式 ∪）。
-  - 与旧版等价性：imminent_ids 空时 = 旧逻辑（normal/deg 两个分支完全返回同样的值）。
+  - 与旧版等价性：合格集与档位判定逐字节沿用旧逻辑。
 
 #### 5.2.3 `fn decide(ids, pct, weekly, now_ms, lookahead, current, pinned, throttle, restore, exhausted) -> Decision`
 - 功能：选活动 key（三层 1-pin 2-粘滞 3-pick），pick 层优先临期升序。
 - 实现思路：
-  1. `(eligible, regime)` = eligible_set(...) — 接入 weekly 参数
+  1. `(eligible, regime)` = eligible_set(...) — 不接入 weekly，保持安全门限
   2. pin：
      - `pinned` 存在 & ∈ ids：
        - pct None → 保持（抖动）
        - eligible ∋ pinned → 保持
-       - 越线（pct ≥ 门限）→ pin_release：门限 = if weekly ∈ ids && weekly 临期（或 weekly 存在
-         且 pct<exhausted? 严格说：**pinned 是否属临期集**）{ exhausted } else { 按 regime 的线 }
-     **⚠️ pin_release 门限细节**：当 pinned key 是临期（满足 imminent），它已在合格集。
-       那它还能「越线」吗？它 ∈ eligible ⇒ 走到 release 分支只当 `pct ≥ ...`——release 语义
-       要求「查到且确实超线」。门限取线：**若 pinned ∈ imminent_ids ⇒ exhausted**（否则 throttle
-       会试图解除一个名义上合格的 key）。若 pinned ∈ eligible 但 ∈ ids && 查到了 && eligible
-       不含它——这在构造上不可能（临期 ⊆ eligible）。→ 实际路径：release 只在
-       `!(eligible.contains(pinned)) && pct 查到 && pinned ∈ ids` 时触发。eligible 不含它
-       意味着它既不正常也不临期 ⇒ 无临期豁免 ⇒ 用正常 regime 线即可。
-       **简化结论**：pin 越线分支**无需改动**（临期 key 恒 ∈ eligible ⇒ 走「eligible ∋ pinned → 保持」）
-       ——见下「5.2.4 论证安全」：初始实现按旧线，加一条防御 assert/comment 即可。
+       - 越线（pct ≥ 门限）→ pin_release；门限只按 regime 取，临期不豁免
   3. 粘滞：`current ∈ ids`：
      - pct None → 保持
      - eligible ∋ current → 保持

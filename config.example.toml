@@ -118,7 +118,7 @@ repo = "QuantumNous/new-api"
 type = 8
 base_url = "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions"
 # opencode zhipuai-coding-plan 的全部模型（取自 models.dev）
-models = "glm-4.7,glm-5.1,glm-5.2,glm-5-turbo,glm-5v-turbo,glm-4.6v,glm-4.5-air"
+models = "glm-4.7,glm-5.1,glm-5.2,glm-5.3,glm-5.3-flash,glm-5-turbo,glm-5v-turbo,glm-4.6v,glm-4.5-air"
 group = "default"
 
 # —— Claude Code 渠道模板（可选；配上 = 开启双渠道）——
@@ -148,6 +148,7 @@ token_name = "claude-code"   # CC 专用令牌名（自动创建，绑定 claude
 [[keys]]
 name = "zhipu-1"
 zhipu_api_key = "第一把智谱 key"
+# note = "wang"    # 可选：人类可读备注（如持有人名字），只在看板显示。⚠️ 必须写在 quota_headers 之前
 # channel_id = 1   # 可选：已有渠道时显式指定；留空则按 name 自动解析/创建
 # —— 团体套餐必需的 selector；不同 key 可能属不同组织/项目，故按 key 配 ——
 # 取法：浏览器打开 https://bigmodel.cn/coding-plan/team/usage-stats → F12 Network →

@@ -93,9 +93,9 @@ cargo run --release -- down config.toml    # 停 new-api
   `TIME_LIMIT`/MCP 搜索计数上，而它本就该被过滤掉）。⇒「还剩多少余量」的分辨率**就是 1%**，做不了更细的判断。
 - **周窗口重置时刻 = `limits[].nextResetTime`（epoch 毫秒，绝对时刻）**，探针原样透传为
   `WindowStatus.next_reset_time`（`quota.rs`）。keyrot-1（周临期优先）用它做 EDF：`reset_ms - now_ms ∈ (0, lookahead]`
-  且周窗口、5h 窗口都有余量 ⇒ 临期，切换时优先选。⚠️ **临期集只扩合格集、永不改档位**（`eligible_set`）：
-  全员 ≥ throttle 时即便有临期 key 仍是 Degraded——档位是「全局谁越预防线」的事实，不是合格集的性质
-  （2026-08-25 实测踩过：先写成「有临期 ⇒ Normal」，降级档场景全错）。另外**临期判定用周窗口自己的 pct**、
+  且周窗口、5h 窗口都有余量 ⇒ 临期。⚠️ **临期只在当前档位合格集内排序，不扩合格集**：
+  正常档仍严格 `< throttle`；只有全员 ≥ throttle 进入 Degraded 后，才允许 `< exhausted` 的 key 继续服务。
+  另外**临期判定用周窗口自己的 pct**、
   可服务性用 max_pct（5h=100% 的 key 不算临期，选了立即 429）。**已知限制**：`watch_windows`
   若配成只盯单窗口（默认盯两个），max_pct 不再是「5h 与周取大」，临期可服务性判定会退化——
   该组合下整个调度语义本来就偏离设计假设，慎改。

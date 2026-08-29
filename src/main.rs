@@ -214,6 +214,7 @@ fn resolve_keys(
                 name: k.name.clone(),
                 zhipu_api_key: k.zhipu_api_key.clone(),
                 channel_id: id,
+                note: k.note.clone(),
                 claude_channel_id: claude.get(&k.name).copied(),
                 quota_headers: k.quota_headers.clone(),
             }),
