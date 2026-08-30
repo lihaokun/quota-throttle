@@ -194,8 +194,6 @@ pub enum Command {
 #[derive(Debug, Clone, Serialize)]
 pub struct AddKeyOk {
     pub channel_id: i64,
-    /// claude 渠道 id（建失败/未配模板则 None——该 key 暂无 Claude Code 侧）
-    pub claude_channel_id: Option<i64>,
     pub level: Option<String>,
     pub five_hour_pct: Option<f64>,
     pub weekly_pct: Option<f64>,
@@ -473,9 +471,8 @@ impl Orchestrator {
             .await
             .map_err(|e| format!("探活失败，未做任何改动：{e}"))?;
 
-        // ② 建渠道（新 key 一律以 standby 入场；要不要转正交给下一轮自动决策）。
-        //    openai 渠道失败 → 终止不动 config（现状）；claude 渠道失败 → 仅 warn 降级
-        //    （叠加层坏了不连累这把 key 入池，只是 Claude Code 侧缺席）。
+        // ② 建唯一的上游渠道（新 key 一律以 standby 入场；要不要转正交给下一轮自动决策）。
+        //    OpenAI/Claude 是 NewAPI 的两种下游格式，共用该渠道和同一把 NewAPI 访问 key。
         let tpl = self
             .cfg
             .new_api
@@ -493,41 +490,11 @@ impl Orchestrator {
             )
             .await
             .map_err(|e| format!("建渠道失败：{e}"))?;
-        let claude_tpl = self.cfg.new_api.channel_template_claude.as_ref();
-        if let Some(ct) = claude_tpl {
-            let cc_name = ct.channel_name(&name);
-            if let Err(e) = self
-                .api
-                .create_channel_resolving_models(
-                    &cc_name,
-                    &name,
-                    &spec.api_key,
-                    self.cfg.priority_standby,
-                    &ct.into(),
-                )
-                .await
-            {
-                warn!(name = %cc_name, error = %e, "建 claude 渠道失败，降级：这把 key 暂无 Claude Code 侧");
-            }
-        }
         let channels = self.api.list_channels().await.ok();
         let channel_id = channels
             .as_ref()
             .and_then(|m| m.get(&name).copied())
             .ok_or_else(|| format!("渠道已建好，但在 new-api 里解析不到它的 id：{name}"))?;
-        let claude_channel_id = match (claude_tpl, channels.as_ref()) {
-            (Some(ct), Some(m)) => {
-                let cc_name = ct.channel_name(&name);
-                match m.get(&cc_name) {
-                    Some(id) => Some(*id),
-                    None => {
-                        warn!(name = %cc_name, "claude 渠道解析不到 id，这把 key 暂无 Claude Code 侧");
-                        None
-                    }
-                }
-            }
-            _ => None,
-        };
 
         // ③ 写回 config.toml（唯一数据源 ⇒ 重启后仍在）
         if let Err(e) = crate::config::append_key(&self.cfg.source_path, &spec) {
@@ -544,13 +511,11 @@ impl Orchestrator {
             zhipu_api_key: spec.api_key.clone(),
             channel_id,
             note: spec.note.trim().to_string(),
-            claude_channel_id,
             quota_headers: headers,
         });
         info!(
             name = %name,
             channel_id,
-            claude_channel_id,
             level = ?status.level,
             models_source = models_source.as_str(),
             "已加入新 key（探活通过）"
@@ -558,7 +523,6 @@ impl Orchestrator {
 
         Ok(AddKeyOk {
             channel_id,
-            claude_channel_id,
             level: status.level,
             five_hour_pct: status.five_hour.as_ref().map(|w| w.percentage),
             weekly_pct: status.weekly.as_ref().map(|w| w.percentage),
@@ -570,67 +534,47 @@ impl Orchestrator {
     ///
     /// ⚠️ 但必须先把它的 priority 压到最低档再放手——否则一把 priority=100 的活动渠道被移出
     /// 管辖后仍会**继续吃下全部流量**，而我们已经不再盯它的用量了。那是最坏的结果。
-    /// 双渠道时代两侧都要压（D7）：只压主渠道的话，cc 渠道会以 priority=100 孤儿般
-    /// 继续吃光 Claude Code 流量。**顺序：先全部降档、再动 config**——部分降档失败时
-    /// 「已压了一部分」方向安全（少接流量而非多接），此时报错终止，config 不动。
-    async fn remove_key(&mut self, channel_id: i64) -> Result<(), String> {
-        // 归一化：主或 cc 渠道 id 都定位到同一把 key（决策身份是主 channel_id）
-        let Some(idx) = self.key_index_of(channel_id) else {
-            return Err(format!("渠道 #{channel_id} 不在管辖的 key 列表里"));
-        };
-        let id = self.keys[idx].channel_id;
-        let cc_id = self.keys[idx].claude_channel_id;
-        let name = self.keys[idx].name.clone();
+    async fn remove_key(&mut self, id: i64) -> Result<(), String> {
+        let name = self
+            .keys
+            .iter()
+            .find(|k| k.channel_id == id)
+            .map(|k| k.name.clone())
+            .ok_or_else(|| format!("渠道 #{id} 不在管辖的 key 列表里"))?;
         if self.keys.len() <= 1 {
             return Err("这是最后一把 key，移除后就没有可路由的渠道了".into());
         }
 
         if !self.cfg.dry_run {
-            for cid in [Some(id), cc_id].into_iter().flatten() {
-                self.api
-                    .set_channel_priority(cid, self.cfg.priority_exhausted)
-                    .await
-                    .map_err(|e| {
-                        format!("把 {name} 的渠道 #{cid} priority 压到最低失败，未做任何改动：{e}")
-                    })?;
-            }
+            self.api
+                .set_channel_priority(id, self.cfg.priority_exhausted)
+                .await
+                .map_err(|e| format!("把 {name} 的 priority 压到最低失败，未做任何改动：{e}"))?;
         }
         crate::config::remove_key(&self.cfg.source_path, &name)
             .map_err(|e| format!("从 config.toml 移除失败：{e}"))?;
 
         self.keys.retain(|k| k.channel_id != id);
         self.applied.remove(&id);
-        if let Some(cc) = cc_id {
-            self.applied.remove(&cc);
-        }
         if self.active == Some(id) {
             self.active = None; // 下一轮自动重选
         }
         if self.pinned == Some(id) {
             self.pinned = None;
         }
-        info!(name = %name, channel_id = id, cc_id = ?cc_id, "已停止调度（new-api 渠道保留，两侧 priority 已压到最低）");
+        info!(name = %name, channel_id = id, "已停止调度（new-api 渠道保留，priority 已压到最低）");
         Ok(())
-    }
-
-    /// 渠道 id（**主或 cc**）→ 所属 key 的下标。看板命令两处都可能发 cc 渠道 id；
-    /// 决策身份（active/pinned/eligible/applied 的键）永远是主 channel_id（I3），
-    /// 所以入口统一归一化。
-    fn key_index_of(&self, channel_id: i64) -> Option<usize> {
-        self.keys
-            .iter()
-            .position(|k| k.channel_id == channel_id || k.claude_channel_id == Some(channel_id))
     }
 
     /// 钉住某把 key。**只能钉合格集内的** —— pin 是优先级，不是安全豁免：
     /// 它能覆盖「粘滞 + 挑最低」的选择偏好，但不能把自动逻辑判定为不合格的 key 拉上来用。
-    fn pin(&mut self, channel_id: i64) -> Result<(), String> {
-        // 归一化：主或 cc 渠道 id 都钉同一把 key（判据用主 id）
-        let Some(idx) = self.key_index_of(channel_id) else {
-            return Err(format!("渠道 #{channel_id} 不在管辖的 key 列表里"));
-        };
-        let id = self.keys[idx].channel_id;
-        let name = self.keys[idx].name.clone();
+    fn pin(&mut self, id: i64) -> Result<(), String> {
+        let name = self
+            .keys
+            .iter()
+            .find(|k| k.channel_id == id)
+            .map(|k| k.name.clone())
+            .ok_or_else(|| format!("渠道 #{id} 不在管辖的 key 列表里"))?;
 
         // 判据用**上一轮**的合格集：命令是异步来的，此刻没有更新的证据
         if !self.last_eligible.contains(&id) {
@@ -780,9 +724,8 @@ impl Orchestrator {
         }
         let active = self.active;
 
-        // 3. 计算每把 key 的目标 priority，**联动写两侧渠道**（I1：同 key 双渠道 priority 恒同）。
-        //    仅在与已下发值不同时才 PUT（幂等）；applied 按渠道 id 各自记账——
-        //    单侧失败下轮只重试失败侧，另一侧不受影响（看板 cc 对账会把中间态晒出来）。
+        // 3. 计算每把 key 的目标 priority。OpenAI/Claude 两种下游格式共用同一个渠道，
+        //    因此这里只需要维护一次 priority。
         //    单一分层规则（正常档下与旧的三分支逐字节等价；降级档下自动变准——**还有余量**的
         //    key 拿 standby 而非 exhausted，于是万一活动 key 仍撞 429，new-api 的 priority
         //    阶梯会优先跌到还有余量的那把，而不是随机跌到一把已经死透的）。
@@ -799,22 +742,19 @@ impl Orchestrator {
                 continue;
             };
 
-            for (cid, cc) in [(Some(id), false), (k.claude_channel_id, true)] {
-                let Some(cid) = cid else { continue };
-                if self.applied.get(&cid) == Some(&target) {
-                    continue;
-                }
-                if self.cfg.dry_run {
-                    info!(name = %k.name, channel_id = cid, cc, priority = target, "dry_run: 将设 priority");
-                    self.applied.insert(cid, target);
-                } else {
-                    match self.api.set_channel_priority(cid, target).await {
-                        Ok(_) => {
-                            self.applied.insert(cid, target);
-                            info!(name = %k.name, channel_id = cid, cc, priority = target, "已设 priority");
-                        }
-                        Err(e) => error!(name = %k.name, channel_id = cid, error = %e, "设 priority 失败"),
+            if self.applied.get(&id) == Some(&target) {
+                continue;
+            }
+            if self.cfg.dry_run {
+                info!(name = %k.name, channel_id = id, priority = target, "dry_run: 将设 priority");
+                self.applied.insert(id, target);
+            } else {
+                match self.api.set_channel_priority(id, target).await {
+                    Ok(_) => {
+                        self.applied.insert(id, target);
+                        info!(name = %k.name, channel_id = id, priority = target, "已设 priority");
                     }
+                    Err(e) => error!(name = %k.name, channel_id = id, error = %e, "设 priority 失败"),
                 }
             }
         }
@@ -828,15 +768,8 @@ impl Orchestrator {
             .unwrap_or(0);
         let healthy = self.newapi_healthy().await;
         let client_endpoint = format!("{}/v1", self.cfg.new_api.base_url.trim_end_matches('/'));
-        // Claude Code 填给 ANTHROPIC_BASE_URL 的地址（客户端自己拼 /v1/messages）。
-        // 未配 claude 模板 = 空串，前端隐藏对应 chip。
-        let claude_endpoint = self
-            .cfg
-            .new_api
-            .channel_template_claude
-            .as_ref()
-            .map(|_| self.cfg.new_api.base_url.trim_end_matches('/').to_string())
-            .unwrap_or_default();
+        // Claude Code 使用同一 NewAPI key；客户端会在这个地址后拼 /v1/messages。
+        let claude_endpoint = self.cfg.new_api.base_url.trim_end_matches('/').to_string();
 
         // 高峰时段（**纯显示**，不参与任何调度决策——它影响的是「同一请求烧掉几倍额度」，
         // 而额度消耗本来就已经如实反映在智谱返回的 pct 里了，不需要我们再折算一遍）
@@ -885,7 +818,6 @@ impl Orchestrator {
                     name: k.name.clone(),
                     note: k.note.clone(),
                     channel_id: id,
-                    claude_channel_id: k.claude_channel_id,
                     five_hour_pct: w.and_then(|q| q.five_hour.as_ref().map(|x| x.percentage)),
                     weekly_pct: w.and_then(|q| q.weekly.as_ref().map(|x| x.percentage)),
                     five_hour_reset: w.and_then(|q| q.five_hour.as_ref().map(|x| x.next_reset_time)),
@@ -962,7 +894,7 @@ impl Panel {
         // 每渠道实时指标：**全部从 recent_logs 一次请求推导**（rpm/tpm = 最近 60 秒内
         // 的条数与 token 和；最后请求 = 该渠道最新一条）。
         // ⚠️ 不再逐渠道调 /api/log/stat：new-api 对 /api 有全局限流（默认 360 次/180s
-        // ≈ 2 次/秒），逐渠道轮询在渠道数多时（双渠道 × N 把 key）**单面板就超预算**，
+        // ≈ 2 次/秒），逐渠道轮询在渠道数多时（N 把 key）**单面板就可能超预算**，
         // 会把控制循环的 priority 写入饿出 429、渠道 priority 卡在旧值（2026-08-24 实测踩坑）。
         // 渠道列表**从快照读**（决策循环发布的）——加/删 key 后无需重启，指标就能跟上。
         let tracked = status::tracked_channels(&self.snapshot);

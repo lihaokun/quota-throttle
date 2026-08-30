@@ -110,12 +110,11 @@ async fn cmd_sync(cfg: Config) -> Result<()> {
         .sync_channels(
             &cfg.keys,
             cfg.new_api.channel_template.as_ref(),
-            cfg.new_api.channel_template_claude.as_ref(),
             cfg.priority_standby,
         )
         .await?;
-    setup_claude(&api, &cfg).await;
     print_mapping(&cfg, &outcome);
+    print_downstream_access(&cfg);
     Ok(())
 }
 
@@ -127,12 +126,10 @@ async fn cmd_up(cfg: Config) -> Result<()> {
         .sync_channels(
             &cfg.keys,
             cfg.new_api.channel_template.as_ref(),
-            cfg.new_api.channel_template_claude.as_ref(),
             cfg.priority_standby,
         )
         .await?;
-    setup_claude(&api, &cfg).await;
-    let keys = resolve_keys(&cfg, &outcome.primary, &outcome.claude);
+    let keys = resolve_keys(&cfg, &outcome.primary);
     run_loop(cfg, api, keys).await
 }
 
@@ -142,71 +139,24 @@ async fn cmd_run(cfg: Config) -> Result<()> {
     api.authenticate().await?;
     // run 不建渠道，只列出已有的来解析 id
     let map = api.list_channels().await.unwrap_or_default();
-    let claude = claude_map(&cfg, &map);
-    let keys = resolve_keys(&cfg, &map, &claude);
+    let keys = resolve_keys(&cfg, &map);
     run_loop(cfg, api, keys).await
 }
 
-/// claude 铺设（配了模板才有）：注册分组 + 确保 CC 专用令牌 + 打印接入说明。
-/// **所有失败 warn 降级，绝不阻断**（细化设计 §3）——最坏情况 CC 侧 401，
-/// opencode 侧与切换循环完全无感。
-async fn setup_claude(api: &NewApiClient, cfg: &Config) {
-    let Some(tpl) = cfg.new_api.channel_template_claude.as_ref() else {
-        return;
-    };
-    if let Err(e) = api.ensure_group(&tpl.group).await {
-        warn!(
-            group = %tpl.group,
-            error = %e,
-            "注册分组失败：⚠️ CC 请求会 403「无权访问分组」。请到 new-api UI（设置→分组）\
-             手动把该分组加入「用户可用分组」和「分组倍率」后重新 sync"
-        );
-    }
+/// NewAPI 原生同时接收 OpenAI 与 Anthropic 下游格式；两者复用现有访问 key、group 和渠道。
+fn print_downstream_access(cfg: &Config) {
     let base = cfg.new_api.base_url.trim_end_matches('/');
-    match api.ensure_claude_token(&tpl.token_name, &tpl.group).await {
-        Ok(key) => {
-            info!("Claude Code 接入（只改这两个 env；其余如 ANTHROPIC_DEFAULT_*_MODEL 与你现在的直连配置完全一致）：");
-            info!("  ANTHROPIC_BASE_URL={base}");
-            info!("  ANTHROPIC_AUTH_TOKEN={key}");
-        }
-        Err(e) => {
-            warn!(error = %e, "获取 Claude Code 专用令牌失败");
-            info!("Claude Code 接入：");
-            info!("  ANTHROPIC_BASE_URL={base}");
-            info!("  ANTHROPIC_AUTH_TOKEN=<请到 new-api UI 手动创建/复制令牌 {}（分组 {}）>",
-                tpl.token_name, tpl.group);
-        }
-    }
+    info!("下游接入共用同一把 NewAPI 访问 key：");
+    info!("  OpenAI base URL: {base}/v1");
+    info!("  ANTHROPIC_BASE_URL={base}");
+    info!("  ANTHROPIC_AUTH_TOKEN=<与 OpenAI 客户端相同的 NewAPI key>");
 }
 
-/// 由「渠道名→id」全集 + claude 模板，挑出各 key 的 -cc 渠道映射（key 名 → id）。
-/// run 子命令用（up/sync 用 SyncOutcome，不重复解析）。
-fn claude_map(cfg: &Config, all: &HashMap<String, i64>) -> HashMap<String, i64> {
-    let Some(tpl) = cfg.new_api.channel_template_claude.as_ref() else {
-        return HashMap::new();
-    };
-    cfg.keys
-        .iter()
-        .filter_map(|k| {
-            let cc = tpl.channel_name(&k.name);
-            match all.get(&cc) {
-                Some(id) => Some((k.name.clone(), *id)),
-                None => {
-                    warn!(name = %k.name, channel = %cc, "claude 渠道未建（先跑 sync），该 key 的 Claude Code 侧缺席");
-                    None
-                }
-            }
-        })
-        .collect()
-}
-
-/// 把 config.keys + 两侧 (name→id 映射) 解析成 orchestrator 用的 ResolvedKey。
+/// 把 config.keys + name→id 映射解析成 orchestrator 用的 ResolvedKey。
 /// 优先用 config 里显式写的 channel_id，否则按 name 从映射里取；
-/// claude 侧缺项静默 None（sync/claude_map 阶段已 warn 过，不刷屏）。
 fn resolve_keys(
     cfg: &Config,
     primary: &HashMap<String, i64>,
-    claude: &HashMap<String, i64>,
 ) -> Vec<ResolvedKey> {
     let mut out = Vec::new();
     for k in &cfg.keys {
@@ -216,7 +166,6 @@ fn resolve_keys(
                 zhipu_api_key: k.zhipu_api_key.clone(),
                 channel_id: id,
                 note: k.note.clone(),
-                claude_channel_id: claude.get(&k.name).copied(),
                 quota_headers: k.quota_headers.clone(),
             }),
             None => warn!(name = %k.name, "解析不到 channel_id（既无显式配置也无同名渠道），本 key 跳过"),
@@ -226,17 +175,10 @@ fn resolve_keys(
 }
 
 fn print_mapping(cfg: &Config, outcome: &SyncOutcome) {
-    info!("渠道映射 name → channel_id（cc = Claude Code 侧）：");
+    info!("渠道映射 name → channel_id：");
     for k in &cfg.keys {
         match outcome.primary.get(&k.name) {
-            Some(id) => {
-                let cc = outcome
-                    .claude
-                    .get(&k.name)
-                    .map(|v| v.to_string())
-                    .unwrap_or_else(|| "未建".to_string());
-                info!("  {} → {} (cc: {})", k.name, id, cc);
-            }
+            Some(id) => info!("  {} → {}", k.name, id),
             None => warn!("  {} → (未找到)", k.name),
         }
     }
@@ -255,6 +197,7 @@ async fn run_loop(cfg: Config, api: NewApiClient, keys: Vec<ResolvedKey>) -> Res
         keys = keys.len(),
         "进入切换循环（priority 单活动 key 模式）"
     );
+    print_downstream_access(&cfg);
 
     let api = std::sync::Arc::new(api);
 

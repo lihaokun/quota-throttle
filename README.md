@@ -66,7 +66,7 @@ cargo run --release -- up config.toml  # 起 new-api + 建渠道 + 进入切换�
 
 ```toml
 [[keys]]
-name = "zhipu-1"                                    # 同时用作渠道名；claude 渠道自动叫 zhipu-1-cc
+name = "zhipu-1"                                    # 同时用作唯一的上游渠道名
 zhipu_api_key = "xxxxxxxx.yyyyyyyy"                 # 智谱编程套餐页建的 key（长串、中间一个点）
 [[keys.quota_headers]]                              # 团体套餐必需的 selector（个人套餐删掉这两段）
 key = "Bigmodel-Organization"
@@ -76,7 +76,8 @@ key = "Bigmodel-Project"
 value = "proj_..."
 ```
 
-每把 key 会自动建**两个渠道**：`<name>`（OpenAI 格式，opencode 用）+ `<name>-cc`（Anthropic 格式，Claude Code 用），切换时 priority 联动。
+每把上游 key 只建一个 Custom(type 8) 渠道。NewAPI 原生同时接收 OpenAI 与 Anthropic
+下游请求，并把两种格式都转换后送进这同一条渠道，因此下游协议不会复制渠道或调度状态。
 
 ### org / project 的值在智谱网页上怎么取（每把 key 配一次）
 
@@ -101,14 +102,14 @@ nohup ./target/release/quota-throttle up config.toml >> .newapi/quota-throttle.l
 tail -f .newapi/quota-throttle.log     # 看它起来后的渠道映射与首轮决策
 ```
 
-`up` 幂等：已存在的渠道跳过，缺的补建；Claude Code 的接入令牌不变（每次启动现取并打印）。
+`up` 幂等：已存在的渠道对账模型目录，缺失的补建。
 
 ### 三种 key 变更
 
 | 场景 | 步骤 |
 |------|------|
-| **新增 key** | config 加一条 `[[keys]]` → 重载。sync 自动建双渠道、纳入调度 |
-| **替换同名 key 的值**（换新 key 但沿用名字） | ⚠️ **sync 按名幂等，不会更新已存在渠道里的旧 key！** 除了改 config + 重载，还须更新渠道里的 key：new-api 管理页（`http://127.0.0.1:3000`，登录后 渠道 → 编辑 `zhipu-N` **和** `zhipu-N-cc` → 粘贴新 key），或直写 SQLite `UPDATE channels SET key='<新key>' WHERE name IN ('zhipu-N','zhipu-N-cc');` |
+| **新增 key** | config 加一条 `[[keys]]` → 重载。sync 自动建渠道、纳入调度 |
+| **替换同名 key 的值**（换新 key 但沿用名字） | ⚠️ **sync 按名幂等，不会更新已存在渠道里的旧 key！** 除了改 config + 重载，还须更新渠道里的 key：new-api 管理页（`http://127.0.0.1:3000`，登录后 渠道 → 编辑 `zhipu-N` → 粘贴新 key），或直写 SQLite `UPDATE channels SET key='<新key>' WHERE name='zhipu-N';` |
 | **移除 key** | config 删掉那条 `[[keys]]` → 重载。**new-api 渠道会留下来**（保历史用量）且不再被管理——它会出现在看板「野生渠道」区，务必把它的 priority 压到 0（否则 429 兜底时可能把流量漏给一把你不想要的 key）。更省事的做法：直接在看板卡片上点「✕ 停止调度」（自动压 priority + 写回 config，一步到位） |
 
 ### 常驻运行
@@ -147,7 +148,7 @@ tail -f .newapi/quota-throttle.log     # 看它起来后的渠道映射与首轮
 
 依据：[coding-plan/faq](https://docs.bigmodel.cn/cn/coding-plan/faq) + [coding-plan/overview](https://docs.bigmodel.cn/cn/coding-plan/overview)。
 
-## ⚠️ 三个必须知道的坑（都是踩出来的）
+## ⚠️ 接入要点（都是踩出来的）
 
 ### 1. 团体套餐读用量：三个条件缺一不可
 
@@ -209,6 +210,20 @@ opencode 的 `zhipuai-coding-plan` 是 **OpenAI 兼容** provider（`@ai-sdk/ope
 
 **模型名以当前 key 的 `/models` 返回为准**。运行 `sync` 后，new-api 渠道会自动收敛到该 key
 实际可用的集合；客户端自己的 provider 注册表若尚未展示新模型，可在客户端配置中显式补充。
+
+### 4. Claude Code 接入：复用同一把 NewAPI key
+
+NewAPI v1.0.0-rc.20 原生提供 `/v1/messages`，现有 Custom(type 8) 渠道会把 Anthropic 请求
+转换成 OpenAI 兼容请求，再发往智谱 Coding Plan。因此无需 `-cc` 渠道、额外 group 或
+Claude 专用令牌：
+
+```bash
+export ANTHROPIC_BASE_URL=http://127.0.0.1:3000
+export ANTHROPIC_AUTH_TOKEN='<opencode 正在使用的同一把 NewAPI key>'
+```
+
+2026-08-30 实测同一 key 可完成普通及流式 `/v1/messages` 请求，包含 `tools` 与
+`cache_control` 字段；两种下游协议自然共享同一活动渠道和 priority。
 
 ## 设计要点
 

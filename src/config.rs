@@ -202,11 +202,6 @@ pub struct NewApiConfig {
     /// sync 建渠道用的模板（版本相关字段，F12 对齐）。缺省则不自动建渠道，只按 name 解析已有渠道。
     #[serde(default)]
     pub channel_template: Option<ChannelTemplate>,
-    /// Claude Code（Anthropic 格式）渠道模板。配了它 = 开启双渠道：每把 key 额外挂一个
-    /// `<name>-cc` 的 type 14 渠道（智谱 anthropic 口），Claude Code 用专用 group + 令牌接入。
-    /// 不配 = 行为与现状完全一致。
-    #[serde(default)]
-    pub channel_template_claude: Option<ClaudeChannelTemplate>,
 }
 
 fn default_base_url() -> String {
@@ -299,65 +294,6 @@ fn default_group() -> String {
     "default".to_string()
 }
 
-/// Claude Code 渠道模板：每把 key 额外建一个 Anthropic 格式渠道（type 14），
-/// 上游指到智谱的 Claude 兼容口。
-///
-/// 与 opencode 的 OpenAI 格式渠道靠 **group 物理隔离**：new-api 分发器按 (group, model)
-/// 选渠道、**不按请求格式过滤**，同 group 混挂两种格式渠道会互抢流量做跨格式转换
-/// （调研 docs/research/claude-code-routing-research.md §2）。三条不变量在 `validate()` 拦截。
-#[derive(Debug, Clone, Deserialize)]
-pub struct ClaudeChannelTemplate {
-    /// new-api 渠道类型码。14 = Anthropic Claude（constant/channel.go），
-    /// 上游 URL 自动拼 `{base_url}/v1/messages`（所以 base_url 不带 /v1/messages）。
-    #[serde(rename = "type", default = "default_claude_channel_type")]
-    pub channel_type: i64,
-    /// 智谱 Claude 兼容口（官方文档）：https://open.bigmodel.cn/api/anthropic
-    #[serde(default = "default_claude_base_url")]
-    pub base_url: String,
-    /// 逗号分隔模型名，仅在关闭发现或新建渠道发现失败时作 fallback。
-    #[serde(default = "default_claude_models")]
-    pub models: String,
-    /// 专用分组。⚠️ 必须与 [new_api.channel_template].group 不同（validate 拦截）。
-    #[serde(default = "default_claude_group")]
-    pub group: String,
-    /// 渠道名后缀：claude 渠道名 = `<key name> + name_suffix`，sync 按名幂等匹配用。
-    #[serde(default = "default_claude_suffix")]
-    pub name_suffix: String,
-    /// CC 专用令牌名（绑定 claude group、无限额度；sync 时自动创建并打印完整 key）。
-    #[serde(default = "default_claude_token_name")]
-    pub token_name: String,
-    /// 可选的上游 `/models` 发现；通常与同一 key 的 OpenAI 模板共用 URL/auth。
-    #[serde(default)]
-    pub model_discovery: Option<ModelDiscoveryConfig>,
-}
-
-impl ClaudeChannelTemplate {
-    /// 这把 key 对应的 claude 渠道名。
-    pub fn channel_name(&self, key_name: &str) -> String {
-        format!("{key_name}{}", self.name_suffix)
-    }
-}
-
-fn default_claude_channel_type() -> i64 {
-    14
-}
-fn default_claude_base_url() -> String {
-    "https://open.bigmodel.cn/api/anthropic".to_string()
-}
-fn default_claude_models() -> String {
-    // 仅作发现失败时的新渠道 fallback；基线取自智谱 Coding Plan /models 实测结果。
-    "glm-4.5,glm-4.5-air,glm-4.6,glm-4.7,glm-5,glm-5-turbo,glm-5.1,glm-5.2,glm-5.3,glm-5.3-flash".to_string()
-}
-fn default_claude_group() -> String {
-    "claude".to_string()
-}
-fn default_claude_suffix() -> String {
-    "-cc".to_string()
-}
-fn default_claude_token_name() -> String {
-    "claude-code".to_string()
-}
-
 #[derive(Debug, Clone, Deserialize)]
 pub struct HeaderKV {
     pub key: String,
@@ -393,10 +329,6 @@ pub struct ResolvedKey {
     pub channel_id: i64,
     /// 人类可读的备注（透传自 KeyMapping），只显示不参与逻辑
     pub note: String,
-    /// 该 key 的 claude 渠道（`<name>-cc`）id。None = 没有 claude 侧
-    /// （未配模板 / 建失败 / 未 sync），该 key 只在 openai 侧受管。
-    /// **决策身份永远是主 channel_id**——active/pinned/eligible 都以它为键。
-    pub claude_channel_id: Option<i64>,
     /// per-key 的用量查询 selector header（透传自 KeyMapping）
     pub quota_headers: Vec<HeaderKV>,
 }
@@ -570,46 +502,6 @@ impl Config {
                 .as_ref()
                 .and_then(|t| t.model_discovery.as_ref()),
         )?;
-        validate_model_discovery(
-            "[new_api.channel_template_claude]",
-            self.new_api
-                .channel_template_claude
-                .as_ref()
-                .and_then(|t| t.model_discovery.as_ref()),
-        )?;
-        // —— claude 渠道模板三条不变量（细化设计 §5.1 C2）——
-        if let Some(cc) = &self.new_api.channel_template_claude {
-            if cc.name_suffix.trim().is_empty() || cc.name_suffix != cc.name_suffix.trim() {
-                bail!(
-                    "[new_api.channel_template_claude].name_suffix 非法（不能为空、不能带首尾空白）：\
-                     claude 渠道名 = <key 名> + 后缀，为空会与主渠道同名、带空白会拼出怪渠道名，\
-                     sync 按名匹配都会互相误判"
-                );
-            }
-            if let Some(oc) = &self.new_api.channel_template {
-                if oc.group == cc.group {
-                    bail!(
-                        "两个渠道模板的 group 相同（\"{}\"）：new-api 分发器按 (group, model) 选渠道、\
-                         不按请求格式过滤，同 group 下 OpenAI/Claude 两种格式渠道会互抢流量做跨格式转换。\
-                         把 claude 模板的 group 改成别的（如 \"claude\"）",
-                        cc.group
-                    );
-                }
-            }
-            // suffix 撞名：某把 key 的 cc 渠道名不得恰好等于另一把 key 的主渠道名
-            for a in &self.keys {
-                for b in &self.keys {
-                    if b.name == cc.channel_name(&a.name) {
-                        bail!(
-                            "key \"{}\" 的 claude 渠道名 \"{}\" 与另一把 key 的主渠道名相同：\
-                             sync 按名匹配会把主渠道误认成 cc 渠道。换 name_suffix 或改 key 名",
-                            a.name,
-                            b.name
-                        );
-                    }
-                }
-            }
-        }
         Ok(())
     }
 }
@@ -769,12 +661,10 @@ value = "org-1"
         std::fs::remove_file(&p).ok();
     }
 
-    // ——— claude 渠道模板（细化设计 §5.1 C1/C2）———
-
-    /// SAMPLE + 追加一段 claude 模板（及可选的 openai 模板），落盘后返回路径。
-    fn claude_cfg(extra: &str) -> String {
+    /// SAMPLE + 追加模型发现配置，落盘后返回路径。
+    fn model_cfg(extra: &str) -> String {
         let p = std::env::temp_dir().join(format!(
-            "qt-cfg-{}-cc-{}.toml",
+            "qt-cfg-{}-models-{}.toml",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -785,16 +675,6 @@ value = "org-1"
         p.to_string_lossy().into_owned()
     }
 
-    const CLAUDE_TPL: &str = r#"
-[new_api.channel_template_claude]
-type = 14
-base_url = "https://open.bigmodel.cn/api/anthropic"
-models = "glm-5.2[1m]"
-group = "claude"
-name_suffix = "-cc"
-token_name = "claude-code"
-"#;
-
     const OPENAI_TPL: &str = r#"
 [new_api.channel_template]
 type = 8
@@ -804,63 +684,8 @@ group = "default"
 "#;
 
     #[test]
-    fn claude模板_未配置_为None且不触发校验() {
-        let p = claude_cfg("");
-        let cfg = Config::load(&p).unwrap();
-        assert!(cfg.new_api.channel_template_claude.is_none());
-        std::fs::remove_file(&p).ok();
-    }
-
-    #[test]
-    fn claude模板_与openai同group_启动即失败() {
-        // 同 group 两种格式渠道会互抢流量做跨格式转换 —— 本设计要消灭的故障模式
-        let p = claude_cfg(&format!("{OPENAI_TPL}{}", CLAUDE_TPL.replace("group = \"claude\"", "group = \"default\"")));
-        let err = Config::load(&p).unwrap_err().to_string();
-        assert!(err.contains("group 相同"), "实际错误：{err}");
-        std::fs::remove_file(&p).ok();
-    }
-
-    #[test]
-    fn claude模板_空suffix_启动即失败() {
-        // 空 suffix 会让 cc 渠道名与主渠道同名，sync 按名匹配互相误判
-        let p = claude_cfg(&CLAUDE_TPL.replace("name_suffix = \"-cc\"", "name_suffix = \"\""));
-        let err = Config::load(&p).unwrap_err().to_string();
-        assert!(err.contains("name_suffix"), "实际错误：{err}");
-        std::fs::remove_file(&p).ok();
-    }
-
-    #[test]
-    fn claude模板_suffix撞另一把key的主渠道名_启动即失败() {
-        // zhipu-1 的 cc 渠道名 "zhipu-1-cc" 恰好是另一把 key 的名字 → sync 会把
-        // 那把 key 的主渠道误认成 zhipu-1 的 cc 渠道
-        let p = claude_cfg(&format!(
-            "{CLAUDE_TPL}\n[[keys]]\nname = \"zhipu-1-cc\"\nzhipu_api_key = \"k2\"\n"
-        ));
-        let err = Config::load(&p).unwrap_err().to_string();
-        assert!(err.contains("误认"), "实际错误：{err}");
-        std::fs::remove_file(&p).ok();
-    }
-
-    #[test]
-    fn claude模板_合法配置_加载成功_默认值齐全() {
-        // 空表 = 全默认值（功能开关即配置块本身，D4）
-        let p = claude_cfg("\n[new_api.channel_template_claude]\n");
-        let cfg = Config::load(&p).unwrap();
-        let cc = cfg.new_api.channel_template_claude.as_ref().unwrap();
-        assert_eq!(cc.channel_type, 14);
-        assert_eq!(cc.base_url, "https://open.bigmodel.cn/api/anthropic");
-        assert_eq!(cc.group, "claude");
-        assert_eq!(cc.name_suffix, "-cc");
-        assert_eq!(cc.token_name, "claude-code");
-        assert!(cc.models.contains("glm-5.3-flash"));
-        assert!(cc.model_discovery.is_none());
-        assert_eq!(cc.channel_name("zhipu-1"), "zhipu-1-cc");
-        std::fs::remove_file(&p).ok();
-    }
-
-    #[test]
     fn 模型发现_旧配置兼容且鉴权默认bearer() {
-        let p = claude_cfg(&format!(
+        let p = model_cfg(&format!(
             "{OPENAI_TPL}\n[new_api.channel_template.model_discovery]\n\
              url = \"https://open.bigmodel.cn/api/coding/paas/v4/models\"\n"
         ));
@@ -876,7 +701,7 @@ group = "default"
         assert_eq!(discovery.auth, ModelDiscoveryAuth::Bearer);
         std::fs::remove_file(&p).ok();
 
-        let p = claude_cfg(OPENAI_TPL);
+        let p = model_cfg(OPENAI_TPL);
         let cfg = Config::load(&p).unwrap();
         assert!(cfg
             .new_api
@@ -894,7 +719,7 @@ group = "default"
             ("authorization_raw", ModelDiscoveryAuth::AuthorizationRaw),
             ("x_api_key", ModelDiscoveryAuth::XApiKey),
         ] {
-            let p = claude_cfg(&format!(
+            let p = model_cfg(&format!(
                 "{OPENAI_TPL}\n[new_api.channel_template.model_discovery]\n\
                  url = \"https://gateway.example/v1/models\"\n\
                  auth = \"{auth}\"\n"
@@ -918,7 +743,7 @@ group = "default"
     #[test]
     fn 模型发现_非法url启动即失败() {
         for url in ["models", "file:///tmp/models", " https://example/models"] {
-            let p = claude_cfg(&format!(
+            let p = model_cfg(&format!(
                 "{OPENAI_TPL}\n[new_api.channel_template.model_discovery]\nurl = \"{url}\"\n"
             ));
             assert!(Config::load(&p).is_err(), "应拒绝 URL: {url}");
@@ -931,12 +756,6 @@ group = "default"
         let cfg: Config = toml::from_str(include_str!("../config.example.toml")).unwrap();
         cfg.validate().unwrap();
         let openai = cfg.new_api.channel_template.as_ref().unwrap();
-        let claude = cfg.new_api.channel_template_claude.as_ref().unwrap();
-        assert_eq!(
-            openai.model_discovery.as_ref(),
-            claude.model_discovery.as_ref(),
-            "同一把 key 的双渠道应复用同一发现目标"
-        );
         assert_eq!(
             openai.model_discovery.as_ref().unwrap().auth,
             ModelDiscoveryAuth::Bearer

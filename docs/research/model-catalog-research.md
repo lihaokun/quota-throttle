@@ -31,7 +31,7 @@
 
 已有：
 
-- `ChannelTemplate.models` / `ClaudeChannelTemplate.models` fallback 字符串；
+- `ChannelTemplate.models` fallback 字符串；
 - `sync_channels()` 能创建缺失渠道，但已存在渠道直接 Skip；
 - `set_channel_priority()` 已有安全的 GET→改字段→去 status→PUT 模式；
 - add-key 路径在探活后创建渠道，但使用不可变的进程内 `self.cfg`。

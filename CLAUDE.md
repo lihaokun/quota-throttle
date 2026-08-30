@@ -79,7 +79,7 @@ cargo run --release -- down config.toml    # 停 new-api
   `UPDATE users SET quota=… WHERE id=1` + **重启 new-api**（用户缓存靠重启失效；
   quota 单位 = 货币数 × QuotaPerUnit(500000)）。
 - **⚠️ new-api `/api` 全局限流：360 次/180 秒（≈2 次/秒，env `GLOBAL_API_RATE_LIMIT`，不在 option 系统里）**。
-  2026-08-24 踩坑：面板曾**逐渠道**轮询 `/api/log/stat` 拉 rpm/tpm（双渠道 × N 把 key），
+  2026-08-24 踩坑：面板曾**逐渠道**轮询 `/api/log/stat` 拉 rpm/tpm（N 把 key），
   单面板就吃光预算 → 控制循环的 GET→PUT 被 429（且 429 响应体非 JSON，报「解析渠道响应失败」）
   → 渠道 priority 卡旧值（出现过双 active 平分流量的实际伤害）。**已改**：面板实时指标全部从
   `recent_logs` 单请求推导（`live_metrics_from_logs`）。教训：**任何面板改动都别引入逐渠道轮询**；
@@ -121,24 +121,14 @@ cargo run --release -- down config.toml    # 停 new-api
 - **探测成本坑**：glm 是推理模型，`max_tokens:1` 挡不住思考（烧 ~660 token）；`thinking:{type:"disabled"}` 才压到 ~7 token。
 - **模型目录**：`up` / `sync` / AddKey 才调用每把 key 的 `/models`，不进 quota/面板周期。
   成功结果权威；失败时存量渠道不动，新渠道才用模板 `models` fallback。鉴权值不得进日志。
-- **Claude Code 双渠道（claude-code-routing）**：每把 key 双渠道——`<name>`(type 8, opencode) + `<name>-cc`
-  (type 14, 智谱 anthropic 口 `https://open.bigmodel.cn/api/anthropic`，new-api 自动拼 `/v1/messages`)，
-  切换循环对两侧写**同一 priority**（I1 联动）。要点（细节见 docs/design/claude-code-routing/）：
-  · **group 隔离是安全前提**：new-api 分发器按 (group, model) 选渠道、**不按请求格式过滤**——
-    两种格式渠道同 group 会互抢流量做跨格式转换。CC 令牌绑定 `claude` group ⇒ 物理隔离。
-    config 启动校验拦「同 group」「suffix 撞另一把 key 主渠道名」。
-  · **决策身份永远是主 channel_id**（active/pinned/eligible 都以它为键）；pin/remove 入口把
-    cc id 归一化到主 id；remove 必须**双渠道都压 exhausted** 再动 config（防孤儿高优先级渠道偷流量）。
-  · **令牌完整 key**：列表打码，但 `POST /api/token/:id/key` 直接回完整值（GetTokenKey）——
-    每次 sync 现取现用，不落 config。AddToken 服务端生成 key、搬运 group 字段。
-  · **⚠️ 智谱 anthropic 口不认 `[1m]` 后缀模型名**（实测 2026-08：`glm-5.3[1m]`/`glm-5.2[1m]`
-    直连都报 1214「modelCode 不存在」，纯 `glm-5.3` 通）。CC 客户端自己剥后缀发纯名——
-    所以 `/models` 同步只挂上游返回的纯模型名，**别把带后缀的名字发给上游**。
-  · CC 接入只改两个 env：`ANTHROPIC_BASE_URL=http://127.0.0.1:3000` + `ANTHROPIC_AUTH_TOKEN=<sync 打印的令牌>`。
-  · **令牌 group 要过两道门**（ensure_group 都会注册）：① `UserUsableGroups`（用户可用组，
-    option 平铺 map）——缺了 TokenAuth 直接 **403「无权访问 x 分组」**（auth.go:421-435，
-    实测踩过）；② 分组倍率（旧形态 `GroupRatio` / 新形态 `group_ratio_setting.group_ratio`，
-    计费层）。两处失败均 warn 不阻断 sync（第①处失败 CC 会 403，提示里有 UI 修复路径）。
+- **Claude Code 下游接入（claude-code-routing，2026-08-30 修正）**：NewAPI v1.0.0-rc.20
+  原生注册 `/v1/messages`，OpenAI adaptor 会把 Claude 请求（含 tools/system/content）转换后送入
+  现有 Custom(type 8) 智谱 Coding 渠道，并把响应转回 Anthropic SSE/JSON。已用当前唯一的
+  `opencode` NewAPI key 实测普通请求与流式请求（tools + cache_control）成功。
+  · 每把上游 key **只建一个渠道**；OpenAI/Claude 是下游请求格式，不复制渠道、不双写 priority。
+  · `ANTHROPIC_AUTH_TOKEN` 使用与 opencode 相同的 NewAPI key；不新建 Claude 专用 token/group。
+  · `ANTHROPIC_BASE_URL=http://127.0.0.1:3000`（Claude Code 自行拼 `/v1/messages`）。
+  · 未来的出口 key/group 功能是独立维度，禁止再把下游协议绑定成 group。
 - **认证**：智谱各口用 `Authorization: Bearer <裸 key>`（coding/推理口）；monitor 口社区脚本用裸 key（无 Bearer），但对团体 coding plan 无效。
 
 ## 工作流程

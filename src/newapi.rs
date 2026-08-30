@@ -7,9 +7,7 @@
 //! 改 priority 仍用「GET 渠道 → 只改 priority → PUT 回」，整体搬运，对版本差异最鲁棒。
 //! ⚠️ channel_path / 建渠道字段 / 是否需要 New-Api-User，请用 F12 抓真实请求核实。
 
-use crate::config::{
-    ChannelTemplate, ClaudeChannelTemplate, KeyMapping, ModelDiscoveryConfig, NewApiConfig,
-};
+use crate::config::{ChannelTemplate, KeyMapping, ModelDiscoveryConfig, NewApiConfig};
 use crate::model_catalog::{model_sets_equal, normalize_models_csv, ModelCatalogClient};
 use crate::status::{ChannelState, RequestLog};
 use anyhow::{bail, Context, Result};
@@ -69,31 +67,11 @@ impl<'a> From<&'a ChannelTemplate> for ChannelParams<'a> {
         }
     }
 }
-impl<'a> From<&'a ClaudeChannelTemplate> for ChannelParams<'a> {
-    fn from(t: &'a ClaudeChannelTemplate) -> Self {
-        Self {
-            channel_type: t.channel_type,
-            base_url: &t.base_url,
-            models: &t.models,
-            group: &t.group,
-            model_discovery: t.model_discovery.as_ref(),
-        }
-    }
-}
-
-/// 渠道操作计划（`plan_channel_ops` 的输出，纯数据）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ChannelOpKind {
-    OpenAi,
-    Claude,
-}
-
 #[derive(Debug, PartialEq)]
 enum ChannelOp<'a> {
     /// 已存在；有模板/发现配置时还要对账 models，不能再无条件跳过。
     Skip {
         name: String,
-        kind: ChannelOpKind,
         params: Option<ChannelParams<'a>>,
         owner_name: &'a str,
         key: &'a str,
@@ -101,7 +79,6 @@ enum ChannelOp<'a> {
     /// 需要创建
     Create {
         name: String,
-        kind: ChannelOpKind,
         params: ChannelParams<'a>,
         owner_name: &'a str,
         key: &'a str,
@@ -110,32 +87,24 @@ enum ChannelOp<'a> {
     Missing { name: String },
 }
 
-/// 纯函数：keys × 现有渠道名集合 × 两模板 → 渠道操作计划（不执行、零 IO）。
-///
-/// 每把 key 两个槽位：
-///   · openai 槽（名 = key.name）：已存在→Skip；缺且配了模板→Create；缺且没模板→Missing。
-///   · claude 槽（名 = key.name+suffix，仅配了模板才存在）：已存在→Skip；缺→Create。
-///     未配模板 = 功能关，**不产任何 op 也不 warn**。
+/// 纯函数：keys × 现有渠道名集合 × 模板 → 渠道操作计划（不执行、零 IO）。
 fn plan_channel_ops<'a>(
     keys: &'a [KeyMapping],
     existing: &HashSet<String>,
-    openai: Option<&'a ChannelTemplate>,
-    claude: Option<&'a ClaudeChannelTemplate>,
+    template: Option<&'a ChannelTemplate>,
 ) -> Vec<ChannelOp<'a>> {
     let mut ops = Vec::new();
     for k in keys {
         if existing.contains(&k.name) {
             ops.push(ChannelOp::Skip {
                 name: k.name.clone(),
-                kind: ChannelOpKind::OpenAi,
-                params: openai.map(Into::into),
+                params: template.map(Into::into),
                 owner_name: &k.name,
                 key: &k.zhipu_api_key,
             });
-        } else if let Some(t) = openai {
+        } else if let Some(t) = template {
             ops.push(ChannelOp::Create {
                 name: k.name.clone(),
-                kind: ChannelOpKind::OpenAi,
                 params: t.into(),
                 owner_name: &k.name,
                 key: &k.zhipu_api_key,
@@ -143,37 +112,14 @@ fn plan_channel_ops<'a>(
         } else {
             ops.push(ChannelOp::Missing { name: k.name.clone() });
         }
-        if let Some(t) = claude {
-            let name = t.channel_name(&k.name);
-            if existing.contains(&name) {
-                ops.push(ChannelOp::Skip {
-                    name,
-                    kind: ChannelOpKind::Claude,
-                    params: Some(t.into()),
-                    owner_name: &k.name,
-                    key: &k.zhipu_api_key,
-                });
-            } else {
-                ops.push(ChannelOp::Create {
-                    name,
-                    kind: ChannelOpKind::Claude,
-                    params: t.into(),
-                    owner_name: &k.name,
-                    key: &k.zhipu_api_key,
-                });
-            }
-        }
     }
     ops
 }
 
-/// sync 结果：按 **key 名** 索引两侧渠道 id（resolve_keys 不需要知道 suffix）。
+/// sync 结果：按 key 名索引其唯一上游渠道 id。
 #[derive(Debug, Default)]
 pub struct SyncOutcome {
-    /// key 名 → 主渠道（OpenAI 格式）id
     pub primary: HashMap<String, i64>,
-    /// key 名 → claude 渠道（`<name>-cc`）id。缺项 = 该 key 无 claude 侧（建失败/未建）。
-    pub claude: HashMap<String, i64>,
 }
 
 /// 新渠道最终采用的模型来源。供 AddKey 日志/回执说明是否发生了降级。
@@ -194,12 +140,6 @@ impl ModelSource {
 
 type DiscoveryCache =
     HashMap<(String, ModelDiscoveryConfig), std::result::Result<Vec<String>, String>>;
-
-/// option 的 value 是「JSON 的字符串」（`Interface2String` 产物），剥一层。
-fn parse_option_json(it: &Value) -> Result<Value> {
-    let raw = s(it, "value");
-    serde_json::from_str(&raw).with_context(|| format!("option value 不是合法 JSON: {raw}"))
-}
 
 pub struct NewApiClient {
     client: reqwest::Client,
@@ -454,7 +394,7 @@ impl NewApiClient {
     }
 
     /// 单次 sync 的发现缓存。key 只以非敏感的 owner name 作为缓存身份；真实 API key
-    /// 不进入 HashMap key、日志或错误。相同 key + 相同发现配置的双渠道只请求一次上游。
+    /// 不进入 HashMap key、日志或错误。同一 key + 发现配置只请求一次上游。
     async fn discover_cached(
         &self,
         owner_name: &str,
@@ -608,20 +548,17 @@ impl NewApiClient {
         Ok(true)
     }
 
-    /// 按 key 列表对齐 new-api 渠道：缺的就（用模板）建出来。每把 key 两个槽位——
-    /// openai 槽恒有（未配模板则只 warn 不建，现有语义）；claude 槽仅在配了模板时存在。
-    /// **错误分级**：openai 建失败 → 硬错终止（地基不齐别进切换循环）；
-    /// claude 建失败 → warn 降级（叠加层坏了不连累现有链路，该 key 的 CC 侧无人受管而已）。
+    /// 按 key 列表对齐唯一的上游渠道：缺失则按模板创建；存在时按 `/models` 对账。
+    /// Claude 是 NewAPI 已支持的下游请求格式，复用同一渠道与访问 key，不在这里复制渠道。
     pub async fn sync_channels(
         &self,
         keys: &[KeyMapping],
-        openai_tpl: Option<&ChannelTemplate>,
-        claude_tpl: Option<&ClaudeChannelTemplate>,
+        template: Option<&ChannelTemplate>,
         standby_priority: i64,
     ) -> Result<SyncOutcome> {
         let existing = self.list_channels().await?;
         let names: HashSet<String> = existing.keys().cloned().collect();
-        let plan = plan_channel_ops(keys, &names, openai_tpl, claude_tpl);
+        let plan = plan_channel_ops(keys, &names, template);
 
         let mut created = false;
         let mut discovery_cache = DiscoveryCache::new();
@@ -629,7 +566,6 @@ impl NewApiClient {
             match op {
                 ChannelOp::Skip {
                     name,
-                    kind,
                     params,
                     owner_name,
                     key,
@@ -651,8 +587,7 @@ impl NewApiClient {
                             match self.ensure_channel_models(existing[name], name, &desired).await {
                                 Ok(true) => info!(name = %name, count = models.len(), "已按上游 /models 更新渠道模型"),
                                 Ok(false) => info!(name = %name, count = models.len(), "渠道模型已与上游一致"),
-                                Err(e) if matches!(kind, ChannelOpKind::OpenAi) => return Err(e),
-                                Err(e) => warn!(name = %name, error = %e, "对账 claude 渠道模型失败，保留现状"),
+                                Err(e) => return Err(e),
                             }
                         }
                         Err(error) => warn!(
@@ -669,7 +604,6 @@ impl NewApiClient {
                 ),
                 ChannelOp::Create {
                     name,
-                    kind,
                     params,
                     owner_name,
                     key,
@@ -684,7 +618,7 @@ impl NewApiClient {
                         .await
                     {
                         Ok((models, source)) => {
-                            info!(name = %name, kind = ?kind, models_source = source.as_str(), "创建渠道");
+                            info!(name = %name, models_source = source.as_str(), "创建渠道");
                             self.create_channel_with_models(
                                 name,
                                 key,
@@ -698,12 +632,7 @@ impl NewApiClient {
                     };
                     match result {
                         Ok(()) => created = true,
-                        Err(e) if matches!(kind, ChannelOpKind::OpenAi) => return Err(e),
-                        Err(e) => warn!(
-                            name = %name,
-                            error = %e,
-                            "创建 claude 渠道失败，降级：该 key 暂无 Claude Code 侧"
-                        ),
+                        Err(e) => return Err(e),
                     }
                 }
             }
@@ -721,236 +650,8 @@ impl NewApiClient {
             if let Some(id) = latest.get(&k.name) {
                 out.primary.insert(k.name.clone(), *id);
             }
-            if let Some(t) = claude_tpl {
-                let cc = t.channel_name(&k.name);
-                if let Some(id) = latest.get(&cc) {
-                    out.claude.insert(k.name.clone(), *id);
-                }
-                // cc 缺项不另 warn：创建失败的上面已 warn 过，别刷屏
-            }
         }
         Ok(out)
-    }
-
-    /// 把 group 注册进 new-api，让「绑定该 group 的令牌」可用。**两个层面缺一不可**：
-    /// ① `UserUsableGroups`（用户可用组，flat map group→描述）——令牌的 group 不在
-    ///    用户可用组里的话，TokenAuth 直接 403「无权访问 x 分组」
-    ///    （`middleware/auth.go:421-435`，2026-08 实测踩过）；
-    /// ② 分组倍率（新形态 `group_ratio_setting.group_ratio` / 旧形态 `GroupRatio`）——计费层。
-    /// 幂等：都注册过就零写请求。写回后回读断言。
-    pub async fn ensure_group(&self, group: &str) -> Result<()> {
-        let options = self.list_options().await?;
-
-        // ① 用户可用组（硬门槛：缺了令牌直接 403，CC 全断）
-        if let Some(it) = options.iter().find(|it| s(it, "key") == "UserUsableGroups") {
-            let mut map = parse_option_json(it)?;
-            let obj = map
-                .as_object_mut()
-                .context("UserUsableGroups 不是 JSON 对象")?;
-            if !obj.contains_key(group) {
-                obj.insert(group.to_string(), Value::from("Claude Code 专用分组"));
-                self.put_option_and_verify("UserUsableGroups", &map, group)
-                    .await?;
-                info!(group, "已加入用户可用组（UserUsableGroups）");
-            }
-        } else {
-            bail!("option 列表里没有 UserUsableGroups 键——该版本形态未知，\
-                   CC 令牌会 403「无权访问 {group} 分组」，请到 new-api UI 手动把该分组加入用户可用组");
-        }
-
-        // ② 分组倍率（计费层；新形态优先，旧形态兜底）
-        let (opt_key, mut value, nested) = if let Some(it) = options
-            .iter()
-            .find(|it| s(it, "key") == "group_ratio_setting")
-        {
-            ("group_ratio_setting", parse_option_json(it)?, true)
-        } else if let Some(it) = options.iter().find(|it| s(it, "key") == "GroupRatio") {
-            ("GroupRatio", parse_option_json(it)?, false)
-        } else {
-            bail!(
-                "option 列表里既没有 group_ratio_setting 也没有 GroupRatio——\
-                 该版本的分组倍率形态未知，跳过倍率注册（不影响路由，仅计费倍率）"
-            );
-        };
-        let target = if nested {
-            value
-                .get_mut("group_ratio")
-                .context("group_ratio_setting 缺 group_ratio 子对象")?
-        } else {
-            &mut value
-        };
-        let map = target.as_object_mut().context("分组配置不是 JSON 对象")?;
-        if !map.contains_key(group) {
-            map.insert(group.to_string(), Value::from(1));
-            self.put_option_and_verify(opt_key, &value, group).await?;
-            info!(group, opt_key, "已注册分组倍率（ratio=1）");
-        }
-        Ok(())
-    }
-
-    /// GET /api/option/ 的条目列表（data: [{key, value}...]，value 是字符串化的 JSON）。
-    async fn list_options(&self) -> Result<Vec<Value>> {
-        let url = format!("{}/api/option/", self.base_url);
-        let body: Value = self
-            .apply_headers(self.client.get(&url))
-            .send()
-            .await
-            .context("拉取 new-api option 列表失败")?
-            .json()
-            .await
-            .context("解析 option 列表失败")?;
-        Ok(body
-            .get("data")
-            .and_then(|d| d.as_array())
-            .cloned()
-            .unwrap_or_default())
-    }
-
-    /// PUT 一个 option（值是「JSON 的字符串」）并**回读断言**目标 group 键已可见
-    /// （GET 读的是内存 OptionMap，PUT 成功即应生效，断言失败如实报错）。
-    async fn put_option_and_verify(
-        &self,
-        opt_key: &str,
-        new_value: &Value,
-        group: &str,
-    ) -> Result<()> {
-        let url = format!("{}/api/option/", self.base_url);
-        let payload = json!({
-            "key": opt_key,
-            "value": serde_json::to_string(new_value).context("序列化 option 失败")?,
-        });
-        let resp = self
-            .apply_headers(self.client.put(&url))
-            .json(&payload)
-            .send()
-            .await
-            .context("写回 option 失败")?;
-        let status = resp.status();
-        let rb: Value = resp.json().await.unwrap_or(Value::Null);
-        let ok = rb
-            .get("success")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(status.is_success());
-        if !ok {
-            bail!("写回 option {opt_key} 失败: HTTP {status} body={rb}");
-        }
-        let options = self.list_options().await?;
-        let it = options
-            .iter()
-            .find(|it| s(it, "key") == opt_key)
-            .context("回读不到刚写的 option")?;
-        let v2 = parse_option_json(it)?;
-        // 兼容两种形态：平铺 map（GroupRatio/UserUsableGroups）与嵌套
-        // group_ratio_setting.group_ratio——group 可能在根也可能在子对象里
-        let has = v2.get(group).is_some()
-            || v2.get("group_ratio").and_then(|g| g.get(group)).is_some();
-        anyhow::ensure!(
-            has,
-            "PUT 后回读仍不见 {group}（{opt_key}），请到 new-api UI 手动确认"
-        );
-        Ok(())
-    }
-
-    /// 找到（或建出）绑定 claude group 的 CC 专用令牌，返回**完整 key**。
-    ///
-    /// key 每次现取现用：`POST /api/token/:id/key` 专门回完整值（GetTokenKey），
-    /// 列表里的 key 是打码的（CLAUDE.md 血泪）。不落任何本地状态。
-    /// 同名令牌必须语义唯一：多条/属别的 group/被禁用都 bail 让用户人工处理，不猜。
-    pub async fn ensure_claude_token(&self, name: &str, group: &str) -> Result<String> {
-        let mut tokens = self.list_tokens().await?;
-        let id = match tokens
-            .iter()
-            .filter(|t| s(t, "name") == name)
-            .collect::<Vec<_>>()
-            .as_slice()
-        {
-            [] => {
-                // 建：绑定 group、无限额度、永不过期（AddToken 契约见细化设计文首源码事实）
-                info!(name, group, "创建 Claude Code 专用令牌");
-                let url = format!("{}/api/token/", self.base_url);
-                let payload = json!({
-                    "name": name,
-                    "group": group,
-                    "expired_time": -1,
-                    "unlimited_quota": true,
-                    "remain_quota": 0,
-                    "model_limits_enabled": false,
-                });
-                let resp = self
-                    .apply_headers(self.client.post(&url))
-                    .json(&payload)
-                    .send()
-                    .await
-                    .context("创建令牌失败")?;
-                let status = resp.status();
-                let rb: Value = resp.json().await.unwrap_or(Value::Null);
-                let ok = rb
-                    .get("success")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(status.is_success());
-                if !ok {
-                    bail!("创建令牌 {name} 失败: HTTP {status} body={rb}（name ≤50 字符）");
-                }
-                // AddToken 响应不含 id → 重拉列表按名取
-                tokens = self.list_tokens().await?;
-                let t = tokens
-                    .iter()
-                    .find(|t| s(t, "name") == name)
-                    .with_context(|| format!("令牌已创建但列表里找不到：{name}"))?;
-                i(t, "id").context("令牌响应缺 id")?
-            }
-            [one] => {
-                let g = s(one, "group");
-                if !g.is_empty() && g != group {
-                    bail!(
-                        "已存在同名令牌 {name} 但 group 是 \"{g}\"（要 \"{group}\"）：\
-                         请改 token_name 或到 new-api 里人工处理"
-                    );
-                }
-                let status_raw = i(one, "status").unwrap_or(1);
-                if status_raw != 1 {
-                    bail!("令牌 {name} 处于禁用状态（status={status_raw}），请到 new-api 里启用");
-                }
-                i(one, "id").context("令牌响应缺 id")?
-            }
-            _ => bail!("存在多个同名令牌 {name}，语义不明，请到 new-api 里清理后重试"),
-        };
-
-        // 完整 key：专用端点（列表打码，这里取真值）
-        let url = format!("{}/api/token/{id}/key", self.base_url);
-        let resp = self
-            .apply_headers(self.client.post(&url))
-            .send()
-            .await
-            .context("取令牌完整 key 失败")?;
-        let status = resp.status();
-        let rb: Value = resp.json().await.unwrap_or(Value::Null);
-        let ok = rb
-            .get("success")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(status.is_success());
-        if !ok {
-            bail!("取令牌 {name} 完整 key 失败: HTTP {status} body={rb}");
-        }
-        rb.get("data")
-            .and_then(|d| d.get("key"))
-            .and_then(|v| v.as_str())
-            .map(str::to_string)
-            .context("取 key 响应缺 data.key")
-    }
-
-    /// 当前用户的令牌列表（key 打码，只用 id/name/group/status）。
-    async fn list_tokens(&self) -> Result<Vec<Value>> {
-        let url = format!("{}/api/token/?p=0&page_size=100", self.base_url);
-        let body: Value = self
-            .apply_headers(self.client.get(&url))
-            .send()
-            .await
-            .context("拉取令牌列表失败")?
-            .json()
-            .await
-            .context("解析令牌列表失败")?;
-        Ok(extract_items(&body))
     }
 
     /// 【看板】用量统计（new-api 自己按**小时**聚合好的 `quota_data`）。纯读。
@@ -1085,34 +786,10 @@ mod tests {
         }
     }
 
-    fn claude_tpl() -> ClaudeChannelTemplate {
-        ClaudeChannelTemplate {
-            channel_type: 14,
-            base_url: "https://open.bigmodel.cn/api/anthropic".into(),
-            models: "glm-5.3[1m]".into(),
-            group: "claude".into(),
-            name_suffix: "-cc".into(),
-            token_name: "claude-code".into(),
-            model_discovery: None,
-        }
-    }
-
     fn names(ops: &[ChannelOp]) -> Vec<String> {
         ops.iter()
             .map(|o| match o {
                 ChannelOp::Skip { name, .. } | ChannelOp::Create { name, .. } | ChannelOp::Missing { name } => name.clone(),
-            })
-            .collect()
-    }
-
-    fn kinds(ops: &[ChannelOp]) -> Vec<&'static str> {
-        ops.iter()
-            .map(|o| match o {
-                ChannelOp::Skip { kind, .. } | ChannelOp::Create { kind, .. } => match kind {
-                    ChannelOpKind::OpenAi => "openai",
-                    ChannelOpKind::Claude => "claude",
-                },
-                ChannelOp::Missing { .. } => "missing",
             })
             .collect()
     }
@@ -1122,48 +799,30 @@ mod tests {
     }
 
     #[test]
-    fn 全新建_双渠道各一个create() {
+    fn 全新建_每把key只创建一个上游渠道() {
         let keys = [key("zhipu-1")];
-        let (o, c) = (openai_tpl(), claude_tpl());
-        let ops = plan_channel_ops(&keys, &existing(&[]), Some(&o), Some(&c));
-        assert_eq!(names(&ops), vec!["zhipu-1", "zhipu-1-cc"]);
-        assert_eq!(kinds(&ops), vec!["openai", "claude"]);
-        // Create 的 key 必须指向这把 key 的智谱 key（两种渠道同一把 key）
-        for op in &ops {
-            if let ChannelOp::Create { key, .. } = op {
-                assert_eq!(*key, "k-zhipu-1");
-            }
-        }
-    }
-
-    #[test]
-    fn 全已存在_双渠道都skip() {
-        let keys = [key("zhipu-1")];
-        let (o, c) = (openai_tpl(), claude_tpl());
-        let ops = plan_channel_ops(&keys, &existing(&["zhipu-1", "zhipu-1-cc"]), Some(&o), Some(&c));
-        assert_eq!(kinds(&ops), vec!["openai", "claude"]); // 全 Skip，无 Create
-        assert!(ops.iter().all(|op| matches!(op, ChannelOp::Skip { .. })));
-        for op in &ops {
-            let ChannelOp::Skip { params, key, owner_name, .. } = op else { unreachable!() };
-            assert!(params.is_some(), "配了模板的存量渠道必须进入模型对账");
-            assert_eq!(*key, "k-zhipu-1");
-            assert_eq!(*owner_name, "zhipu-1");
-        }
-    }
-
-    #[test]
-    fn 未配claude模板_只产openai槽_不warn不建() {
-        let keys = [key("zhipu-1")];
-        let o = openai_tpl();
-        let ops = plan_channel_ops(&keys, &existing(&[]), Some(&o), None);
+        let template = openai_tpl();
+        let ops = plan_channel_ops(&keys, &existing(&[]), Some(&template));
         assert_eq!(names(&ops), vec!["zhipu-1"]);
-        assert_eq!(kinds(&ops), vec!["openai"]);
+        let ChannelOp::Create { key, .. } = &ops[0] else { unreachable!() };
+        assert_eq!(*key, "k-zhipu-1");
+    }
+
+    #[test]
+    fn 已存在_进入模型对账而不重复创建() {
+        let keys = [key("zhipu-1")];
+        let template = openai_tpl();
+        let ops = plan_channel_ops(&keys, &existing(&["zhipu-1"]), Some(&template));
+        let ChannelOp::Skip { params, key, owner_name, .. } = &ops[0] else { unreachable!() };
+        assert!(params.is_some(), "配了模板的存量渠道必须进入模型对账");
+        assert_eq!(*key, "k-zhipu-1");
+        assert_eq!(*owner_name, "zhipu-1");
     }
 
     #[test]
     fn openai无模板且渠道缺_产missing() {
         let keys = [key("zhipu-1")];
-        let ops = plan_channel_ops(&keys, &existing(&[]), None, None);
+        let ops = plan_channel_ops(&keys, &existing(&[]), None);
         assert_eq!(
             ops,
             vec![ChannelOp::Missing { name: "zhipu-1".into() }]
@@ -1171,34 +830,11 @@ mod tests {
     }
 
     #[test]
-    fn 混合_key1全skip_key2双create() {
+    fn 混合_key1_skip_key2_create() {
         let keys = [key("zhipu-1"), key("zhipu-2")];
-        let (o, c) = (openai_tpl(), claude_tpl());
-        let ops = plan_channel_ops(
-            &keys,
-            &existing(&["zhipu-1", "zhipu-1-cc"]),
-            Some(&o),
-            Some(&c),
-        );
-        assert_eq!(names(&ops), vec!["zhipu-1", "zhipu-1-cc", "zhipu-2", "zhipu-2-cc"]);
-        assert_eq!(
-            kinds(&ops),
-            vec!["openai", "claude", "openai", "claude"]
-        );
-        // 前两个 Skip、后两个 Create
-        assert!(matches!(ops[0], ChannelOp::Skip { .. }));
-        assert!(matches!(ops[1], ChannelOp::Skip { .. }));
-        assert!(matches!(ops[2], ChannelOp::Create { .. }));
-        assert!(matches!(ops[3], ChannelOp::Create { .. }));
-    }
-
-    #[test]
-    fn 单侧存在_只补缺的那侧() {
-        // 主渠道在、cc 不在 → 只建 cc（对拍「半途而废」的存量状态）
-        let keys = [key("zhipu-1")];
-        let (o, c) = (openai_tpl(), claude_tpl());
-        let ops = plan_channel_ops(&keys, &existing(&["zhipu-1"]), Some(&o), Some(&c));
-        assert_eq!(names(&ops), vec!["zhipu-1", "zhipu-1-cc"]);
+        let template = openai_tpl();
+        let ops = plan_channel_ops(&keys, &existing(&["zhipu-1"]), Some(&template));
+        assert_eq!(names(&ops), vec!["zhipu-1", "zhipu-2"]);
         assert!(matches!(ops[0], ChannelOp::Skip { .. }));
         assert!(matches!(ops[1], ChannelOp::Create { .. }));
     }

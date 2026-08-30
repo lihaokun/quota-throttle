@@ -17,7 +17,7 @@ tick()（每 poll_interval_secs 一轮）
      ├─ pin：门限仍由档位决定（正常档 95%；降级档 100%）
      └─ pick：当前合格集内的临期集合非空 → 升序 reset，平手 pct 低者；否则照旧
      ↓
-  priority 三档下发（active/standby/exhausted，双渠道联动）→ 快照发布
+  priority 三档下发（active/standby/exhausted）→ 快照发布
 ```
 
 ## 2. 核心数据结构定义

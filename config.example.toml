@@ -125,28 +125,11 @@ group = "default"
 url = "https://open.bigmodel.cn/api/coding/paas/v4/models"
 auth = "bearer"              # Authorization: Bearer <key>
 
-# —— Claude Code 渠道模板（可选；配上 = 开启双渠道）——
-# 配了它，sync 会给每把 key 额外建一个 "<name>-cc" 的 Anthropic 格式渠道（type 14），
-# 指到智谱 Claude 兼容口；并自动建绑定 claude 分组的专用令牌、打印接入说明。
-# 切换循环会把同一 priority 联动写到两种渠道 ⇒ opencode 和 Claude Code 同时切 key。
-# Claude Code 侧只需改两个 env（其余如 ANTHROPIC_DEFAULT_*_MODEL 与直连配置完全一致）：
+# —— Claude Code 下游接入（无需额外渠道、group 或 key）——
+# NewAPI 原生在 /v1/messages 接收 Anthropic 格式，并转换到上面的同一批 type 8 渠道。
+# Claude Code 与 OpenAI/opencode 客户端使用**同一把 NewAPI 访问 key**；这里只需设置：
 #   ANTHROPIC_BASE_URL=http://127.0.0.1:3000
-#   ANTHROPIC_AUTH_TOKEN=<sync 打印的令牌>
-# ⚠️ group 必须与上面 [new_api.channel_template].group 不同：new-api 按 (group, model) 选
-#    渠道、不按请求格式过滤，同 group 两种格式渠道会互抢流量做跨格式转换（启动校验会拦）。
-# 不需要 Claude Code 就整段删掉，行为与原来完全一致。
-[new_api.channel_template_claude]
-type = 14
-base_url = "https://open.bigmodel.cn/api/anthropic"
-# 同样只作失败 fallback；成功时与主渠道复用同一把 key 的 /models 结果。
-models = "glm-4.5,glm-4.5-air,glm-4.6,glm-4.7,glm-5,glm-5-turbo,glm-5.1,glm-5.2,glm-5.3,glm-5.3-flash"
-group = "claude"
-name_suffix = "-cc"          # claude 渠道名 = <key 名> + 后缀
-token_name = "claude-code"   # CC 专用令牌名（自动创建，绑定 claude 分组，无限额度）
-
-[new_api.channel_template_claude.model_discovery]
-url = "https://open.bigmodel.cn/api/coding/paas/v4/models"
-auth = "bearer"
+#   ANTHROPIC_AUTH_TOKEN=<与 opencode 使用的相同 NewAPI key>
 
 # —— 一把智谱 key = 一个独立渠道 ——
 # name 同时用作 new-api 渠道名，sync 靠它解析/创建渠道。channel_id 可留空，交给 sync 自动解析。

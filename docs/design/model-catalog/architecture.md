@@ -38,7 +38,7 @@ pub enum ModelDiscoveryAuth {
 }
 ```
 
-- consumer：当前 `ChannelTemplate` / `ClaudeChannelTemplate`，未来迁移到 `api_groups[]`。
+- consumer：当前 `ChannelTemplate`，未来迁移到 `api_groups[]`。
 - `model_discovery` 缺失：关闭发现，完全保持旧行为。
 - URL 必须是绝对 `http/https` URL；空白或其它 scheme 启动失败。
 
@@ -72,7 +72,7 @@ enum ModelCatalogResult {
 - `sync_channels()` 为每个 key/模板解析模型来源。
 - 已存在渠道不再无条件 Skip：发现成功后比较并仅在漂移时更新 models。
 - 模型更新复用 GET→只改 models→去 status→PUT，并回读断言；不动 key/priority/status/group。
-- 同一 `(key name, discovery URL, auth)` 在一次 sync 中最多请求一次，双渠道复用结果。
+- 同一 `(key name, discovery URL, auth)` 在一次 sync 中最多请求一次。
 
 ### 3.4 `orchestrator.rs`
 
