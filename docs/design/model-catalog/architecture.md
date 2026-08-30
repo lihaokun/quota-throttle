@@ -39,7 +39,8 @@ pub enum ModelDiscoveryAuth {
 ```
 
 - consumer：当前 `ChannelTemplate`，未来迁移到 `api_groups[]`。
-- `model_discovery` 缺失：关闭发现，完全保持旧行为。
+- `model_discovery` 缺失：若模板是已知的智谱 Coding 官方地址，则自动补官方 `/models` +
+  Bearer；其它 Custom 上游保持关闭，绝不猜 URL/鉴权。
 - URL 必须是绝对 `http/https` URL；空白或其它 scheme 启动失败。
 
 ### 2.2 `ModelCatalogResult`（module-private）
@@ -59,7 +60,7 @@ enum ModelCatalogResult {
 
 - 为渠道模板增加可选 `model_discovery`。
 - 保留 `models` 字段，语义改为“发现关闭或失败时的新渠道 fallback”。
-- 校验 URL 与 auth 枚举；旧配置缺字段时逐字节兼容。
+- 校验 URL 与 auth 枚举；旧智谱配置自动迁移为发现开启，其它旧配置保持原行为。
 
 ### 3.2 `model_catalog.rs`（新增）
 

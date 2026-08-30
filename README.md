@@ -185,7 +185,8 @@ auth = "bearer"
 
 `up` / `sync` 会用每把 key 调一次 `/models`：新渠道采用实时结果，存量渠道发生增删时只更新
 `models`；探测失败不会改存量渠道，新建渠道才使用上面的 fallback。该探测不进入 quota 或看板
-轮询。
+轮询。旧智谱 Coding 配置即使没有 `model_discovery` 子表，也会自动补官方端点；其它 Custom
+上游不会被猜测。
 
 ### 3. opencode 接入：改 provider 的 baseURL，并清掉 auth.json 里的智谱 key
 

@@ -4,7 +4,7 @@
 
 ## 1. 配置契约
 
-两个现有渠道模板都增加可选子表：
+渠道模板增加可选子表：
 
 ```toml
 [new_api.channel_template.model_discovery]
@@ -13,8 +13,9 @@ auth = "bearer"
 ```
 
 `auth` 支持 `bearer`、`authorization_raw`、`x_api_key`，缺省为 `bearer`。
-没有 `model_discovery` 的旧配置保持原行为；`models` 保留为关闭发现或新建时发现失败的
-fallback。URL 必须是绝对 `http/https` URL。
+没有 `model_discovery` 的旧智谱 Coding 模板会按已知官方地址自动补齐；非智谱 Custom 模板
+保持原行为。`models` 保留为发现关闭或新建时发现失败的 fallback。URL 必须是绝对
+`http/https` URL。
 
 ## 2. 发现与规范化
 

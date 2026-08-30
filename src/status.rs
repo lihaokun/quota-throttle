@@ -401,18 +401,20 @@ fn err_json(msg: impl AsRef<str>) -> String {
 /// 把命令投给控制循环并等回执。
 ///
 /// - 队列满 → **503 立刻返回**：既不阻塞 HTTP 线程，也不阻塞控制循环。
-/// - 控制循环 10 秒没回 → 504（正常情况下是毫秒级；加 key 要探活智谱，故给足 10 秒）。
+/// - 超时未回 → 504。普通控制命令给 10 秒；AddKey 还要 quota 探活、`/models`、建渠道和
+///   发布新快照，单独给 60 秒，避免模型发现 10 秒 fallback 后产生“前端失败、后台成功”。
 /// - 命令自身失败（如 pin 一把不合格的 key）→ **409 + 原因**，前端直接显示这句话。
 async fn dispatch<T: Serialize>(
     tx: &mpsc::Sender<Command>,
     make: impl FnOnce(oneshot::Sender<Result<T, String>>) -> Command,
     ok_status: &'static str,
+    timeout: Duration,
 ) -> (&'static str, String) {
     let (rtx, rrx) = oneshot::channel();
     if tx.try_send(make(rtx)).is_err() {
         return ("503 Service Unavailable", err_json("控制循环忙，请稍后重试"));
     }
-    match tokio::time::timeout(Duration::from_secs(10), rrx).await {
+    match tokio::time::timeout(timeout, rrx).await {
         Ok(Ok(Ok(v))) => {
             // 无返回值的命令（pin/unpin）序列化成 "null"，前端不好判 ⇒ 统一给 {"ok":true}
             let mut s = serde_json::to_string(&v).unwrap_or_default();
@@ -525,6 +527,7 @@ async fn handle_conn(
                         &tx,
                         |reply| Command::Pin { channel_id, reply },
                         "200 OK",
+                        Duration::from_secs(10),
                     )
                     .await;
                     (st, JSON, b)
@@ -537,13 +540,24 @@ async fn handle_conn(
             }
         }
         ("DELETE", "/api/pin") => {
-            let (st, b) = dispatch(&tx, |reply| Command::Unpin { reply }, "200 OK").await;
+            let (st, b) = dispatch(
+                &tx,
+                |reply| Command::Unpin { reply },
+                "200 OK",
+                Duration::from_secs(10),
+            )
+            .await;
             (st, JSON, b)
         }
         ("POST", "/api/keys") => match serde_json::from_str::<NewKeySpec>(&req.body) {
             Ok(spec) => {
-                let (st, b) =
-                    dispatch(&tx, |reply| Command::AddKey { spec, reply }, "201 Created").await;
+                let (st, b) = dispatch(
+                    &tx,
+                    |reply| Command::AddKey { spec, reply },
+                    "201 Created",
+                    Duration::from_secs(60),
+                )
+                .await;
                 (st, JSON, b)
             }
             Err(e) => (
@@ -559,6 +573,7 @@ async fn handle_conn(
                         &tx,
                         |reply| Command::RemoveKey { channel_id, reply },
                         "200 OK",
+                        Duration::from_secs(10),
                     )
                     .await;
                     (st, JSON, b)

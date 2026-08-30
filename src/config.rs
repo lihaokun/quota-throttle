@@ -262,6 +262,7 @@ pub struct ChannelTemplate {
     #[serde(default = "default_group")]
     pub group: String,
     /// 可选的上游 `/models` 发现。成功结果是权威目录；`models` 仅作新建时 fallback。
+    /// 旧智谱 Coding 配置缺省此块时，`Config::load` 会自动补官方 models 端点。
     #[serde(default)]
     pub model_discovery: Option<ModelDiscoveryConfig>,
 }
@@ -398,6 +399,21 @@ fn validate_model_discovery(label: &str, cfg: Option<&ModelDiscoveryConfig>) -> 
     Ok(())
 }
 
+/// 只对已经明确识别出的智谱 Coding Plan 模板补默认发现配置；其它 Custom 上游不猜。
+fn infer_zhipu_model_discovery(template: &ChannelTemplate) -> Option<ModelDiscoveryConfig> {
+    let url = reqwest::Url::parse(&template.base_url).ok()?;
+    if url.host_str() != Some("open.bigmodel.cn")
+        || url.path().trim_end_matches('/')
+            != "/api/coding/paas/v4/chat/completions"
+    {
+        return None;
+    }
+    Some(ModelDiscoveryConfig {
+        url: "https://open.bigmodel.cn/api/coding/paas/v4/models".to_string(),
+        auth: ModelDiscoveryAuth::Bearer,
+    })
+}
+
 /// 往 config.toml 追加一条 `[[keys]]`。
 ///
 /// 用 **toml_edit**（格式保留式编辑）而不是 `toml::to_string` 重新序列化——后者会把用户
@@ -462,6 +478,11 @@ impl Config {
         let text = std::fs::read_to_string(path)?;
         let mut cfg: Config = toml::from_str(&text)?;
         cfg.source_path = path.to_string_lossy().into_owned();
+        if let Some(template) = cfg.new_api.channel_template.as_mut() {
+            if template.model_discovery.is_none() {
+                template.model_discovery = infer_zhipu_model_discovery(template);
+            }
+        }
         cfg.validate()?;
         Ok(cfg)
     }
@@ -684,7 +705,7 @@ group = "default"
 "#;
 
     #[test]
-    fn 模型发现_旧配置兼容且鉴权默认bearer() {
+    fn 模型发现_旧智谱配置自动启用且鉴权默认bearer() {
         let p = model_cfg(&format!(
             "{OPENAI_TPL}\n[new_api.channel_template.model_discovery]\n\
              url = \"https://open.bigmodel.cn/api/coding/paas/v4/models\"\n"
@@ -702,6 +723,28 @@ group = "default"
         std::fs::remove_file(&p).ok();
 
         let p = model_cfg(OPENAI_TPL);
+        let cfg = Config::load(&p).unwrap();
+        let inferred = cfg
+            .new_api
+            .channel_template
+            .as_ref()
+            .unwrap()
+            .model_discovery
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            inferred.url,
+            "https://open.bigmodel.cn/api/coding/paas/v4/models"
+        );
+        assert_eq!(inferred.auth, ModelDiscoveryAuth::Bearer);
+        std::fs::remove_file(&p).ok();
+
+        // 非智谱 Custom 上游缺省时保持 None，不能凭空猜鉴权和 models URL。
+        let custom = OPENAI_TPL.replace(
+            "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions",
+            "https://gateway.example/v1/chat/completions",
+        );
+        let p = model_cfg(&custom);
         let cfg = Config::load(&p).unwrap();
         assert!(cfg
             .new_api

@@ -9,6 +9,7 @@
 use crate::config::{HeaderKV, Window, ZhipuConfig};
 use anyhow::{Context, Result};
 use serde::Deserialize;
+use std::time::Duration;
 
 #[derive(Debug, Clone)]
 pub struct WindowStatus {
@@ -124,6 +125,7 @@ impl QuotaProbe {
         let mut rb = self
             .client
             .get(&self.url)
+            .timeout(Duration::from_secs(10))
             .header("Authorization", format!("Bearer {api_key}"))
             .header("Accept", "application/json")
             .header("Content-Type", "application/json")

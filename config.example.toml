@@ -122,6 +122,7 @@ models = "glm-4.5,glm-4.5-air,glm-4.6,glm-4.7,glm-5,glm-5-turbo,glm-5.1,glm-5.2,
 group = "default"
 
 [new_api.channel_template.model_discovery]
+# 这一段可显式覆盖；旧智谱 Coding 模板即使缺少本段，也会自动使用同一官方端点。
 url = "https://open.bigmodel.cn/api/coding/paas/v4/models"
 auth = "bearer"              # Authorization: Bearer <key>
 

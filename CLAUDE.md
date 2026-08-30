@@ -121,6 +121,7 @@ cargo run --release -- down config.toml    # 停 new-api
 - **探测成本坑**：glm 是推理模型，`max_tokens:1` 挡不住思考（烧 ~660 token）；`thinking:{type:"disabled"}` 才压到 ~7 token。
 - **模型目录**：`up` / `sync` / AddKey 才调用每把 key 的 `/models`，不进 quota/面板周期。
   成功结果权威；失败时存量渠道不动，新渠道才用模板 `models` fallback。鉴权值不得进日志。
+  旧智谱 Coding 模板缺配置块时自动补官方 models URL；其它 Custom 上游不猜。
 - **Claude Code 下游接入（claude-code-routing，2026-08-30 修正）**：NewAPI v1.0.0-rc.20
   原生注册 `/v1/messages`，OpenAI adaptor 会把 Claude 请求（含 tools/system/content）转换后送入
   现有 Custom(type 8) 智谱 Coding 渠道，并把响应转回 Anthropic SSE/JSON。已用当前唯一的
