@@ -58,6 +58,81 @@ cargo run --release -- up config.toml  # 起 new-api + 建渠道 + 进入切换�
 
 数据（SQLite / 二进制 / 日志 / PID）都在 `./.newapi/`。日志级别用 `RUST_LOG` 控制。
 
+## 新用户上手：申请 key → 配置 → 跑通
+
+### 第 1 步：申请两类 API key（别混用）
+
+本工具涉及**两种完全不同的 key**，方向相反、填的位置也不同：
+
+| | 上游智谱 key | 下游 NewAPI 令牌 |
+|---|---|---|
+| 谁发给你的 | 智谱开放平台 | 本工具托管的 new-api |
+| 填在哪 | `config.toml` 的 `[[keys]]` | 客户端（opencode / Claude Code） |
+| 作用 | 查用量 + 建渠道（真正烧的额度） | 客户端访问 new-api 的凭证 |
+
+**A. 上游智谱 key**（≥2 把才有意义——轮换是本工具的核心价值）：
+
+1. 登录 [bigmodel.cn](https://bigmodel.cn)（注册 + 实名），订阅 **GLM Coding Plan**（个人或团体套餐）
+2. 控制台 → **API Keys** → 新建并复制（形如 `xxxxxxxx.yyyyyyyy`，中间一个点）
+3. 团体套餐还要按下面「org / project 的值在智谱网页上怎么取」逐把抄 selector
+4. 嫌麻烦可跳过手工编辑：服务跑起来后直接在看板「**探活并添加**」录入——探活不过就什么都不改，selector 配错会当场挡下
+
+**B. 下游 NewAPI 令牌**（`up` 跑起来之后才有地方申请）：
+
+1. 浏览器开 `http://127.0.0.1:3000`，用 `root` + 你在 `config.toml` 里设的密码登录
+2. 左侧 **令牌** → 添加令牌 → 复制 `sk-xxx`（令牌列表里是打码的，创建时或编辑页能拿到全值）
+3. **一把令牌通用所有下游协议**：OpenAI 兼容口（`/v1`）和 Claude Code（`/v1/messages`）都用它，见「接入要点」第 3 / 4 条
+
+### 第 2 步：填 config.toml（必改三处）
+
+```toml
+# ① 管理员密码（首启自动建 root 用，≥8 位）
+root_password = "改成你自己的"
+
+# ② 逐把填智谱 key + selector（完整格式见 example 与下节）
+[[keys]]
+name = "zhipu-1"
+zhipu_api_key = "xxxxxxxx.yyyyyyyy"
+
+# ③ 先空跑：确认日志里决策符合预期，再改 false 真正生效
+dry_run = true
+```
+
+其余保持 example 默认即可。⚠️ **顶层配置项必须写在第一个 `[表]` 头之前**——TOML 表头一旦出现，后面的裸 `key = value` 都归那个表，不报错、只走默认值。
+
+### 第 3 步：起服务 → 验证 → 接客户端
+
+```bash
+cargo run --release -- up config.toml
+```
+
+自动完成：下载 new-api（sha256 校验）→ 首启建管理员 → 每把 key 建一个渠道 → 进入切换循环 + 看板。
+
+验证：
+
+- 看板 `http://127.0.0.1:3001`：每把 key 正常显示用量（出现「查询失败」= selector/鉴权没配对，见「接入要点」1）
+- `dry_run = true` 的日志里决策符合预期后，改 `false` 并按「重载方法」重启
+
+接客户端（二选一或都用，**同一把 NewAPI 令牌**）：
+
+- opencode：provider 的 `baseURL` 改 `http://127.0.0.1:3000/v1`（见「接入要点」3）
+- Claude Code：`ANTHROPIC_BASE_URL=http://127.0.0.1:3000` + `ANTHROPIC_AUTH_TOKEN=<同一把令牌>`（见「接入要点」4）
+
+### 附：改 new-api 用户余额（如补到 2 亿）
+
+**new-api 管理面没有「调余额」的 API**：`PUT /api/user/` 的字段白名单里没有 quota，改不动还回 `success=true`（假成功）。唯一路径是直写 SQLite + 重启：
+
+```bash
+# 换算：quota = 期望显示余额 × QuotaPerUnit(500000)；2 亿 → 2e8 × 5e5 = 1e14
+sqlite3 .newapi/one-api.db "UPDATE users SET quota=100000000000000 WHERE id=1;"
+
+# 两个重启缺一不可：
+./target/release/quota-throttle down config.toml          # ① 停 new-api：用户缓存要靠重启才失效
+launchctl kickstart -k gui/$(id -u)/com.quota-throttle    # ② 重启本工具：它重新拉起 new-api 并重登
+```
+
+⚠️ 第 ② 步不是可选项：**new-api 重启会作废本工具的管理会话**，而客户端暂不会在 401 后自动重登——不重启本工具，之后看板读数全空、priority 下发全失败（决策本身不坏：已下发的 priority 在 new-api 落了库）。
+
 ## Key 配置与重载（日常操作）
 
 **没有热加载**：`config.toml` 只在启动时读一次，改完必须重启循环。看板上的加/删 key 是例外（走运行时命令通道，自动写回 config，不用重启）。
@@ -96,7 +171,13 @@ value = "proj_..."
 
 ### 重载方法（改完 config.toml 后）
 
+config 只在启动时读一次，改完必须重启进程：
+
 ```bash
+# launchd 常驻时（推荐，见「常驻运行」）：
+launchctl kickstart -k gui/$(id -u)/com.quota-throttle
+
+# 手动 nohup 时：
 pkill -f 'quota-throttle up'
 nohup ./target/release/quota-throttle up config.toml >> .newapi/quota-throttle.log 2>&1 &
 tail -f .newapi/quota-throttle.log     # 看它起来后的渠道映射与首轮决策
@@ -112,9 +193,48 @@ tail -f .newapi/quota-throttle.log     # 看它起来后的渠道映射与首轮
 | **替换同名 key 的值**（换新 key 但沿用名字） | ⚠️ **sync 按名幂等，不会更新已存在渠道里的旧 key！** 除了改 config + 重载，还须更新渠道里的 key：new-api 管理页（`http://127.0.0.1:3000`，登录后 渠道 → 编辑 `zhipu-N` → 粘贴新 key），或直写 SQLite `UPDATE channels SET key='<新key>' WHERE name='zhipu-N';` |
 | **移除 key** | config 删掉那条 `[[keys]]` → 重载。**new-api 渠道会留下来**（保历史用量）且不再被管理——它会出现在看板「野生渠道」区，务必把它的 priority 压到 0（否则 429 兜底时可能把流量漏给一把你不想要的 key）。更省事的做法：直接在看板卡片上点「✕ 停止调度」（自动压 priority + 写回 config，一步到位） |
 
-### 常驻运行
+### 常驻运行（macOS：launchd 登录自启 + 崩溃自动拉起）
 
-`up` 循环建议用 `nohup` 脱离终端跑（上面的重载命令即是）。它**不会开机自启**；停它用 `pkill -f 'quota-throttle up'`（new-api 是独立进程，不受影响；`down` 子命令才是停 new-api）。
+推荐用 **LaunchAgent** 常驻。把下面内容存成 `~/Library/LaunchAgents/com.quota-throttle.plist`（`/path/to` 换成实际项目位置）：
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>com.quota-throttle</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/path/to/quota-throttle/target/release/quota-throttle</string>
+        <string>up</string>
+        <string>config.toml</string>
+    </array>
+    <!-- 工作目录必须钉在项目根：data_dir="./.newapi" 是相对路径，不钉数据会散落到 / -->
+    <key>WorkingDirectory</key><string>/path/to/quota-throttle</string>
+    <key>RunAtLoad</key><true/>   <!-- 登录即启动 -->
+    <key>KeepAlive</key><true/>   <!-- 崩溃自动拉起；up 幂等，new-api 已健康则复用，不冲突 -->
+    <key>StandardOutPath</key><string>/path/to/quota-throttle/.newapi/launchd.log</string>
+    <key>StandardErrorPath</key><string>/path/to/quota-throttle/.newapi/launchd.log</string>
+</dict>
+</plist>
+```
+
+启用与日常管理：
+
+```bash
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.quota-throttle.plist   # 启用（之后登录自启）
+launchctl list      | grep quota-throttle                                          # 查状态（第一列是 PID）
+launchctl kickstart -k gui/$(id -u)/com.quota-throttle                                # 重启（重载 config / 换新编译的二进制都用它；⚠️ 必须带 -k，否则只会在没跑时拉起）
+launchctl bootout    gui/$(id -u)/com.quota-throttle                                # 停止并卸载（不想自启了：bootout + 删掉 plist）
+```
+
+注意：
+
+- **launchd 接管后 `down` 的语义变了**：`down` 只停 new-api，KeepAlive 会让本工具进程继续空转。要彻底停：先 `bootout`，再 `down config.toml`。
+- 二进制指向 `target/release/`：`cargo clean` 后自启会失效，重新 `cargo build --release` 即恢复。
+- 日志在 `.newapi/launchd.log`（⚠️ 含接入令牌，勿外传）。
+
+不想用 launchd 时也可以手动 `nohup` 跑（`nohup ./target/release/quota-throttle up config.toml >> .newapi/quota-throttle.log 2>&1 &`），停它用 `pkill -f 'quota-throttle up'`（new-api 是独立进程，不受影响；`down` 子命令才是停 new-api）。
 
 ## 状态看板
 
@@ -188,7 +308,7 @@ auth = "bearer"
 轮询。旧智谱 Coding 配置即使没有 `model_discovery` 子表，也会自动补官方端点；其它 Custom
 上游不会被猜测。
 
-### 3. opencode 接入：改 provider 的 baseURL，并清掉 auth.json 里的智谱 key
+### 3. opencode 接入：改 provider 的 baseURL 和 apiKey
 
 opencode 的 `zhipuai-coding-plan` 是 **OpenAI 兼容** provider（`@ai-sdk/openai-compatible`），默认直连 `https://open.bigmodel.cn/api/coding/paas/v4`。把它指向 new-api：
 
@@ -207,7 +327,12 @@ opencode 的 `zhipuai-coding-plan` 是 **OpenAI 兼容** provider（`@ai-sdk/ope
 }
 ```
 
-**同时要把 `~/.local/share/opencode/auth.json` 里的 `zhipuai-coding-plan` 条目清掉**（备份后置空即可）——否则 opencode 可能优先用 auth.json 里的智谱 key 去连 new-api，被拒 401。
+**`apiKey` 必须写在配置里，auth.json 不用动**：配置的 `options.apiKey` 优先级最高，只有它没写时
+opencode 才回落到 `~/.local/share/opencode/auth.json`（`opencode auth login` 存的）或环境变量
+`ZHIPU_API_KEY` 里的 key（opencode v1.18.18 源码核对：`packages/opencode/src/provider/provider.ts`
+的 `resolveSDK`）。所以 auth.json 里留着智谱 key 不影响。反过来，漏写 `apiKey` 就会拿智谱 key 去连
+new-api：直连 new-api 时每个请求都 401；开了缓存池代理时更隐蔽——对话请求会被代理换成中继令牌、
+看起来正常，但 `/v1/models` 等透传路径和降级透传（启动初期快照无数据、候选耗尽、中继令牌未就绪）会 401。
 
 **模型名以当前 key 的 `/models` 返回为准**。运行 `sync` 后，new-api 渠道会自动收敛到该 key
 实际可用的集合；客户端自己的 provider 注册表若尚未展示新模型，可在客户端配置中显式补充。
