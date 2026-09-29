@@ -308,7 +308,7 @@ auth = "bearer"
 轮询。旧智谱 Coding 配置即使没有 `model_discovery` 子表，也会自动补官方端点；其它 Custom
 上游不会被猜测。
 
-### 3. opencode 接入：改 provider 的 baseURL，并清掉 auth.json 里的智谱 key
+### 3. opencode 接入：改 provider 的 baseURL 和 apiKey
 
 opencode 的 `zhipuai-coding-plan` 是 **OpenAI 兼容** provider（`@ai-sdk/openai-compatible`），默认直连 `https://open.bigmodel.cn/api/coding/paas/v4`。把它指向 new-api：
 
@@ -327,7 +327,12 @@ opencode 的 `zhipuai-coding-plan` 是 **OpenAI 兼容** provider（`@ai-sdk/ope
 }
 ```
 
-**同时要把 `~/.local/share/opencode/auth.json` 里的 `zhipuai-coding-plan` 条目清掉**（备份后置空即可）——否则 opencode 可能优先用 auth.json 里的智谱 key 去连 new-api，被拒 401。
+**`apiKey` 必须写在配置里，auth.json 不用动**：配置的 `options.apiKey` 优先级最高，只有它没写时
+opencode 才回落到 `~/.local/share/opencode/auth.json`（`opencode auth login` 存的）或环境变量
+`ZHIPU_API_KEY` 里的 key（opencode v1.18.18 源码核对：`packages/opencode/src/provider/provider.ts`
+的 `resolveSDK`）。所以 auth.json 里留着智谱 key 不影响。反过来，漏写 `apiKey` 就会拿智谱 key 去连
+new-api：直连 new-api 时每个请求都 401；开了缓存池代理时更隐蔽——对话请求会被代理换成中继令牌、
+看起来正常，但 `/v1/models` 等透传路径和降级透传（启动初期快照无数据、候选耗尽、中继令牌未就绪）会 401。
 
 **模型名以当前 key 的 `/models` 返回为准**。运行 `sync` 后，new-api 渠道会自动收敛到该 key
 实际可用的集合；客户端自己的 provider 注册表若尚未展示新模型，可在客户端配置中显式补充。
