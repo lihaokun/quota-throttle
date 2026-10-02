@@ -11,8 +11,10 @@ use crate::config::{ChannelTemplate, KeyMapping, ModelDiscoveryConfig, NewApiCon
 use crate::model_catalog::{model_sets_equal, normalize_models_csv, ModelCatalogClient};
 use crate::status::{ChannelState, RequestLog};
 use anyhow::{bail, Context, Result};
+use reqwest::StatusCode;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
+use tokio::sync::Mutex;
 use tracing::{info, warn};
 
 /// new-api 列表响应兼容：新版 `data.items[]`，旧版 `data[]`。
@@ -146,7 +148,9 @@ pub struct NewApiClient {
     catalog: ModelCatalogClient,
     base_url: String,
     channel_path: String,
-    auth: Auth,
+    /// 管理鉴权状态。锁覆盖一次完整管理请求；本地 API 通常为毫秒级，串行化换来
+    /// 401 时单飞重登，避免面板和调度循环同时反复登录。
+    auth: Mutex<Auth>,
     root_username: String,
     root_password: String,
     extra_headers: Vec<(String, String)>,
@@ -168,7 +172,7 @@ impl NewApiClient {
             client,
             base_url: cfg.base_url.trim_end_matches('/').to_string(),
             channel_path: cfg.channel_path.clone(),
-            auth,
+            auth: Mutex::new(auth),
             root_username: cfg.root_username.clone(),
             root_password: cfg.root_password.clone(),
             extra_headers: cfg
@@ -179,8 +183,12 @@ impl NewApiClient {
         })
     }
 
-    fn apply_headers(&self, mut rb: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-        match &self.auth {
+    fn apply_headers(
+        &self,
+        mut rb: reqwest::RequestBuilder,
+        auth: &Auth,
+    ) -> reqwest::RequestBuilder {
+        match auth {
             Auth::Token(t) => {
                 rb = rb.header("Authorization", format!("Bearer {t}"));
             }
@@ -195,6 +203,42 @@ impl NewApiClient {
             rb = rb.header(k.as_str(), v.as_str());
         }
         rb
+    }
+
+    /// 发送一条 NewAPI 管理请求。会话模式收到 401 时只重登一次并重放原请求；
+    /// `auth` mutex 让并发请求排队，因此同一波 401 只会由首个请求触发登录。
+    async fn send_management(&self, rb: reqwest::RequestBuilder) -> Result<reqwest::Response> {
+        let retry = rb.try_clone();
+        let mut auth = self.auth.lock().await;
+        let resp = self
+            .apply_headers(rb, &auth)
+            .send()
+            .await
+            .context("NewAPI 管理请求失败")?;
+        if resp.status() != StatusCode::UNAUTHORIZED {
+            return Ok(resp);
+        }
+
+        match &*auth {
+            Auth::Token(_) => {
+                bail!("NewAPI admin_token 已失效或被拒绝（HTTP 401），请更新配置")
+            }
+            Auth::Pending | Auth::Session { .. } => {}
+        }
+
+        warn!("NewAPI 管理会话返回 401，自动重新登录并重试一次");
+        drop(resp);
+        *auth = self.login().await?;
+        let retry = retry.context("NewAPI 管理请求体不可重放，无法在重新登录后重试")?;
+        let resp = self
+            .apply_headers(retry, &auth)
+            .send()
+            .await
+            .context("重新登录后重试 NewAPI 管理请求失败")?;
+        if resp.status() == StatusCode::UNAUTHORIZED {
+            bail!("NewAPI 重新登录后管理请求仍返回 HTTP 401")
+        }
+        Ok(resp)
     }
 
     /// 新版 new-api 首启不再自带 root：需先 POST /api/setup 建管理员。幂等——已初始化则跳过。
@@ -246,11 +290,8 @@ impl NewApiClient {
         Ok(())
     }
 
-    /// 确保已鉴权：Token 模式无需动作；Pending 则（必要时先 setup）用 root 登录换会话。
-    pub async fn authenticate(&mut self) -> Result<()> {
-        if !matches!(self.auth, Auth::Pending) {
-            return Ok(());
-        }
+    /// 用 root 登录并返回新的会话鉴权信息。cookie 由 reqwest cookie store 自动更新。
+    async fn login(&self) -> Result<Auth> {
         self.ensure_setup().await?;
         let url = format!("{}/api/user/login", self.base_url);
         let resp = self
@@ -275,16 +316,24 @@ impl NewApiClient {
             .and_then(|d| d.get("id"))
             .and_then(|v| v.as_i64());
         info!(user_id = ?user_id, "已登录 new-api（会话模式）");
-        self.auth = Auth::Session { user_id };
+        Ok(Auth::Session { user_id })
+    }
+
+    /// 确保已鉴权：Token 模式无需动作；Pending 则（必要时先 setup）用 root 登录换会话。
+    pub async fn authenticate(&self) -> Result<()> {
+        let mut auth = self.auth.lock().await;
+        if !matches!(*auth, Auth::Pending) {
+            return Ok(());
+        }
+        *auth = self.login().await?;
         Ok(())
     }
 
     /// 列出渠道，返回 name → id。兼容 data.items 和 data 直接数组两种结构。
     pub async fn list_channels(&self) -> Result<HashMap<String, i64>> {
         let url = format!("{}{}/?p=0&page_size=100", self.base_url, self.channel_path);
-        let rb = self.apply_headers(self.client.get(&url));
-        let body: Value = rb
-            .send()
+        let body: Value = self
+            .send_management(self.client.get(&url))
             .await
             .context("列出渠道失败")?
             .json()
@@ -311,8 +360,7 @@ impl NewApiClient {
     pub async fn list_channel_states(&self) -> Result<Vec<ChannelState>> {
         let url = format!("{}{}/?p=0&page_size=100", self.base_url, self.channel_path);
         let body: Value = self
-            .apply_headers(self.client.get(&url))
-            .send()
+            .send_management(self.client.get(&url))
             .await
             .context("拉取渠道状态失败")?
             .json()
@@ -349,8 +397,7 @@ impl NewApiClient {
     pub async fn recent_logs(&self, n: usize) -> Result<Vec<RequestLog>> {
         let url = format!("{}/api/log/?p=0&page_size={n}", self.base_url);
         let body: Value = self
-            .apply_headers(self.client.get(&url))
-            .send()
+            .send_management(self.client.get(&url))
             .await
             .context("拉取请求日志失败")?
             .json()
@@ -480,8 +527,10 @@ impl NewApiClient {
             }
         });
         let url = format!("{}{}", self.base_url, self.channel_path);
-        let rb = self.apply_headers(self.client.post(&url)).json(&payload);
-        let resp = rb.send().await.context("创建渠道失败")?;
+        let resp = self
+            .send_management(self.client.post(&url).json(&payload))
+            .await
+            .context("创建渠道失败")?;
         let status = resp.status();
         let body: Value = resp.json().await.unwrap_or(Value::Null);
         let ok = body
@@ -519,9 +568,7 @@ impl NewApiClient {
 
         let url = format!("{}{}", self.base_url, self.channel_path);
         let resp = self
-            .apply_headers(self.client.put(&url))
-            .json(&channel)
-            .send()
+            .send_management(self.client.put(&url).json(&channel))
             .await
             .with_context(|| format!("更新渠道 {name} models 失败"))?;
         let status = resp.status();
@@ -664,8 +711,7 @@ impl NewApiClient {
             self.base_url
         );
         let body: Value = self
-            .apply_headers(self.client.get(&url))
-            .send()
+            .send_management(self.client.get(&url))
             .await
             .context("拉取用量统计失败")?
             .json()
@@ -700,8 +746,7 @@ impl NewApiClient {
     pub async fn user_quota(&self) -> Result<i64> {
         let url = format!("{}/api/user/self", self.base_url);
         let body: Value = self
-            .apply_headers(self.client.get(&url))
-            .send()
+            .send_management(self.client.get(&url))
             .await
             .context("拉取 new-api 用户余额失败")?
             .json()
@@ -716,9 +761,8 @@ impl NewApiClient {
     /// GET /api/channel/{id} → 渠道对象（从 data 取出）
     pub async fn get_channel(&self, id: i64) -> Result<Value> {
         let url = format!("{}{}/{}", self.base_url, self.channel_path, id);
-        let rb = self.apply_headers(self.client.get(&url));
-        let body: Value = rb
-            .send()
+        let body: Value = self
+            .send_management(self.client.get(&url))
             .await
             .context("获取渠道失败")?
             .json()
@@ -742,8 +786,10 @@ impl NewApiClient {
             None => bail!("渠道 {id} 返回的不是 JSON 对象"),
         }
         let url = format!("{}{}", self.base_url, self.channel_path);
-        let rb = self.apply_headers(self.client.put(&url)).json(&channel);
-        let resp = rb.send().await.context("更新渠道失败")?;
+        let resp = self
+            .send_management(self.client.put(&url).json(&channel))
+            .await
+            .context("更新渠道失败")?;
         let status = resp.status();
         let body: Value = resp.json().await.unwrap_or(Value::Null);
         let ok = body
