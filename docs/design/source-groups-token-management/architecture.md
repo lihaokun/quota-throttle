@@ -1,6 +1,6 @@
 # 来源共享 分组路由和用量面板架构
 
-日期：2026-10-14。状态：架构初稿，待评审确认。需求依据：[最新版方案](../../research/source-groups-token-management-research.md)。接口实证：[实现前审核](review.md)。不含已批准部署或业务实现完成的声明。
+日期：2026-10-14。状态：用户已在确认分支后指示按 workflow 开发，进入第一子计划细化。需求依据：[最新版方案](../../research/source-groups-token-management-research.md)。接口实证：[实现前审核](review.md)。架构确认不包含生产部署授权。
 
 ## 目标与边界
 
@@ -37,7 +37,7 @@
 
 ## 持久化选择和旧配置兼容
 
-建议新增应用自己的 SQLite 状态库，而非直接读写 NewAPI 数据库。它用于稳定身份、操作意图、事实去重、检查点及周期汇总；这些更新需要事务，单一 JSON/TOML 文件与另外一份增量日志不易保证成组提交。
+采用应用自己的 SQLite 状态库，而非直接读写 NewAPI 数据库。它用于稳定身份、操作意图、事实去重、检查点及周期汇总；这些更新需要事务，单一 JSON/TOML 文件与另外一份增量日志不易保证成组提交。
 
 实现依赖拟增加 rusqlite，版本和编译方式在细化时锁定；本轮未修改 Cargo.toml 或 Cargo.lock。只用本地单写者连接及有限批量，不引入独立数据库服务。数据库及凭据存储权限限制为当前用户，备份按敏感文件处理。访问 key 明文不另存副本。
 
@@ -64,7 +64,7 @@
 - Membership：membership_id、source_id、group_id、channel_id、order、lifecycle、desired_priority、observed_status/priority、applied_revision。
 - 唯一约束：有效 source_id/group_id 组合唯一；一个 channel_id 永远只映射一个来源和管理组。
 - source.type 等于 group.type；一条受管渠道的 NewAPI group 只包含该管理组。
-- 成员创建经历 planned、created_disabled、ready；移除后 retired，历史映射仍可解析日志。
+- 新成员创建经历 planned、created_disabled、ready；旧渠道导入为 imported，表示映射已存储但尚未由协调器核对，不改变外部状态。移除后 retired，历史映射仍可解析日志。
 - Group 的独立 priority 不能覆盖 Source 的全局暂停/耗尽。各组可以恰好选择同一来源，不承诺配额隔离。
 - 所有者：目录与协调器；消费者：GLM/火山组策略、统计、面板。
 
@@ -211,6 +211,28 @@ priority 是对支持该请求模型的候选表达偏好。原生单次重试�
 
 ## 阶段门禁
 
-本轮完成架构初稿，不宣称通过 §4.4 的完整实现前审查：逐函数细化、JSON schema、各子计划 expectations 和故障用例仍需后续产出。实施顺序与退出条件见[实施准备计划](implementation-plan.md)。
+架构已确认；第一子计划细化与验收契约见[目录与状态库细化](subplans/sgm-1-catalog-store.md)。每个子计划仍须独立经过细化确认、§4.4 审查与 §6 双路径验收。实施顺序与退出条件见[实施准备计划](implementation-plan.md)。
 
-架构确认尤其包含：新增独立 SQLite 状态库及其依赖、旧目录一次性迁移、显式异步控制回执、火山错误遥测部署前提。确认前不修改运行服务、不导入生产数据、不开始跨模块业务实现。
+本轮不修改运行服务或导入生产数据。第一批目录函数不接入 up/run/sync 或面板写接口；其本地保存成功不代表外部渠道启停成功。
+
+## 第一子计划共享类型补充
+
+以下将架构字段落实为 sgm-1 的共享契约，完整校验和 SQL 约束见子计划 §4。消费者是 catalog、后续 source_probe、reconciler、policy、analytics 和 panel；本轮不提前实现这些后续模块。
+
+| 类型 | 字段与约束 | 身份与生命周期 |
+| --- | --- | --- |
+| SourceKind | 唯一枚举定义 glm / volcano；由配置类型决定，不从模型名推断 | 创建来源/组时确定，sgm-1 不提供改类型接口 |
+| SourceId / GroupId / MembershipId / SecretRef | 独立 newtype，内部正 i64；公开 ID 序列化为十进制字符串，SecretRef 不序列化到快照 | SQLite 分配；已提交 ID 不复用；引用不可互换 |
+| SourceSettings | tagged enum：Glm { upstream, quota } 或 Volcano { upstream, policy } | 来源级设置，不复制到成员状态；私有存储格式 version=1 |
+| UpstreamProfile | channel_type、base_url、models、model_discovery；models 非空且规范化，发现鉴权复用 ModelDiscoveryAuth | 按来源存储；不含 group、priority 或实际 NewAPI status |
+| GlmQuotaProfile | quota_url、global_headers、key_headers | 两层 header 原样保留，后续按既有构造顺序使用，不趁迁移改写 GLM 请求语义 |
+| VolcanoPolicy | daily_token_limit、failure_threshold、reset_minute、utc_offset_minutes | 默认无上限 / 3 / 60 / 480；sgm-1 仅存配置，不创建虚假的可用运行状态 |
+| SourceView | source_id、type、name、note、manual_paused、retired_at、config_revision | 只读安全视图；不含密钥、指纹、SecretRef、selector 或私有配置 |
+| GroupView | group_id、newapi_group、name、type、revision、ready | sgm-1 创建/导入时 ready=false；后续组注册和权限核对后才能置真 |
+| MembershipView | membership_id、source_id、group_id、channel_id、order、lifecycle、desired_priority、observed_status、observed_priority、applied_revision、retired_at | 新建 planned 且 channel_id=null；导入 imported 且保留旧 channel_id；历史映射永不改认其他来源/组 |
+| CatalogSnapshot | schema_version、sources、groups、memberships | 一致性只读快照；实体按稳定 ID 排序，包含退休身份；不是带凭据的恢复备份 |
+| SourceDraft / GroupDraft | 前者为 name、note、settings、credential；后者为 name、newapi_group、type | 进程内请求，由 catalog 完整校验；不直接作为面板 wire 类型 |
+| SourceMaterial | settings、credential | 仅后端 probe/reconciler 消费；无 Serialize，Debug 脱敏 |
+| LegacyChannel / LegacyImportPlan / ImportOutcome | 无凭据渠道描述、规范导入内容及摘要、Applied/AlreadyApplied 收据 | 迁移调用方与 catalog 共享；Plan 字段私有，只由纯转换构造，收据无凭据 |
+
+共享枚举在 src/catalog/types.rs 唯一定义；ModelDiscoveryAuth 沿用 config.rs。JSON 字段契约由 [schema](schemas/catalog-snapshot.schema.json) 固化。目录的请求类型与导入收据只在进程内传递，不是面板 API；外部操作 ID 和错误码待控制面子计划定义。

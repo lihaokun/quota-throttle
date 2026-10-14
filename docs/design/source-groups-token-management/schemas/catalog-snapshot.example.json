@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "sources": [
+    {"source_id": "1", "type": "glm", "name": "GLM 示例", "note": "仅设计样例", "manual_paused": false, "retired_at": null, "config_revision": 1},
+    {"source_id": "2", "type": "volcano", "name": "火山示例", "note": "尚未接入运行状态", "manual_paused": false, "retired_at": null, "config_revision": 1}
+  ],
+  "groups": [
+    {"group_id": "1", "newapi_group": "default", "name": "现有 GLM 组", "type": "glm", "revision": 1, "ready": false},
+    {"group_id": "2", "newapi_group": "volcano-a", "name": "火山 A", "type": "volcano", "revision": 1, "ready": false},
+    {"group_id": "3", "newapi_group": "volcano-b", "name": "火山 B", "type": "volcano", "revision": 1, "ready": false}
+  ],
+  "memberships": [
+    {"membership_id": "1", "source_id": "1", "group_id": "1", "channel_id": "41", "order": 0, "lifecycle": "imported", "desired_priority": 100, "observed_status": null, "observed_priority": null, "applied_revision": null, "retired_at": null},
+    {"membership_id": "2", "source_id": "2", "group_id": "2", "channel_id": null, "order": 0, "lifecycle": "planned", "desired_priority": 10, "observed_status": null, "observed_priority": null, "applied_revision": null, "retired_at": null},
+    {"membership_id": "3", "source_id": "2", "group_id": "3", "channel_id": null, "order": 0, "lifecycle": "planned", "desired_priority": 10, "observed_status": null, "observed_priority": null, "applied_revision": null, "retired_at": null}
+  ]
+}

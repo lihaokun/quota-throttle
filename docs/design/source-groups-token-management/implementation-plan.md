@@ -1,17 +1,18 @@
 # 来源共享功能实施准备计划
 
-日期：2026-10-14。状态：准备稿，依赖[架构](architecture.md)确认；不是授权部署清单。
+日期：2026-10-14。状态：[架构](architecture.md)已确认，第一子计划细化待确认；不是授权部署清单。
 
 ## 当前完成与未完成
 
-- 已有：[需求方案](../../research/source-groups-token-management-research.md)、[实现前审核](review.md)、架构初稿、可复现的隔离 NewAPI 契约探针。
+- 已有：[需求方案](../../research/source-groups-token-management-research.md)、[实现前审核](review.md)、已确认架构、可复现的隔离 NewAPI 契约探针。
+- 本轮新增：[sgm-1 细化](subplans/sgm-1-catalog-store.md)、[快照 schema](schemas/catalog-snapshot.schema.json)、[事前 expectations](../../audits/sgm-1-catalog-store/expectations.md)。第一步实现独立目录库及导入函数，不接管 CLI/运行服务。
 - 已验证：58 个既有 Rust 测试通过；11 项原生 NewAPI 契约检查通过，隔离进程退出。
-- 未完成：逐函数细化、JSON schema、各子计划 expectations、业务代码、三页面 UI、生产迁移与发布。
+- 未完成：sgm-1 细化确认与实现后双路径验收，其余子计划细化/expectations，业务代码、三页面 UI、生产迁移与发布。
 - 不开展：逐访问 key 上游绑定、火山临期、积分换算、硬 token 限额、修改 GLM 算法、定制 NewAPI 推理路由。
 
 ## 分步实施顺序
 
-下列 ID 预留为本 feature 子计划；各自进入编码前创建 subplans 文档和 docs/audits 对应 expectations，不以此表代替契约。
+下列 ID 为本 feature 子计划；sgm-1 已产出细化与 expectations，其余仍待各自进入编码前完成，不以此表代替契约。
 
 | 子计划 | 范围 | 主要退出条件 |
 | --- | --- | --- |
