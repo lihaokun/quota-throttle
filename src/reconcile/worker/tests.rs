@@ -18,6 +18,17 @@ fn r10_worker_private_snapshots_have_no_debug_or_serialize() {
     assert_not_impl!(ReconcileWorker, serde::Serialize);
 }
 
+#[path = "scenarios.rs"]
+mod scenarios;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WriteFault {
+    Reject,
+    Uncertain,
+    PartialLower(i64),
+}
+
+#[derive(Default)]
 struct NativeState {
     channels: Mutex<HashMap<i64, Value>>,
     bad_create: AtomicBool,
@@ -26,6 +37,11 @@ struct NativeState {
     read_failures: AtomicUsize,
     read_reject: AtomicBool,
     rejections: AtomicUsize,
+    write_fault: Mutex<Option<(i64, WriteFault)>>,
+    check_routing: AtomicBool,
+    routing_violations: Mutex<Vec<&'static str>>,
+    routing_targets: Mutex<HashMap<i64, i64>>,
+    observed_remote: Mutex<HashMap<i64, (i64, i64)>>,
 }
 impl NativeState {
     fn reply(&self, r: &crate::newapi::transport::tests::Recorded) -> Reply {
@@ -53,7 +69,102 @@ impl NativeState {
                 ..Reply::json(json!({"success":false}))
             };
         }
+        let target = if r.method == "PUT" {
+            r.body["id"].as_i64()
+        } else if r.method == "POST" && r.path.ends_with("/status") {
+            r.path.split('/').nth(3).and_then(|s| s.parse().ok())
+        } else {
+            None
+        };
+        let fault = {
+            let mut fault = self.write_fault.lock().unwrap();
+            if fault.as_ref().is_some_and(|(id, _)| Some(*id) == target) {
+                fault.take().map(|(_, f)| f)
+            } else {
+                None
+            }
+        };
+        if fault == Some(WriteFault::Reject) {
+            return Reply {
+                status: 400,
+                ..Reply::json(json!({"success":false}))
+            };
+        }
         let mut channels = self.channels.lock().unwrap();
+        if let Some(WriteFault::PartialLower(priority)) = fault {
+            assert_eq!(r.method, "PUT");
+            channels.get_mut(&target.unwrap()).unwrap()["priority"] = json!(priority);
+            return Reply {
+                status: 400,
+                ..Reply::json(json!({"success":false}))
+            };
+        }
+        if self.check_routing.load(Ordering::SeqCst) {
+            if let Some(id) = target {
+                let before = &channels[&id];
+                if r.method == "PUT"
+                    && before["status"] == 1
+                    && r.body["priority"]
+                        .as_i64()
+                        .is_some_and(|p| p > 10 && p > before["priority"].as_i64().unwrap())
+                    && channels.iter().any(|(other, c)| {
+                        *other != id
+                            && c["group"] == before["group"]
+                            && c["status"] == 1
+                            && c["priority"].as_i64() >= r.body["priority"].as_i64()
+                    })
+                {
+                    self.routing_violations
+                        .lock()
+                        .unwrap()
+                        .push("promotion before lowering peer");
+                }
+                if r.method == "POST"
+                    && r.body["status"] == 1
+                    && before["auto_ban"] == 0
+                    && before["priority"].as_i64().unwrap() > 10
+                {
+                    self.routing_violations
+                        .lock()
+                        .unwrap()
+                        .push("Volcano enabled before standby");
+                }
+                let routing = r.method == "POST" && r.body["status"] == 1
+                    || r.method == "PUT"
+                        && before["status"] == 1
+                        && r.body["priority"]
+                            .as_i64()
+                            .is_some_and(|p| p > before["priority"].as_i64().unwrap());
+                if routing {
+                    let seen = self.observed_remote.lock().unwrap();
+                    let targets = self.routing_targets.lock().unwrap();
+                    for (peer, c) in channels
+                        .iter()
+                        .filter(|(_, c)| c["group"] == before["group"])
+                    {
+                        let current = (
+                            c["status"].as_i64().unwrap(),
+                            c["priority"].as_i64().unwrap(),
+                        );
+                        if seen.get(peer) != Some(&current) {
+                            self.routing_violations
+                                .lock()
+                                .unwrap()
+                                .push("routing before actual readback");
+                        }
+                        if *peer != id
+                            && current.0 == 1
+                            && targets.get(peer).is_some_and(|p| current.1 > *p)
+                        {
+                            self.routing_violations
+                                .lock()
+                                .unwrap()
+                                .push("peer has not reached its target priority");
+                        }
+                    }
+                }
+            }
+        }
         if r.method == "GET" && r.path.starts_with("/api/channel/?") {
             let url = reqwest::Url::parse(&format!("http://fixture{}", r.path)).unwrap();
             let query: HashMap<_, _> = url.query_pairs().into_owned().collect();
@@ -65,12 +176,31 @@ impl NativeState {
                 .cloned()
                 .collect();
             items.sort_by_key(|v| v["id"].as_i64().unwrap());
+            let total = items.len();
+            let items: Vec<_> = items.into_iter().skip((page - 1) * 100).take(100).collect();
+            for c in &items {
+                self.observed_remote.lock().unwrap().insert(
+                    c["id"].as_i64().unwrap(),
+                    (
+                        c["status"].as_i64().unwrap(),
+                        c["priority"].as_i64().unwrap(),
+                    ),
+                );
+            }
             return Reply::json(
-                json!({"success":true,"data":{"total":items.len(),"page":page,"page_size":100,"items":items.into_iter().skip((page-1)*100).take(100).collect::<Vec<_>>()}}),
+                json!({"success":true,"data":{"total":total,"page":page,"page_size":100,"items":items}}),
             );
         }
         if r.method == "GET" {
             let id = r.path.rsplit('/').next().unwrap().parse::<i64>().unwrap();
+            let c = &channels[&id];
+            self.observed_remote.lock().unwrap().insert(
+                id,
+                (
+                    c["status"].as_i64().unwrap(),
+                    c["priority"].as_i64().unwrap(),
+                ),
+            );
             return Reply::json(json!({"success":true,"data":channels[&id]}));
         }
         if r.method == "POST" && r.path == "/api/channel/" {
@@ -112,6 +242,12 @@ impl NativeState {
         } else {
             panic!("unexpected fake management request");
         }
+        if fault == Some(WriteFault::Uncertain) {
+            return Reply {
+                body: "fake-lost-write-receipt".into(),
+                ..Reply::json(json!({}))
+            };
+        }
         Reply::json(json!({"success":true}))
     }
     fn status(&self, id: i64) -> i64 {
@@ -131,15 +267,7 @@ fn operation(n: usize) -> OperationId {
     OperationId::new(format!("worker-operation-{n:016}")).unwrap()
 }
 async fn fixture(kind: SourceKind, entries: &[(usize, usize, i64, Option<i64>)]) -> Fixture {
-    let state = Arc::new(NativeState {
-        channels: Mutex::new(HashMap::new()),
-        bad_create: AtomicBool::new(false),
-        slow_enable: AtomicBool::new(false),
-        enables: AtomicUsize::new(0),
-        read_failures: AtomicUsize::new(0),
-        read_reject: AtomicBool::new(false),
-        rejections: AtomicUsize::new(0),
-    });
+    let state = Arc::new(NativeState::default());
     let server = state.clone();
     let fake = Fake::start(move |r| server.reply(r)).await;
     let dir = tempfile::Builder::new()
