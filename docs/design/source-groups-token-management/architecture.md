@@ -1,6 +1,6 @@
 # 来源共享 分组路由和用量面板架构
 
-日期：2026-10-15。状态：架构已确认，sgm-1 及其复审修复已完成，sgm-2 进入细化确认。需求依据：[最新版方案](../../research/source-groups-token-management-research.md)。接口实证：[实现前审核](review.md)。架构确认不包含生产部署授权。
+日期：2026-10-15。状态：架构已确认，sgm-1 及其复审修复已完成，sgm-2 第一批实施中。需求依据：[最新版方案](../../research/source-groups-token-management-research.md)。接口实证：[实现前审核](review.md)。架构确认不包含生产部署授权。
 
 ## 目标与边界
 
@@ -239,7 +239,7 @@ priority 是对支持该请求模型的候选表达偏好。原生单次重试�
 
 ## 第二子计划共享类型补充
 
-以下为 [sgm-2 细化草案](subplans/sgm-2-channel-reconcile.md) 的共享接口，待细化确认；不改变既定模块职责或提供者策略。
+以下为 [sgm-2 细化](subplans/sgm-2-channel-reconcile.md) 的共享接口；不改变既定模块职责或提供者策略。
 
 | 类型 | 共享字段与约束 | 所有者和消费者 |
 | --- | --- | --- |

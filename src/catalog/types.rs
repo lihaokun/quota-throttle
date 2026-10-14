@@ -152,7 +152,7 @@ impl SecretString {
         )?;
         Ok(Self(value))
     }
-    pub(super) fn expose(&self) -> &str {
+    pub(crate) fn expose(&self) -> &str {
         &self.0
     }
 }

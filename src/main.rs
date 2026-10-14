@@ -2,7 +2,7 @@ mod boot;
 pub mod catalog;
 mod config;
 mod model_catalog;
-mod newapi;
+pub mod newapi;
 mod orchestrator;
 mod quota;
 mod status;

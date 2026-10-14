@@ -773,6 +773,7 @@ name = "quota-throttle"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "httpdate",
  "proptest",
  "reqwest",
  "rusqlite",

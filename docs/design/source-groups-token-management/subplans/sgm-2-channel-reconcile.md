@@ -1,6 +1,6 @@
 # 渠道协调器与持久控制操作细化设计
 
-子计划：sgm-2-channel-reconcile。日期：2026-10-15。基线：f9f02aa。状态：细化草案，待用户确认；未开始业务实现，也不授权部署。
+子计划：sgm-2-channel-reconcile。日期：2026-10-15。基线：f9f02aa。状态：用户以“继续吧”确认推进，第一批管理传输与渠道接口已验证；目录 v2 与协调器待实现，不授权部署。
 
 ## 1 范围
 
@@ -213,7 +213,7 @@ P15 对本代次写后重新获取目标实际状态，逐 ID/字段比较。只
 - [x] P1–P16 有成功、拒绝、未知、过期、重启和部分失败路径；循环有页数/容量/次数上限。
 - [x] schema v1→v2、不可逆的远端未知结果和本地 revision 的能力边界明确。
 - [x] 已产出操作 schema、设计样例及十节 expectations，先于业务代码。
-- [ ] 用户确认细化后冻结契约并逐批实现；不得把当前设计当作验收通过。
+- [x] 用户确认细化后逐批实现；不得把当前设计当作验收通过。
 - [ ] 全部基本/边界/PBT、变异、机械检查、隔离原生接口验收、独立审核通过后才结束 sgm-2。
 
 测试不使用生产目录、端口 3000/3001 或真实 key；HTTP fake 绑定随机回环端口，NewAPI 原生实测也使用独立数据库/账号/假上游。新模块验收必须覆盖 85 个现有测试，不弱化 sgm-1 的完整映射、直接脱敏和容量重复规则。
@@ -221,3 +221,15 @@ P15 对本代次写后重新获取目标实际状态，逐 ID/字段比较。只
 关键 PBT：重复 operation_id 与乱序 ACK 的参考状态机；同源两组暂停扇出；A 组 priority 不写 B 组；未知 POST 不重复创建；退役期间新成员/迟到创建不能启用；group 提升屏障；分块分页与重复/缺口；限流发送轨迹。每项至少 128 cases，按不同来源/组生成可区分模型、priority、状态和凭据，不仅比较总量。
 
 定向变异至少包括：删掉发出前 revision 检查、删掉 ACK revision 检查、batch success 直接计完成、unknown POST 自动重发、恢复时先 enable 再降 priority、把 GLM preserve 改成 enable、分页只读首屏、管理请求绕过预算。目标测试必须明确失败；全量正常代码仍须通过。
+
+### 第一批实现边界及辅助函数对应
+
+ManagementBudget 以显式共享 Arc 注入各身份的传输，容量和令牌由同一个短临界区维护；Admission 负责排队取消与在途释放。第一批增加保守入口门禁：最多 64 个逻辑请求，包括等待认证、等待发送和在途；内部登录不重复占逻辑槽，但仍消耗发送预算。这比“64 个等待槽另加 2 个在途”更严格，防止认证锁外形成无界等待。admit 先注册通知再检查条件，避免丢唤醒；只有选中的最高优先级可发送者设置定时唤醒，其余等状态通知，不忙轮询。后台只占一个槽，取消排队不消耗令牌，发送之后取消不退还令牌。不可表示的 Retry-After 截止时间保持冷却，不缩短服务器要求。
+
+refresh_session 对应 P3：生成代次快照→单飞锁复核→共享预算→登录→更新会话。登录已经发出后取消，RefreshCancellation 将对应代次标为认证失败，避免下一等待者无条件再次登录。排队尚未获准不属于登录失败。retry_authentication 只重置认证熔断并尝试登录，不重放业务命令；bootstrap 只用于既有 CLI 显式首启，自动重登不调用它。保留反向代理 base_url 路径前缀；拒绝 URL 自带凭据及覆盖 Authorization/Cookie/Host 的额外头，配置错误不回显内容。
+
+RawChannelDocument::patch 对应 patch_owned_fields；ScanAccumulator::append 对应 P4/P5 的逐页校验；creation_payload 对应 build_creation_spec 的 HTTP 组包部分，稳定关联名的持久化仍由后续协调器承担。字段更新只返回是否收到写回执，不产生 applied_revision。NativeRecoveryCheck/check_native_recovery/parse_recovery_option 只验证原生自动启用开关，不能被当作完整 BackendReadiness；实例绑定、版本/能力和策略许可将在协调执行批次合并。
+
+这些辅助函数只操作有限输入或预算状态：逐页最多 100 项、全扫描最多 10000 项、队列最多 64 项；HTTP 总时限包括响应体读取。解析失败不产生空成功；错误类型不保存原始响应或 reqwest 错误链。新模块供后续协调器调用，尚未接入生产运行模式。旧 NewApiClient 仅替换管理传输和集合尾斜杠，模型发现使用独立 HTTP client，原 GLM 选择函数不改。
+
+NewApiClient::new 委托 with_budget；后者由组装层注入同实例预算，managed_channels 借用同一传输，不创建第二套管理会话或预算。三个包装函数仅构造/借用既有类型，无新业务状态；新模式仍不得与旧调度器同时写相同渠道。ManagementError::for_request 将写请求的不可解析/超限回执转为 transport_unknown，读请求保留 invalid_response；显式 setup 和受管业务写均使用此分类，login 失败仍统一认证熔断。会话身份在 HeaderMap 中覆盖 New-Api-User，避免追加静态旧 ID；token 模式保留配置的用户 ID。
