@@ -58,10 +58,10 @@ impl From<rusqlite::Error> for ControlError {
     }
 }
 pub type ControlResult<T> = std::result::Result<T, ControlError>;
-fn failure(code: ControlErrorCode) -> ControlError {
+pub(super) fn failure(code: ControlErrorCode) -> ControlError {
     ControlError { code }
 }
-fn ensure(ok: bool, code: ControlErrorCode) -> ControlResult<()> {
+pub(super) fn ensure(ok: bool, code: ControlErrorCode) -> ControlResult<()> {
     if ok {
         Ok(())
     } else {
@@ -367,6 +367,22 @@ impl CatalogStore {
             if member.retire_requested {
                 member.status_directive = StatusDirective::Disabled;
             }
+            if member.status_directive == StatusDirective::Enabled
+                && matches!(
+                    &command,
+                    ControlCommand::EnsureMember {
+                        status: StatusDirective::Enabled,
+                        ..
+                    } | ControlCommand::SetSourcePaused { paused: false, .. }
+                )
+            {
+                let epoch: i64 = tx.query_row(
+                    "SELECT enable_epoch FROM member_execution WHERE membership_id=?1",
+                    [member.membership_id.get()],
+                    |r| r.get(0),
+                )?;
+                tx.execute("UPDATE member_execution SET enable_epoch=?1,enable_requested_revision=?2,enable_consumed=0 WHERE membership_id=?3",params![bump(epoch)?,revision,member.membership_id.get()])?;
+            }
             tx.execute("UPDATE control_operations SET phase='superseded',error_code=NULL,updated_at=?1 WHERE phase NOT IN ('succeeded','superseded') AND operation_id IN (SELECT operation_id FROM operation_targets WHERE membership_id=?2)",params![now,member.membership_id.get()])?;
             tx.execute("UPDATE member_control SET revision=?1,status_directive=?2,retire_requested=?3,dirty=1,next_attempt_at=?4,last_error_code=NULL WHERE membership_id=?5",params![revision,member.status_directive.as_str(),member.retire_requested,now,member.membership_id.get()])?;
             tx.execute("UPDATE memberships SET desired_priority=?1,applied_revision=NULL WHERE membership_id=?2",params![member.desired_priority,member.membership_id.get()])?;
@@ -378,7 +394,7 @@ impl CatalogStore {
     }
 }
 
-fn bump(value: i64) -> ControlResult<i64> {
+pub(super) fn bump(value: i64) -> ControlResult<i64> {
     value
         .checked_add(1)
         .filter(|v| positive_revision(*v))
@@ -394,7 +410,7 @@ fn target_revision(conn: &Connection, target: TargetType, id: i64) -> ControlRes
         .optional()?
         .ok_or_else(|| failure(ControlErrorCode::NotFound))
 }
-fn member_target(conn: &Connection, id: MembershipId) -> ControlResult<MemberTarget> {
+pub(super) fn member_target(conn: &Connection, id: MembershipId) -> ControlResult<MemberTarget> {
     let row=conn.query_row("SELECT c.revision,m.desired_priority,c.status_directive,c.retire_requested,c.create_state,c.create_name,c.dirty,c.next_attempt_at,c.last_error_code FROM member_control c JOIN memberships m USING(membership_id) WHERE membership_id=?1",[id.get()],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,String>(2)?,r.get::<_,bool>(3)?,r.get::<_,String>(4)?,r.get::<_,String>(5)?,r.get::<_,bool>(6)?,r.get::<_,i64>(7)?,r.get::<_,Option<String>>(8)?))).optional()?.ok_or_else(||failure(ControlErrorCode::NotFound))?;
     Ok(MemberTarget {
         membership_id: id,
@@ -434,7 +450,7 @@ fn affected_members(
         ensure(members.len() < MAX_MEMBERSHIPS, ControlErrorCode::Storage)?;
         let mut target = member_target(tx, MembershipId::new(row.get(0)?)?)?;
         if target.status_directive == StatusDirective::Enabled {
-            let completed_glm:bool=tx.query_row("SELECT s.kind='glm' AND COALESCE(m.applied_revision=?2,0) FROM memberships m JOIN sources s USING(source_id) WHERE membership_id=?1",params![target.membership_id.get(),target.revision],|r|r.get(0))?;
+            let completed_glm:bool=tx.query_row("SELECT s.kind='glm' AND (COALESCE(m.applied_revision=?2,0) OR e.enable_consumed=1) FROM memberships m JOIN sources s USING(source_id) JOIN member_execution e USING(membership_id) WHERE membership_id=?1",params![target.membership_id.get(),target.revision],|r|r.get(0))?;
             if completed_glm {
                 target.status_directive = StatusDirective::Preserve;
             }

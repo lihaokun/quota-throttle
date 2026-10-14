@@ -246,12 +246,13 @@ priority 是对支持该请求模型的候选表达偏好。原生单次重试�
 | OperationId / ControlCommand | 稳定幂等 ID、受管动作、目标身份、expected_revision 与规范参数；同 ID 不变载荷 | 控制入口 → catalog/control；具体字段见子计划 §4.1 |
 | MemberTarget / StatusDirective | 成员 revision、priority、preserve/enabled/disabled、退役请求、稳定创建关联名 | catalog 写；reconciler 与后续策略读；源级 gate 始终更高优先 |
 | RoutingPermit | source/group 身份与 generation、启用资格、期望 priority；非序列化 | 策略/预检层产生，协调器消费；前端不得提供许可布尔值代替它 |
-| WorkTicket / WorkSnapshot | 成员动作与 member/source/group generation、写执行序号，一致读取的目标及完整可能路由的同组状态（含退役中成员） | store/worker/planner；纯计划类型已实现，持久票据/装配仍待接线；不包含公开可序列化凭据 |
+| WorkTicket / WorkSnapshot | 目录实例、成员动作与 member/source/group generation、执行序号及启用授权 epoch，一致读取的目标及完整可能路由的同组状态（含退役中成员） | store/worker/planner；目录持久票据及快照已实现，HTTP worker 尚待接线；不包含公开可序列化凭据 |
+| ExecutionEffect / ExecutionOutcome | 私有白名单写效果；明确未发出、完整响应（可失败）、不确定三种结算证据 | catalog/execution；仅可信执行器生产结算证据，不接受前端 JSON；完整响应不等于目标完成 |
 | BackendReadiness | 已核实的管理能力、原生自动启用开关、实例绑定及检查时间 | 只读预检 → 协调器；冲突不静默修改现有全局配置 |
 | ChannelObservation | 实际 channel 身份、路由字段、原生状态及观测时间 | NewAPI 客户端 → reconciler；原始 JSON 私有，未知不当零 |
 | OperationView | 操作身份/类型/阶段、目标 generation、确认计数、安全错误码及时间 | store 发布给面板；具体格式由 [schema](schemas/control-operation.schema.json) 约束 |
 
-创建关联名使用本工具实例 ID 与 MembershipId，不用 key 或可改展示名。状态管理区分 GLM 正常 preserve 与火山显式 1/2；人工暂停/退役覆盖两者。数据库 v2 通过私有侧表保存控制数据，核心 CatalogSnapshot wire 版本仍为 1；操作历史保存匹配 generation 的确认收据，不能因后来变更丢失旧成功证据。
+创建关联名使用本工具实例 ID 与 MembershipId，不用 key 或可改展示名。状态管理区分 GLM 正常 preserve 与火山显式 1/2；人工暂停/退役覆盖两者。数据库 v2 通过私有侧表保存控制意图，v3 追加执行记录；冻结旧 DDL 并备份后逐版本迁移，核心 CatalogSnapshot wire 版本仍为 1。操作历史保存匹配 generation 的确认收据，不能因后来变更丢失旧成功证据。
 
 NewAPI 无远端 CAS：本地 revision 防止错记旧 ACK，不等于可以撤销已经发出的写。目标完成以匹配回读为依据；未决相反写与漂移必须显式显示，并在既定单写者假设下持续对账。不能把此执行层宣称为硬实时或严格 exactly-once 控制器。
 

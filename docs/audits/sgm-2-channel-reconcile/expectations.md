@@ -1,6 +1,6 @@
 # 渠道协调器契约验收清单
 
-子计划：sgm-2-channel-reconcile。日期：2026-10-15。状态：前两批及第三批计划器小步已验证；不是整体验收通过记录。不能根据实现结果反向删掉验收项。
+子计划：sgm-2-channel-reconcile。日期：2026-10-15。状态：前两批、第三批计划器及持久日志已验证；不是整体验收通过记录。不能根据实现结果反向删掉验收项。
 
 ## 1 契约源
 
@@ -16,7 +16,7 @@ OperationView 必须且只包含 schema_version、operation_id、kind、target_t
 
 跨字段语义不由 JSON Schema 假装完成：confirmed_targets≤total_targets；succeeded 必须存在全部目标的匹配代次确认（零目标本地操作除外）；重复 ACK 不增加确认数；后来改变目标不抹掉历史已成功操作的收据。只有实现真实输出参与 schema 校验才算通过，手写样例只用于设计检查。
 
-CatalogSnapshot 的 JSON 版本保持 1；数据库 schema 升到 2，两个常量不得混用。v2 私有表不出现在普通快照，原始渠道正文、payload 摘要、key、认证头和服务端错误 message 不能进入 OperationView。
+CatalogSnapshot 的 JSON 版本保持 1；数据库依次迁移到 v2 意图表、v3 执行记录，版本常量不得混用。私有表不出现在普通快照，原始渠道正文、payload 摘要、key、认证头和服务端错误 message 不能进入 OperationView。
 
 ## 3 枚举值
 
@@ -124,7 +124,7 @@ CatalogSnapshot 的 JSON 版本保持 1；数据库 schema 升到 2，两个常�
 
 ## 10 跨实现一致性与变异门禁
 
-- [ ] Rust/SQL/schema 枚举一致；实例目录 DB version=2 与 CatalogSnapshot wire version=1 的区别被测试。
+- [ ] Rust/SQL/schema 枚举一致；实例目录 DB version=3 与 CatalogSnapshot wire version=1 的区别被测试。
 - [ ] 保留 sgm-1 的 85 项 Rust 用例，必要的 v2 fixture 扩充不改变原期望；固定历史审计脚本不被“放宽”以冒充旧提交验证。
 - [ ] 新机械脚本以本子计划基线 f9f02aa 校验真实输出、步骤和允许改动范围；旧核心回归与新契约同时通过。
 - [ ] 原生 NewAPI 隔离测试验证实际禁用创建、完整分页、回读、双协议普通请求不受组内管理影响。
@@ -132,7 +132,9 @@ CatalogSnapshot 的 JSON 版本保持 1；数据库 schema 升到 2，两个常�
 
 ## Step 5 记录
 
-P1–P10 已验证，P11/P12 的纯计划与 P13 的最终准入门禁已验证。P13 的持久执行部分及 P14–P16 尚未实现；不得将当前小步通过记为 sgm-2 整体完成。Readiness/Permit 输入类型不代表真实预检/策略生产者已接线。
+持久执行小步的事前验收：v2→v3 保留完整目录、私有材料、实例 ID 及历史操作；失败回滚到迁移起始版本。prepared 重开后为 uncertain，不重复创建；完整响应仅终结尝试，不确认目标。重复/迟到回执仅结算原票，不能写 observed/applied/成功收据；新显式授权与普通目标更新分别验证。准备和结算均使旧观测代次失效。补至少 128 cases 的旧票/授权交错与崩溃恢复 PBT，并定向移除代次/授权/unknown 门禁确认测试有效。本小步不包含 worker、真实交付证据生产者或回读完成入口，这些仍是 SGM-2 退出条件。
+
+P1–P10、P11/P12 纯计划、P13 准入门禁与持久准备、P14 日志结算和 P16 重开 prepared 恢复已验证。P15 回读确认、完整 P14/P16 网络执行/重试/worker 尚未实现；不得将小步通过记为 sgm-2 整体完成。Readiness/Permit 输入类型不代表真实预检/策略生产者已接线。
 
 2026-10-15 设计检查：schema metaschema 与设计样例通过；8 个非法样例（未知阶段、过短操作 ID、非法实体 ID、动作/目标类型冲突、成功仍带错误、失败不带错误、零 revision、额外 credential 字段）均被拒绝；本地 Markdown 链接检查通过。未修改业务源码或生产服务。
 
@@ -145,3 +147,5 @@ P1–P10 已验证，P11/P12 的纯计划与 P13 的最终准入门禁已验证�
 第二批验证记录：141 个普通测试通过（含新增 21 项，其中 4 项 PBT 各 128 cases），3 项定向变异均被捕获；第二批机械检查、OperationView 实际输出及枚举/SQL/schema、旧快照 v1、release 构建通过。独审发现并修复“目标子行丢失仍可显示成功”：新增冻结 expected_targets 与读取/重开集合核对。详见[第二批审核](batch-2-audit.md)。当前尚欠 P11–P16、完整 ACK/permit/worker PBT 与第一批 R8/R10 防退化门禁，整体仍不勾选退出通过。
 
 第三批计划器小步：164 个普通测试通过（新增 23 项，其中 8 项 PBT 各 128 cases），6 项定向变异被捕获；机械检查、旧真实输出 schema、release 通过。独审发现的迟到退款缺陷已消除，详见[当前审核](planner-audit.md)。当前未完成项以该报告“执行器接线前的硬约束”为准；完整 ACK/恢复状态机、真实预检及其余整体验收仍未完成，整体不勾选退出通过。
+
+第三批持久日志小步：185 个普通测试通过（新增 21 项，其中 4 项 PBT 各 128 cases），6 项定向变异被捕获；机械检查、实际输出 schema、release 通过。独审的多票阶段聚合与迁移 oracle 两项已关闭，见[日志审核](execution-journal-audit.md)。P13 持久准备、P14 结算及 P16 prepared 重开已实现，但绑定、真实交付证据、回读确认、重试与 worker 未实现；完整 SGM-2 退出项继续保持未勾选。

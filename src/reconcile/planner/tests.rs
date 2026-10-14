@@ -61,6 +61,7 @@ fn fixture(kind: SourceKind) -> WorkSnapshot {
         pending_write: PendingWrite::None,
         execution_revision: 0,
         enable_consumed: false,
+        enable_requested_revision: 5,
     }
 }
 fn observed(snapshot: &WorkSnapshot, status: i64, priority: i64) -> StampedObservation {

@@ -11,9 +11,11 @@ use std::time::{Duration, Instant};
 const APPLICATION_ID: i64 = 0x51545343;
 const SCHEMA: &str = include_str!("schema_v1.sql");
 const SCHEMA_V2: &str = include_str!("schema_v2.sql");
-const SOURCE_COLUMNS: &str = "source_id,kind,name,note,manual_paused,retired_at,config_revision";
-const GROUP_COLUMNS: &str = "group_id,newapi_group,name,kind,revision,ready";
-const MEMBER_COLUMNS: &str = "membership_id,source_id,group_id,channel_id,position,lifecycle,desired_priority,observed_status,observed_priority,applied_revision,retired_at";
+const SCHEMA_V3: &str = include_str!("schema_v3.sql");
+pub(super) const SOURCE_COLUMNS: &str =
+    "source_id,kind,name,note,manual_paused,retired_at,config_revision";
+pub(super) const GROUP_COLUMNS: &str = "group_id,newapi_group,name,kind,revision,ready";
+pub(super) const MEMBER_COLUMNS: &str = "membership_id,source_id,group_id,channel_id,position,lifecycle,desired_priority,observed_status,observed_priority,applied_revision,retired_at";
 
 impl From<rusqlite::Error> for CatalogError {
     fn from(value: rusqlite::Error) -> Self {
@@ -116,8 +118,11 @@ impl CatalogStore {
             probe.execute_batch("BEGIN")?;
             verify_schema(&probe, version)?;
             verify_core_data(&probe)?;
-            if version == 2 {
+            if version >= 2 {
                 super::control::verify_control(&probe)?;
+            }
+            if version == 3 {
+                super::execution::verify_execution(&probe)?;
             }
             probe.execute_batch("ROLLBACK")?;
         }
@@ -149,6 +154,16 @@ impl CatalogStore {
             }
             store.migrate_v1()?;
         }
+        if version <= 2 {
+            if !new_file && version == 2 {
+                let suffix: String =
+                    store
+                        .conn
+                        .query_row("SELECT lower(hex(randomblob(16)))", [], |r| r.get(0))?;
+                store.backup_to(&parent.join(format!("catalog-v2-before-v3-{suffix}.sqlite3")))?;
+            }
+            store.migrate_v2()?;
+        }
         let conn = &store.conn;
         // Step P5: 配置回读及数据检查完成才发布 Store。
         conn.pragma_update(None, "journal_mode", "WAL")?;
@@ -169,6 +184,7 @@ impl CatalogStore {
         require(fk_errors == 0, ErrorKind::CorruptData)?;
         verify_schema(conn, DATABASE_SCHEMA_VERSION)?;
         super::control::verify_control(conn)?;
+        super::execution::verify_execution(conn)?;
         let snapshot = store.snapshot()?;
         for source in &snapshot.sources {
             store.read_material(source.source_id, true)?;
@@ -185,6 +201,7 @@ impl CatalogStore {
         for suffix in ["catalog.sqlite3-wal", "catalog.sqlite3-shm"] {
             check_private_file(&parent.join(suffix), true)?;
         }
+        store.recover_executions()?;
         Ok(store)
     }
 
@@ -204,9 +221,28 @@ impl CatalogStore {
         )?;
         tx.execute("INSERT INTO source_control(source_id,retire_requested) SELECT source_id,0 FROM sources",[])?;
         tx.execute("INSERT INTO member_control(membership_id,revision,status_directive,retire_requested,create_state,create_name,dirty,next_attempt_at) SELECT membership_id,1,'preserve',0,CASE WHEN channel_id IS NULL THEN 'never' ELSE 'resolved' END,'qt-'||(SELECT catalog_instance_id FROM catalog_meta)||'-m'||membership_id,0,0 FROM memberships",[])?;
-        tx.pragma_update(None, "user_version", DATABASE_SCHEMA_VERSION)?;
-        verify_schema(&tx, DATABASE_SCHEMA_VERSION)?;
+        tx.pragma_update(None, "user_version", 2)?;
+        verify_schema(&tx, 2)?;
         super::control::verify_control(&tx)?;
+        commit(tx, &mut self.poisoned)
+    }
+
+    fn migrate_v2(&mut self) -> Result<()> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let instance: String = tx.query_row(
+            "SELECT catalog_instance_id FROM catalog_meta WHERE singleton=1",
+            [],
+            |r| r.get(0),
+        )?;
+        tx.execute("DROP TABLE catalog_meta", [])?;
+        tx.execute_batch(SCHEMA_V3)?;
+        tx.execute("INSERT INTO catalog_meta VALUES(1,3,?1)", [instance])?;
+        tx.execute("INSERT INTO member_execution SELECT m.membership_id,0,CASE WHEN c.status_directive='enabled' THEN 1 ELSE 0 END,CASE WHEN c.status_directive='enabled' THEN c.revision ELSE 0 END,CASE WHEN c.status_directive='enabled' AND m.applied_revision=c.revision THEN 1 ELSE 0 END FROM memberships m JOIN member_control c USING(membership_id)",[])?;
+        tx.pragma_update(None, "user_version", 3)?;
+        verify_schema(&tx, 3)?;
+        super::execution::verify_execution(&tx)?;
         commit(tx, &mut self.poisoned)
     }
 
@@ -577,13 +613,18 @@ fn verify_schema(conn: &Connection, expected_version: i64) -> Result<()> {
         .split(';')
         .map(str::trim)
         .filter(|s| {
-            !(s.is_empty() || expected_version == 2 && s.starts_with("CREATE TABLE catalog_meta"))
+            !(s.is_empty() || expected_version >= 2 && s.starts_with("CREATE TABLE catalog_meta"))
         })
+        .chain(SCHEMA_V2.split(';').map(str::trim).filter(|s| {
+            expected_version >= 2
+                && !s.is_empty()
+                && !(expected_version >= 3 && s.starts_with("CREATE TABLE catalog_meta"))
+        }))
         .chain(
-            SCHEMA_V2
+            SCHEMA_V3
                 .split(';')
                 .map(str::trim)
-                .filter(|s| expected_version == 2 && !s.is_empty()),
+                .filter(|s| expected_version == 3 && !s.is_empty()),
         );
     for statement in statements {
         let tail = statement
@@ -774,6 +815,10 @@ fn insert_membership(tx: &Transaction<'_>, row: &NewMembership) -> Result<Member
         params![row.source.get(),row.group.get(),row.kind.as_str(),row.channel.map(ChannelId::get),row.position,row.lifecycle.as_str(),row.priority])?;
     let membership_id = MembershipId::new(tx.last_insert_rowid())?;
     tx.execute("INSERT INTO member_control(membership_id,revision,status_directive,retire_requested,create_state,create_name,dirty,next_attempt_at) VALUES(?1,1,'preserve',0,?2,'qt-'||(SELECT catalog_instance_id FROM catalog_meta)||'-m'||?1,0,0)",params![membership_id.get(),if row.channel.is_some(){"resolved"}else{"never"}])?;
+    tx.execute(
+        "INSERT INTO member_execution VALUES(?1,0,0,0,0)",
+        [membership_id.get()],
+    )?;
     Ok(MembershipView {
         membership_id,
         source_id: row.source,
@@ -791,7 +836,7 @@ fn insert_membership(tx: &Transaction<'_>, row: &NewMembership) -> Result<Member
 fn field<T: rusqlite::types::FromSql>(row: &Row<'_>, name: &str) -> Result<T> {
     row.get(name).map_err(|_| error(ErrorKind::CorruptData))
 }
-fn decode_source_view(row: &Row<'_>) -> Result<SourceView> {
+pub(super) fn decode_source_view(row: &Row<'_>) -> Result<SourceView> {
     let paused: i64 = field(row, "manual_paused")?;
     let s = SourceView {
         source_id: SourceId::new(field(row, "source_id")?)
@@ -814,7 +859,7 @@ fn decode_source_view(row: &Row<'_>) -> Result<SourceView> {
     )?;
     Ok(s)
 }
-fn decode_group_view(row: &Row<'_>) -> Result<GroupView> {
+pub(super) fn decode_group_view(row: &Row<'_>) -> Result<GroupView> {
     let ready: i64 = field(row, "ready")?;
     let g = GroupView {
         group_id: GroupId::new(field(row, "group_id")?)
@@ -834,7 +879,7 @@ fn decode_group_view(row: &Row<'_>) -> Result<GroupView> {
     )?;
     Ok(g)
 }
-fn decode_membership_view(row: &Row<'_>) -> Result<MembershipView> {
+pub(super) fn decode_membership_view(row: &Row<'_>) -> Result<MembershipView> {
     let decode = || -> Result<MembershipView> {
         Ok(MembershipView {
             membership_id: MembershipId::new(field(row, "membership_id")?)?,

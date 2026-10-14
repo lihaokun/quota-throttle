@@ -30,7 +30,7 @@ fn targets(store: &CatalogStore) -> Vec<MemberTarget> {
 fn turn_fixture_into_v1(store: &mut CatalogStore) {
     // 只用于测试自己的临时库，保留冻结的 v1 核心表及数据。
     let tx = store.conn.transaction().unwrap();
-    tx.execute_batch("DROP TABLE operation_targets; DROP TABLE control_operations; DROP TABLE member_control; DROP TABLE source_control; DROP TABLE catalog_meta;").unwrap();
+    tx.execute_batch("DROP TABLE execution_attempts; DROP TABLE member_execution; DROP TABLE operation_targets; DROP TABLE control_operations; DROP TABLE member_control; DROP TABLE source_control; DROP TABLE catalog_meta;").unwrap();
     tx.execute_batch(SCHEMA.split(';').next().unwrap()).unwrap();
     tx.execute("INSERT INTO catalog_meta VALUES(1,1)", [])
         .unwrap();
@@ -93,7 +93,7 @@ fn v2_is_private_v1_wire_and_unmanaged_records_are_not_dirty() {
             .conn
             .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        2
+        DATABASE_SCHEMA_VERSION
     );
     assert_eq!(store.snapshot().unwrap().schema_version, 1);
     let instance: String = store

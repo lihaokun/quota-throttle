@@ -1,6 +1,6 @@
 # 渠道协调器审核处置
 
-日期：2026-10-15。此记录覆盖前两批及第三批计划器小步；SGM-2 未达到整体退出条件。
+日期：2026-10-15。此记录覆盖前两批、第三批计划器与持久日志小步；SGM-2 未达到整体退出条件。
 
 | 审核项 | 决策和状态 |
 | --- | --- |
@@ -31,3 +31,11 @@
 - 未知禁用创建是否阻挡其他来源：按恒 status=2、先绑定再启用及单写者前提给予无绑定 Never/May 豁免，但保留集合/身份检查；已绑定 unknown 不豁免。
 - 跨普通 revision 的启用消费、退役中 peer、execution revision 与 fence 发布：明确为持久执行器接线前硬约束，尚未宣称实现。
 - 验证与剩余范围见[当前审核](planner-audit.md)。本小步仅注册纯计划模块，旧运行循环不变。
+
+## 持久日志处置
+
+- W1 多票/多成员阶段误报：按整项操作的目标汇总，uncertain 优先 unknown，其次 prepared→applying；其他成员 ACK 不遮盖未决状态。跨成员、prepared 补偿回归及多票乱序 PBT 覆盖，独审复核关闭。
+- W2 私有材料迁移 oracle 不全：逐 SourceId 比较全部 SourceSettings 与 credential，包含 GLM 不同模型、多 header，以及火山模型/日上限/重置字段；保留公共快照、实例 ID 和历史操作断言，独审复核关闭。
+- 迁移版本：冻结 v1/v2 DDL，追加 v3。旧 v1 fixture 先移除新增 v3 表才能构造真实 v1；旧“当前数据库版本”断言改用 DATABASE_SCHEMA_VERSION，wire=1 等业务断言不变。历史阶段脚本未放宽，新增 sgm2_execution.sh。
+- 迁移失败按步骤回滚：v1→v2 成功后 v3 失败保留 v2 和初始 v1 备份，不声称整条链原子回滚。
+- 本小步没有网络发送、绑定和回读完成入口；实际 DeliveryEvidence 生产者与 worker 继续列为硬性未完成项。详见[独立审核](execution-journal-audit.md)。

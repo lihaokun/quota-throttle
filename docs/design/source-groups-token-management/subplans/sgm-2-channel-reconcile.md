@@ -1,12 +1,12 @@
 # 渠道协调器与持久控制操作细化设计
 
-子计划：sgm-2-channel-reconcile。日期：2026-10-15。基线：f9f02aa。状态：用户以“继续吧”确认推进，前两批管理接口、目录 v2 与持久意图已验证；协调器待实现，不授权部署。
+子计划：sgm-2-channel-reconcile。日期：2026-10-15。基线：f9f02aa。状态：用户以“继续吧”确认推进，管理接口、目录意图、计划器与 v3 持久日志已验证；回读确认与 worker 待实现，不授权部署。
 
 ## 1 范围
 
 本步把 sgm-1 的来源/组/成员目录接到原生 NewAPI 管理接口，实现禁用建渠道、成员映射、来源全局启停与退役、组内 priority 同步、持久操作回执和失败恢复。对应架构 G1/G6，并为 G2/G3 提供不改变策略的执行层。
 
-事前验收清单见 [expectations](../../../audits/sgm-2-channel-reconcile/expectations.md)，操作回执格式见 [schema](../schemas/control-operation.schema.json)。当前只是设计产物，不是测试通过记录。
+事前验收清单见 [expectations](../../../audits/sgm-2-channel-reconcile/expectations.md)，操作回执格式见 [schema](../schemas/control-operation.schema.json)。本文定义完整设计，各小步实际验证范围以对应审核记录为准。
 
 仍然不代理模型请求，不维护 NewAPI fork，不实现逐访问 key 绑定。GLM 的 decide/pin/95%/降级/临期规则由 sgm-3 适配，火山耗尽判定由 sgm-3/4 实现；本模块不能根据 429 或管理错误自行判断上游额度。组注册/签发权限在 sgm-5，面板在 sgm-6，正式模式切换在 sgm-7。
 
@@ -277,3 +277,42 @@ worker 需在提交新意图前使相关旧 fence 失效，提交后发布新代
 无绑定 peer 仍须计入完整集合。只有从未绑定且 CreateState 为 Never/MayHaveBeenSent 时，才可依“创建恒 status=2、先持久绑定才允许 Enable、type 8、自动启用关闭且无其他写者”证明其唯一可能效果是禁用副本，因此不阻挡其他已绑定来源切换。Resolved 却无绑定是异常；已绑定 Unknown/InFlight 继续阻挡。数据库恢复/映射遗失无法证明上述前提时不能豁免。创建自己的 unknown 和禁止重复 POST 不变。
 
 本小步以随机 gate/代次/peer 顺序/未知创建、逐步恢复轨迹及真实 HTTP 队列/401 重放验证纯计划和发送门禁。真正的 WorkTicket 持久记录、来源/组变化发布、ACK/回读确认、崩溃恢复与 worker 仍须随后完成。新增执行数据不得直接改写已经提交的 v2 DDL，需显式版本迁移；不得以只有内存里的 unknown 标志冒充跨重启恢复。
+
+### 持久执行与 worker 细化
+
+新增数据库 v3，仅重建版本元表并追加 member_execution / execution_attempts；冻结 v1/v2 DDL，CatalogSnapshot 和 OperationView 仍为格式 v1。旧 v1 库保留现有 v1→v2 备份/迁移，再做 v2→v3；原生 v2 库先只读完整验证并生成私有 v2 备份。新空库直接顺序执行相同迁移，无多余备份。每次迁移失败回滚到该次起始版本，保留已有备份；例如 v1→v2 成功后 v3 失败，保留 v2 和原始 v1 备份，不声称两次迁移是一个事务。不篡改实例 ID 或历史归属。
+
+member_execution 一行/成员，保存单调 execution revision、显式启用授权 epoch、授权起始 member revision、消费标记。execution_attempts 以 member/sequence 为主键，保存当时 member/source/group revision、授权 epoch、固定动作、无凭据字段效果、prepared/responded/not_sent/uncertain 状态和安全错误码；不存 key、请求头或完整原生渠道 JSON。prepared 在发出前提交，崩溃恢复转 uncertain；新意图不删除旧未决尝试。未绑定创建即使未确认，也只能通过稳定名字对账，不能重新 POST。
+
+启用授权只在显式 EnsureMember(enabled) 或恢复来源时递增并清消费位，普通 priority/model 更新保留。确定 Enable 回执或已满足启用目标的回读消费该授权；迟到回执只消费相同授权，不覆盖后来新显式授权。GLM 普通新意图继承已消费授权时按 preserve；旧授权已消费但本次显式恢复尚未完全确认且原生又禁用时，不重复 Enable。
+
+传输错误附带交付证据，区别 NotSent、ResponseReceived、Uncertain：参数/队列/最终门禁拒绝、确认的 401、连接建立失败为 NotSent；完整 HTTP 响应为 ResponseReceived，不等于动作成功；断连、超时、正文未收完/超限为 Uncertain。写的不可解析回执仍用 transport_unknown 错误码，但完整响应可作为请求已经终止的证据，随后仍须回读验证效果。该前提限于固定同步管理接口：UpdateChannel、status 和 batch handler 在写入/缓存更新后才返回 JSON，见[原生处理器](https://github.com/QuantumNous/new-api/blob/6ce7305cd36f16506fb6a2c3c524a5a318539ba7/controller/channel.go#L996)。已绑定的 Uncertain 写不靠匹配 GET 清除；可以补偿禁用但保持未收敛，不能发相反启用或确认完成。确切终止响应若迟到，允许只结算旧尝试的终止性，而不更新新代次观测或成功收据。
+
+固定版本的[管理审计](https://github.com/QuantumNous/new-api/blob/6ce7305cd36f16506fb6a2c3c524a5a318539ba7/model/log.go#L229)没有请求 ID，且[请求 ID 中间件](https://github.com/QuantumNous/new-api/blob/6ce7305cd36f16506fb6a2c3c524a5a318539ba7/middleware/request-id.go)由服务端生成 ID。因此不按时间/名字相近的审计记录认领某次未知写。需要服务端已重启等额外终止证据的场景保持 unknown；此轮不自动重启服务或增设“点击重试就认为已终止”的入口。
+
+Store 函数契约：
+
+| 函数 | 前置与步骤 | 后置/失败边界 |
+| --- | --- | --- |
+| load_work / load_group_work | 一致读事务加载核心实体、控制行、执行行及同组所有未退休成员（含退役请求）；材料只取当前来源设置，不复制全库 key | 得到新鲜代次和完整 barrier 集；无意图记录的目录项仍 unmanaged |
+| prepare_execution | 重新核对 member/source/group/execution；动作来自当前计划、没有冲突在途写；创建要求 Never 且无 channel | 同事务递增 execution、插入 prepared，创建标 May；返回私有票据；失败零发送 |
+| settle_execution | 票据存在且字段匹配；区分未发送/完整响应/不确定 | 旧票可更新自身终止状态，不确认新意图；明确未发送创建可回到 Never，unknown 创建不回退；消费标记核对授权 epoch |
+| bind_created | 稳定名称完整唯一匹配及身份相符，过去确有创建意图 | ID 单调绑定且永不改认；旧创建结果只绑定身份，当前 gate 重新执行；冲突拒绝 |
+| confirm_member | 最新代次、最新 execution 的实际观测，重新调用计划检查确为 Confirm/RetireAbsent，且无不确定写 | 逐目标保存匹配代次收据、applied；全部目标确认才 succeeded；最后一个退役成员确认后才归档来源；旧成功收据不变 |
+| defer / retry_operation / recover_pending | 安全错误、当前目标、有限重试；unknown 创建保持 May | 暂时失败保留 dirty 和下一时刻；显式重试不重放 superseded 意图、不清未知写；重开不复用旧观测 |
+
+worker 独占 CatalogStore 的外部写入口，通过短互斥区串行事务；网络等待不持数据库锁。提交新意图前使发布 fence 失效，完成或失败重载后发布新的偶数 epoch；最终 guard 仅比较原子 epoch 与许可/观测时间，不访问数据库。先以单控制执行通道串行管理写及其回读，背景管理观察仍受共享预算约束，避免同组相反动作并行。用户控制提交可在网络等待期间落库并使旧 guard 失效。
+
+每轮取至多 64 个到期 dirty 成员；优先停止/降低，再创建/字段同步，最后提升/启用。每次只执行一个计划动作并在下一步重新装配；组观测可以一次完整分页查询共享，不能每个来源重复采集 quota。完整响应后仍重新读实际状态；观察带请求发起时的 execution 和目标代次，过期读不发布。一次轮次的普通读/目标写最多三次，1/2 秒退避；仍失败则延期 30 秒，不忙轮询。401 单飞仍属于传输层。新 worker 仅通过显式库入口运行，不改 up/run 或部署。
+
+正确性：持久 prepared 先于准入消除崩溃后重复创建；目标与执行双重代次隔离旧结果；启用授权 epoch 隔离普通更新和新显式恢复；逐成员收据加冻结 expected_targets 证明完整确认；未决写不被新意图覆盖，避免未知相反写被一次读取掩盖。验证需覆盖 v2→v3 保真/回滚、准备后重开、迟到/重复/乱序回执、授权跨普通更新、完整暂停/退休、真实 HTTP fake 与独立原生实例，而非只测试类型构造。
+
+### 持久日志小步边界与函数论证
+
+本小步仅实现 v3 迁移、load_work/load_group_work、prepare_execution、settle_execution、recover_executions，以及显式授权的持久化。bind_created、confirm_member、重试入口、传输交付证据生产者和 worker 后续实现；本小步不能将任何非零操作置为 succeeded。ExecutionOutcome 只由可信执行器提供，没有 Deserialize，尚未连接真实 HTTP。
+
+- load_work 在一致读事务按成员 PK 读取来源/组/目标、执行序号和未决状态，不读 source_secrets；group_work 查询完整未退休集合，含退役请求。每轮处理一个成员，最多目录容量，遍历终止。缺实体/私有材料无效返回安全错误，不产空成功。verify_peers 对影响路由的动作将调用方屏障集合与数据库完整集合逐项核对身份、代次、目标和未决状态，防止内部装配漏项；不要求停止动作等待无关 peer。
+- prepare_execution 先核对四重 revision，再以当前快照重新调用纯计划器；只有 Create/Fields/Enable/Disable 可保存，其余返回 not_ready 或计划错误。事务内更新 execution、插入 prepared、创建标 May、操作置 applying（同操作其他成员未知时仍 unknown），提交才返回票据。创建记录保存当前 priority（已禁用，不产生路由；启用前仍经过 standby/屏障）、模型及身份，不保存 key。所有数据库错误回滚；未知提交使句柄不可复用。因此“拿到票据”蕴含发送意图已提交，但仍须 worker 最终 fence。
+- WorkTicket 绑定 catalog_instance_id、member/sequence、目标三重代次、epoch 和效果，不能跨目录错投。settle_execution 先比对整张票，再处理重复（零写）、冲突终态（拒绝）、prepared/uncertain→证据状态。结算及重开恢复也递增 execution，使终止证据之前发起的 GET 失效；因此序号可有间隙，不是尝试计数。明确 NotSent 只有在无其他可能创建记录且未绑定时才恢复 Never。迟到成功只消费相同 epoch 的 Enable，不写 observed/applied/收据；目标三重代次不再匹配时也不改新操作阶段。mark_operations 检查同一操作全部成员的 uncertain，不被另一成员 ACK 覆盖。循环/SQL 范围由成员或该操作目标限制，历史记录按索引查找。
+- recover_executions 在发布 Store 前同事务把 prepared 转 uncertain、dirty 置位、保留暂停与创建状态；仅对这些成员推进 execution，重复重开无新推进。verify_execution 检查侧表完整、代次上界、唯一 prepared、效果白名单和状态/错误组合；流式校验历史行，不一次加载全部历史。迁移复用同一校验，失败不发布部分升级的 Store。协议语义错误不含原始材料。
+- submit_operation 只有显式 enabled/来源恢复增加授权 epoch，普通 priority/models 保留；溢出与成员 fan-out 均同事务回滚。GLM 继承已消费授权时 preserve；若成功回执晚于普通更新，则通过授权起始 revision 区分旧授权与新显式恢复，仍不重新启用。新显式恢复 epoch 不同，旧回执不能消费它。上述规则不改变火山恢复规则或 GLM 额度算法。

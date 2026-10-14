@@ -121,6 +121,7 @@ pub struct WorkSnapshot {
     pub execution_revision: i64,
     /// 当前显式启用授权已消费；普通目标 revision 更新不得清零，须由持久记录提供。
     pub enable_consumed: bool,
+    pub enable_requested_revision: i64,
 }
 impl WorkSnapshot {
     pub fn revision(&self) -> Revision {
@@ -143,7 +144,8 @@ impl WorkSnapshot {
     fn directive(&self) -> StatusDirective {
         if self.source.kind == SourceKind::Glm
             && self.target.status_directive == StatusDirective::Enabled
-            && self.member.applied_revision == Some(self.target.revision)
+            && (self.member.applied_revision == Some(self.target.revision)
+                || self.enable_consumed && self.enable_requested_revision != self.target.revision)
         {
             StatusDirective::Preserve
         } else {
