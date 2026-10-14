@@ -546,7 +546,6 @@ fn capacity(tx: &Transaction<'_>, table: &'static str, limit: usize) -> Result<(
     require(count < limit as i64, ErrorKind::InvalidInput)
 }
 fn insert_source(tx: &Transaction<'_>, source: &ValidatedSource) -> Result<SourceView> {
-    capacity(tx, "sources", MAX_SOURCES)?;
     let existing: Option<i64> = tx
         .query_row(
             "SELECT source_id FROM sources WHERE credential_fingerprint=?1",
@@ -561,6 +560,8 @@ fn insert_source(tx: &Transaction<'_>, source: &ValidatedSource) -> Result<Sourc
             incomplete_backup: false,
         });
     }
+    // 重复身份不新增记录，不能让容量限制遮盖原 SourceId。
+    capacity(tx, "sources", MAX_SOURCES)?;
     tx.execute(
         "INSERT INTO source_secrets(raw_key) VALUES(?1)",
         [source.draft.credential.expose()],
@@ -581,7 +582,6 @@ fn insert_source(tx: &Transaction<'_>, source: &ValidatedSource) -> Result<Sourc
     })
 }
 fn insert_group(tx: &Transaction<'_>, group: &ValidatedGroup) -> Result<GroupView> {
-    capacity(tx, "source_groups", MAX_GROUPS)?;
     let g = &group.0;
     let exists: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM source_groups WHERE newapi_group=?1)",
@@ -589,6 +589,7 @@ fn insert_group(tx: &Transaction<'_>, group: &ValidatedGroup) -> Result<GroupVie
         |r| r.get(0),
     )?;
     require(!exists, ErrorKind::DuplicateGroup)?;
+    capacity(tx, "source_groups", MAX_GROUPS)?;
     tx.execute(
         "INSERT INTO source_groups(newapi_group,name,kind,revision,ready) VALUES(?1,?2,?3,1,0)",
         params![g.newapi_group, g.name, g.kind.as_str()],
@@ -646,7 +647,6 @@ fn insert_membership(tx: &Transaction<'_>, row: &NewMembership) -> Result<Member
         member_parents(tx, row.source, row.group)? == row.kind,
         ErrorKind::TypeMismatch,
     )?;
-    capacity(tx, "memberships", MAX_MEMBERSHIPS)?;
     let exists: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM memberships WHERE source_id=?1 AND group_id=?2 AND lifecycle!='retired')", params![row.source.get(), row.group.get()], |r| r.get(0))?;
     require(!exists, ErrorKind::DuplicateMembership)?;
     if let Some(channel) = row.channel {
@@ -657,6 +657,7 @@ fn insert_membership(tx: &Transaction<'_>, row: &NewMembership) -> Result<Member
         )?;
         require(!exists, ErrorKind::ChannelConflict)?;
     }
+    capacity(tx, "memberships", MAX_MEMBERSHIPS)?;
     tx.execute("INSERT INTO memberships(source_id,group_id,kind,channel_id,position,lifecycle,desired_priority) VALUES(?1,?2,?3,?4,?5,?6,?7)",
         params![row.source.get(),row.group.get(),row.kind.as_str(),row.channel.map(ChannelId::get),row.position,row.lifecycle.as_str(),row.priority])?;
     Ok(MembershipView {

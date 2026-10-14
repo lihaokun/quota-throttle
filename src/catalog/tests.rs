@@ -93,6 +93,186 @@ fn expect<T>(result: Result<T>, kind: ErrorKind) {
     }
 }
 
+// 只从原输入构建预期，沿实际成员引用读取材料，避免错配被数组下标掩盖。
+fn assert_legacy_fidelity(
+    store: &mut CatalogStore,
+    cfg: &Config,
+    channels: &[LegacyChannel],
+    receipt: &ImportReceipt,
+) -> CatalogSnapshot {
+    let snapshot = store.snapshot().unwrap();
+    assert_eq!(snapshot.sources.len(), cfg.keys.len());
+    assert_eq!(snapshot.memberships.len(), cfg.keys.len());
+    assert_eq!(receipt.source_ids.len(), cfg.keys.len());
+    assert_eq!(receipt.membership_ids.len(), cfg.keys.len());
+    assert_eq!(snapshot.groups.len(), 1);
+    assert_eq!(snapshot.groups[0].group_id, receipt.group_id);
+    for (position, key) in cfg.keys.iter().enumerate() {
+        let matches: Vec<_> = channels
+            .iter()
+            .filter(|c| match key.channel_id {
+                Some(id) => c.id == id,
+                None => c.name == key.name,
+            })
+            .collect();
+        assert_eq!(matches.len(), 1);
+        let channel = matches[0];
+        let member = snapshot
+            .memberships
+            .iter()
+            .find(|m| m.channel_id.map(ChannelId::get) == Some(channel.id))
+            .unwrap();
+        assert_eq!(member.membership_id, receipt.membership_ids[position]);
+        assert_eq!(member.source_id, receipt.source_ids[position]);
+        assert_eq!(member.group_id, receipt.group_id);
+        assert_eq!(snapshot.groups[0].newapi_group, channel.group);
+        assert_eq!(member.order, position as i64);
+        assert_eq!(member.desired_priority, channel.priority);
+        assert_eq!(member.lifecycle, MembershipLifecycle::Imported);
+        assert_eq!(
+            (
+                member.observed_status,
+                member.observed_priority,
+                member.applied_revision
+            ),
+            (None, None, None)
+        );
+        let stored = snapshot
+            .sources
+            .iter()
+            .find(|s| s.source_id == member.source_id)
+            .unwrap();
+        assert_eq!(stored.name, key.name);
+        assert_eq!(stored.note, key.note);
+        assert_eq!(stored.kind, SourceKind::Glm);
+        let material = store.read_source_material(member.source_id).unwrap();
+        assert_eq!(material.credential.expose(), key.zhipu_api_key);
+        let SourceSettings::Glm { upstream, quota } = material.settings else {
+            panic!("import must preserve GLM type")
+        };
+        let mut expected_models = Vec::new();
+        for raw in channel.models_csv.split(',') {
+            let id = raw.trim();
+            if !id.is_empty() && !expected_models.contains(&id) {
+                expected_models.push(id);
+            }
+        }
+        assert_eq!(upstream.models, expected_models);
+        assert_eq!(upstream.channel_type, channel.channel_type);
+        assert_eq!(upstream.base_url, channel.base_url);
+        assert_eq!(
+            upstream.model_discovery,
+            cfg.new_api
+                .channel_template
+                .as_ref()
+                .and_then(|t| t.model_discovery.clone())
+        );
+        assert_eq!(quota.quota_url, cfg.zhipu.quota_url);
+        let pairs = |headers: &[HeaderKV]| {
+            headers
+                .iter()
+                .map(|h| (h.key.clone(), h.value.clone()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            pairs(&quota.global_headers),
+            pairs(&cfg.zhipu.extra_headers)
+        );
+        assert_eq!(pairs(&quota.key_headers), pairs(&key.quota_headers));
+    }
+    snapshot
+}
+
+#[test]
+fn regression_duplicates_at_capacity() {
+    let (_dir, mut store) = setup();
+    let (cfg, channels) = legacy(MAX_SOURCES);
+    store
+        .import_legacy(&build_legacy_import(&cfg, &channels).unwrap())
+        .unwrap();
+    for i in 1..MAX_GROUPS {
+        store
+            .create_group(group(&format!("g{i}"), SourceKind::Glm))
+            .unwrap();
+    }
+    store.conn.execute("INSERT INTO memberships(source_id,group_id,kind,position,lifecycle,desired_priority) SELECT s.source_id,g.group_id,'glm',s.source_id-1,'planned',10 FROM sources s CROSS JOIN source_groups g WHERE g.group_id BETWEEN 2 AND 10",[]).unwrap();
+    let before = store.snapshot().unwrap();
+    assert_eq!(before.memberships.len(), MAX_MEMBERSHIPS);
+    let duplicate = store
+        .create_source(source(&cfg.keys[0].zhipu_api_key, SourceKind::Glm))
+        .unwrap_err();
+    assert_eq!(duplicate.kind, ErrorKind::DuplicateSource);
+    assert_eq!(duplicate.source_id, Some(before.sources[0].source_id));
+    expect(
+        store.create_group(group("default", SourceKind::Volcano)),
+        ErrorKind::DuplicateGroup,
+    );
+    expect(
+        store.plan_membership(before.sources[0].source_id, before.groups[0].group_id, 10),
+        ErrorKind::DuplicateMembership,
+    );
+    expect(
+        store.create_source(source("new-over-capacity", SourceKind::Glm)),
+        ErrorKind::InvalidInput,
+    );
+    expect(
+        store.create_group(group("new-over-capacity", SourceKind::Glm)),
+        ErrorKind::InvalidInput,
+    );
+    expect(
+        store.plan_membership(before.sources[0].source_id, before.groups[10].group_id, 10),
+        ErrorKind::InvalidInput,
+    );
+    assert_eq!(store.snapshot().unwrap(), before);
+    store
+        .conn
+        .execute(
+            "UPDATE sources SET retired_at=1 WHERE source_id=?1",
+            [before.sources[0].source_id.get()],
+        )
+        .unwrap();
+    let retired = store.snapshot().unwrap();
+    let duplicate = store
+        .create_source(source(&cfg.keys[0].zhipu_api_key, SourceKind::Glm))
+        .unwrap_err();
+    assert_eq!(duplicate.kind, ErrorKind::DuplicateSource);
+    assert_eq!(duplicate.source_id, Some(before.sources[0].source_id));
+    assert_eq!(store.snapshot().unwrap(), retired);
+    assert_eq!(
+        store
+            .conn
+            .query_row("SELECT count(*) FROM source_secrets", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        MAX_SOURCES as i64
+    );
+}
+
+#[test]
+fn regression_import_keeps_per_source_mapping_and_order() {
+    let (_dir, mut store) = setup();
+    let (mut cfg, mut channels) = legacy(3);
+    cfg.keys.rotate_right(1);
+    cfg.keys[1].channel_id = Some(100);
+    for channel in &mut channels {
+        channel.models_csv = format!(" model-{}, common, model-{} ", channel.id, channel.id);
+        channel.priority = (channel.id - 100) * 10 - 5;
+    }
+    channels.reverse();
+    let plan = build_legacy_import(&cfg, &channels).unwrap();
+    let ImportOutcome::Applied(receipt) = store.import_legacy(&plan).unwrap() else {
+        panic!()
+    };
+    assert_legacy_fidelity(&mut store, &cfg, &channels, &receipt);
+}
+
+#[test]
+fn regression_secret_debug_and_display_are_redacted() {
+    let secret = SecretString::new("known-fake-secret".into()).unwrap();
+    assert_eq!(format!("{secret:?}"), "[REDACTED]");
+    assert_eq!(secret.to_string(), "[REDACTED]");
+}
+
 #[test]
 fn source_shared_across_groups_and_types_isolated() {
     let (_dir, mut store) = setup();
@@ -729,7 +909,7 @@ proptest! {
                 None=>{let v=store.create_source(source(&format!("key{key}"),kind)).unwrap(); sources.insert(key,(v.source_id,kind)); (v.source_id,kind)}
             };
             let g=match groups.get(&group_no).copied() {
-                Some(value)=>value,
+                Some(value)=>{let result=store.create_group(group(&format!("g{group_no}"),gkind)); prop_assert_eq!(result.unwrap_err().kind,ErrorKind::DuplicateGroup); value},
                 None=>{let v=store.create_group(group(&format!("g{group_no}"),gkind)).unwrap(); groups.insert(group_no,(v.group_id,gkind)); (v.group_id,gkind)}
             };
             let outcome=store.plan_membership(s.0,g.0,10);
@@ -740,6 +920,20 @@ proptest! {
             prop_assert_eq!(snapshot.sources.len(),sources.len());
             prop_assert_eq!(snapshot.groups.len(),groups.len());
             prop_assert_eq!(snapshot.memberships.iter().map(|m|(m.source_id,m.group_id)).collect::<HashSet<_>>(),pairs.clone());
+            let secrets=store.conn.query_row("SELECT count(*) FROM source_secrets",[],|r|r.get::<_,i64>(0)).unwrap();
+            prop_assert_eq!(secrets,sources.len() as i64);
+            let private_rows: Vec<(i64,i64,String)> = store.conn.prepare("SELECT s.source_id,s.secret_id,k.raw_key FROM sources s LEFT JOIN source_secrets k ON k.secret_id=s.secret_id ORDER BY s.source_id").unwrap()
+                .query_map([],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap().collect::<rusqlite::Result<_>>().unwrap();
+            prop_assert_eq!(private_rows.len(),sources.len());
+            prop_assert_eq!(private_rows.iter().map(|r|r.1).collect::<HashSet<_>>().len(),sources.len());
+            for (logical_key,(id,kind)) in &sources {
+                let actual=private_rows.iter().find(|r|r.0==id.get()).unwrap();
+                prop_assert_eq!(&actual.2,&format!("key{logical_key}"));
+                prop_assert_eq!(snapshot.sources.iter().find(|s|s.source_id==*id).unwrap().kind,*kind);
+            }
+            for (id,kind) in groups.values() {
+                prop_assert_eq!(snapshot.groups.iter().find(|g|g.group_id==*id).unwrap().kind,*kind);
+            }
         }
     }
 
@@ -760,29 +954,24 @@ proptest! {
         models in prop::collection::vec(0u8..8,1..16), global_values in prop::collection::vec("[a-z]{1,8}",1..5),
         key_values in prop::collection::vec("[a-z]{1,8}",1..5), rotation in 0usize..20) {
         let (dir,mut store)=setup(); let (mut cfg,mut channels)=legacy(n);
-        cfg.zhipu.extra_headers=global_values.iter().map(|v|HeaderKV {key:"X-Repeated".into(),value:v.clone()}).collect();
-        let mut expected_models=Vec::new();
-        for m in &models {let id=format!("m{m}");if !expected_models.contains(&id){expected_models.push(id);}}
-        let csv=models.iter().map(|m|format!(" m{m} , ")).collect::<Vec<_>>().join(",");
-        for c in &mut channels {c.models_csv=csv.clone();}
+        cfg.zhipu.extra_headers=global_values.iter().enumerate().map(|(i,v)|HeaderKV {key:format!("X-Global-{}",i%2),value:format!("GLOBAL-{i}-{v}")}).collect();
+        for c in &mut channels {
+            c.models_csv=models.iter().map(|m|format!(" m{}-{m} , ",c.id)).collect::<Vec<_>>().join(",");
+            c.priority=c.id*3-301;
+        }
         if reverse {cfg.keys.reverse();}
-        for k in &mut cfg.keys {k.note=note.clone(); k.quota_headers=key_values.iter().map(|v|HeaderKV {key:"X-Repeated".into(),value:v.clone()}).collect(); if explicit {k.channel_id=Some(100+k.name[1..].parse::<i64>().unwrap());}}
+        for (i,k) in cfg.keys.iter_mut().enumerate() {
+            k.note=format!("note-{}-{note}",k.name);
+            k.quota_headers=key_values.iter().enumerate().map(|(j,v)|HeaderKV {key:format!("X-{}-{}",k.name,j%2),value:format!("{}-{j}-{v}",k.name)}).collect();
+            if explicit && i%2==0 {k.channel_id=Some(100+k.name[1..].parse::<i64>().unwrap());}
+        }
         let plan=build_legacy_import(&cfg,&channels).unwrap();
         // 仅改变查询返回顺序，配置 key 顺序保持原样。
         channels.rotate_left(rotation % n); channels.reverse();
         let reordered_plan=build_legacy_import(&cfg,&channels).unwrap();
         prop_assert_eq!(&plan.digest,&reordered_plan.digest);
         let ImportOutcome::Applied(receipt)=store.import_legacy(&plan).unwrap() else {panic!()};
-        let snapshot=store.snapshot().unwrap();
-        for (i,s) in snapshot.sources.iter().enumerate() {
-            prop_assert_eq!(&s.name,&cfg.keys[i].name); prop_assert_eq!(&s.note,&note);
-            let material=store.read_source_material(s.source_id).unwrap();
-            let SourceSettings::Glm {quota,upstream}=material.settings else {panic!()};
-            prop_assert_eq!(upstream.models,expected_models.clone());
-            prop_assert_eq!(quota.global_headers.iter().map(|h|h.value.clone()).collect::<Vec<_>>(),global_values.clone());
-            prop_assert_eq!(quota.key_headers.iter().map(|h|h.value.clone()).collect::<Vec<_>>(),key_values.clone());
-            prop_assert_eq!(snapshot.memberships[i].channel_id.unwrap().get(),100+cfg.keys[i].name[1..].parse::<i64>().unwrap());
-        }
+        let snapshot=assert_legacy_fidelity(&mut store,&cfg,&channels,&receipt);
         drop(store); let mut store=CatalogStore::open(&dir.path().join("catalog.sqlite3")).unwrap();
         prop_assert_eq!(store.import_legacy(&plan).unwrap(),ImportOutcome::AlreadyApplied(receipt));
         prop_assert_eq!(store.snapshot().unwrap(),snapshot);
@@ -806,17 +995,36 @@ proptest! {
 
     #[test]
     fn property_c7_no_secret_in_snapshots_or_debug(suffix in "[a-zA-Z0-9]{8,40}") {
+        use sha2::{Digest,Sha256};
         let (_dir,mut store)=setup(); let sentinel=format!("PRIVATE_{suffix}");
+        let global=format!("GLOBAL_{suffix}"); let selector=format!("SELECTOR_{suffix}");
+        let mut hash=Sha256::new(); hash.update(b"quota-throttle/source-key/v1\0"); hash.update(sentinel.as_bytes());
+        let expected_fingerprint=format!("{:x}",hash.finalize());
+        let sensitive=[sentinel.as_str(),global.as_str(),selector.as_str(),expected_fingerprint.as_str()];
         let mut draft=source(&sentinel,SourceKind::Glm);
-        if let SourceSettings::Glm {quota,..}=&mut draft.settings {quota.key_headers=vec![HeaderKV {key:"X-Sentinel".into(),value:sentinel.clone()}];}
-        let debug = format!("{draft:?}"); prop_assert!(!debug.contains(&sentinel));
+        if let SourceSettings::Glm {quota,..}=&mut draft.settings {
+            quota.global_headers=vec![HeaderKV {key:"X-Global".into(),value:global.clone()}];
+            quota.key_headers=vec![HeaderKV {key:"X-Sentinel".into(),value:selector.clone()}];
+        }
+        let debug=format!("{:?}",draft.credential); prop_assert_eq!(&debug,"[REDACTED]");
+        prop_assert_eq!(draft.credential.to_string(),"[REDACTED]");
+        let validated=validate_source(SourceDraft {name:draft.name.clone(),note:draft.note.clone(),settings:draft.settings.clone(),credential:draft.credential.clone()}).unwrap();
+        let mut diagnostics=vec![format!("{draft:?}"),format!("{:?}",draft.settings),format!("{validated:?}")];
+        if let SourceSettings::Glm {quota,upstream}=&draft.settings {
+            diagnostics.extend([format!("{quota:?}"),format!("{upstream:?}")]);
+        }
         let s=store.create_source(draft).unwrap();
         let material=store.read_source_material(s.source_id).unwrap();
-        let debug = format!("{material:?}"); prop_assert!(!debug.contains(&sentinel));
+        diagnostics.extend([format!("{material:?}"),format!("{:?}",material.settings),format!("{:?}",material.credential),material.credential.to_string()]);
         prop_assert_eq!(material.credential.expose(),sentinel.as_str());
+        let stored_fingerprint:String=store.conn.query_row("SELECT credential_fingerprint FROM sources WHERE source_id=?1",[s.source_id.get()],|r|r.get(0)).unwrap();
+        prop_assert_eq!(stored_fingerprint,expected_fingerprint.clone());
+        let duplicate=store.create_source(source(&sentinel,SourceKind::Glm)).unwrap_err();
+        diagnostics.extend([format!("{duplicate:?}"),duplicate.to_string()]);
         let snapshot=store.snapshot().unwrap(); let json=serde_json::to_string(&snapshot).unwrap();
-        prop_assert!(!json.contains(&sentinel)); prop_assert!(!json.contains("fingerprint"));
+        prop_assert!(!json.contains("fingerprint")); diagnostics.push(json);
         let (mut cfg,channels)=legacy(1); cfg.keys[0].zhipu_api_key=sentinel.clone();
-        let plan=build_legacy_import(&cfg,&channels).unwrap(); let debug = format!("{plan:?}"); prop_assert!(!debug.contains(&sentinel));
+        let plan=build_legacy_import(&cfg,&channels).unwrap(); diagnostics.push(format!("{plan:?}"));
+        for text in &diagnostics {for value in sensitive {prop_assert!(!text.contains(value));}}
     }
 }
