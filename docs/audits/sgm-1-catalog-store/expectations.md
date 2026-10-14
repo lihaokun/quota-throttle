@@ -57,6 +57,7 @@ sgm-1 只产生 planned/imported；其余生命周期为 schema 约束及历史�
 ## 5 行为契约
 
 - [x] create_source 不复制同凭据来源；归档身份也不能被重复创建绕过。
+- [x] 输入/引用有效时，满容量不遮盖重复 source/group/member；来源返回旧 ID，新身份仍受容量约束。
 - [x] create_group 只建本地 ready=false 记录，不注册外部组。
 - [x] plan_membership 校验存在、类型、退休、唯一性，允许对暂停源建立未生效计划但不启用。
 - [x] 同一来源加入两个同类型组后只有一份 source/secret，两个独立 membership。
@@ -84,13 +85,13 @@ sgm-1 只产生 planned/imported；其余生命周期为 schema 约束及历史�
 
 | 编号 | 对任意合法操作序列恒成立 | 检查方法 |
 | --- | --- | --- |
-| C1 | 相同凭据最多一份 Source/Secret；多组只增成员 | 随机重复创建及跨组加入，对比参考集合 |
+| C1 | 相同凭据最多一份 Source/Secret；多组只增成员 | 随机重复创建及跨组加入；实际重复组调用；核对 source/secret 数量、唯一引用和 key 对应关系 |
 | C2 | 有效成员两端类型相同，有效 source/group 组合唯一 | 混合 GLM/火山生成器；成功/错误后均检查 |
 | C3 | channel_id 永远不映射两个来源/组，含退休历史 | 导入映射置换、重复 ID、含退休行数据库约束 fixture |
 | C4 | import(P); import(P) 与 import(P) 的目录及收据一致 | 随机顺序/备注/模型输入，重开后重放 |
 | C5 | 事务提交前任一注入故障后，目录等价于操作前 | secret/source/member/marker 写入间故障；重开检查无孤儿 |
-| C6 | 旧 key 顺序、渠道 ID、模型实际集合与两层 headers 不漂移 | 随机显式 ID/唯一名称解析；纯转换参考模型 |
-| C7 | 快照序列化与各敏感对象 Debug 不包含被隐藏的凭据/指纹/header | 随机哨兵仅放敏感字段；公开字段故意含同文本不作为泄漏判据 |
+| C6 | 旧 key 顺序、关联、priority、凭据、模型与两层 headers 不漂移 | 每来源使用不同输入；沿 channel/member/source/material 比较完整元组；独立模型去重预期；渠道查询顺序扰动 |
+| C7 | 快照、敏感对象自身 Debug/Display 与错误文本不泄露凭据/指纹/header | 直接检查 SecretString 及 settings/upstream/quota/validated 容器，检查敏感值（含指纹）而非仅字段名；哨兵仅放敏感字段 |
 
 人工修改测试中的退休/暂停行只使用私有测试 fixture，不为测试方便添加危险的生产 setter。
 
@@ -123,10 +124,10 @@ sgm-1 只产生 planned/imported；其余生命周期为 schema 约束及历史�
 
 ## Step 5 验证记录
 
-实现后验证完成，详见 [audit-report](audit-report.md) 与 [decisions](decisions.md)。82 个测试通过，新增 24 项包含 C1–C7 属性检查。release 构建及机械契约检查通过；独立审核未发现未解决项。
+初审 2797dbe 的 82 项通过不能代表所有已声明不变量均被充分测试；复审揭示了容量边界和 C1/C6/C7 盲区。此次按 §7 修复后为 85 项通过，原 5 个 PBT 每项仍为 128 cases，release 构建及机械检查通过。四种定向变异均被对应 PBT 检出，详见[修正记录](../../fixes/catalog-fix-capacity-and-pbt.md)。
 
 Step 0 文档检查已执行：check-jsonschema 验证 metaschema 与设计样例通过；8 个变异负例（额外 credential 字段、auto 组、imported 无渠道、planned 有渠道、退休缺时间、未知来源类型、数字 ID、零 revision）全部被拒绝。Markdown 本地链接检查和 git diff --check 通过；src 与 Cargo 文件无变更。
 
 路径 A 已执行：cargo test --locked --offline -j 2；bash scripts/contract_audit/sgm1.sh 校验实际快照、schema/SQL/编译枚举、负例、步骤和副作用；cargo build --release --locked --offline -j 2 通过。Clippy 仅有 6 条未修改旧模块警告。
 
-路径 B 已执行：独立 subagent 先提取契约再审核本子计划 diff，不提供完整业务源码或实现位置列。首轮问题已补修复/测试/文档并经复核，报告与决策记录齐备。
+初审和后续独立复审均已执行；后续复审纠正了初审结论。此次局部修复采用 §7 回归与 §5.2 复核，没有把旧独立审核结果充当修复后的新一轮审核。报告、问题处置和此次实测结果分别保留。

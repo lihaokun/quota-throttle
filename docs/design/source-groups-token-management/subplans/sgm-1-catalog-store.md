@@ -159,7 +159,7 @@ Store 持有唯一 SQLite Connection 和私有锁文件句柄，写方法要求 
 
 前置：Store 未处于 commit_unknown 状态；无活动事务。后置：恰好新增一条来源及其私有凭据，或一条组；ID 唯一、revision=1、未退休。新 source.manual_paused=false 仅代表没有人工暂停意图，不声明来源已能推理；新 group.ready=false。
 
-步骤：按 C4 完整校验 → BEGIN IMMEDIATE → 检查容量/指纹或组名唯一 → 插入 secret/source 或 group → 从本事务构造安全 View → commit → 返回 View。冲突/构造失败回滚；commit IO 异常标记句柄不可继续写，返回 commit_unknown。新来源不创建成员、渠道或火山运行期零值。
+步骤：按 C4 完整校验 → BEGIN IMMEDIATE → 检查指纹或组名重复，存在则返回对应重复错误（来源附既有 ID）→ 仅对新身份检查容量 → 插入 secret/source 或 group → 从本事务构造安全 View → commit → 返回 View。冲突/构造失败回滚；commit IO 异常标记句柄不可继续写，返回 commit_unknown。新来源不创建成员、渠道或火山运行期零值。
 
 正确性论证：来源/凭据在同一 C2 事务内，消除无主 secret 或无凭据 source；唯一索引作为检查后的最终防线；commit 之前不向调用者发布实体。失败分支按 §3 保留旧目录，唯一外部副作用是本库写入，无供应商/管理 API 调用。
 
@@ -233,9 +233,9 @@ read_source_material 仅为可信后端的后续 probe/reconciler 使用；按�
 | parse_positive_id(text: &str) -> Result<i64> | 先按 §4.1 检查十进制字符/首零，再 checked parse，最后检查 >0；任一分支失败 invalid_input | 无状态写入；格式和值域两关同时成立才返回；遍历字符串长度有限 |
 | prepare_private_directory(path: &Path) -> Result<PathBuf> | C1：检查绝对路径及父目录，已有叶目录拒绝 symlink/宽权限；仅缺失叶目录时用 mode=0700 创建；检查后返回规范路径 | 只可创建明确的一层目录，不递归建祖先；IO/权限异常立即返回，已有目录不 chmod |
 | check_private_file(path: &Path, allow_missing: bool) -> Result<()> | C1：symlink_metadata；不存在依 allow_missing 返回或报错；存在须普通文件、nlink=1、无组/其他权限 | 元数据检查纯只读；不符拒绝，不跟随末端链接，不输出文件内容 |
-| insert_source(tx: &Transaction, source: &ValidatedSource) -> Result<SourceView> | C2/C4：限额与指纹检查，插入 secret，再插 source，checked 读取 ID 并构造 View；任何错误向外传播 | 不另开/提交事务，返回值尚未发布；外层回滚涵盖 secret/source 两次插入，消除孤儿 |
-| insert_group(tx: &Transaction, group: &ValidatedGroup) -> Result<GroupView> | C2/C4：容量与组名检查，插入 ready=false/revision=1，校验返回 ID | 只向外层事务写一条组，不建立外部权限，错误由外层回滚 |
-| insert_membership(tx: &Transaction, row: &NewMembership) -> Result<MembershipView> | NewMembership 私有临时参数含两端 ID、kind、channel_id、position、lifecycle、priority；只接受 planned/imported，校验 §4 值域及两端类型、退休/有效唯一，再插入 | 不提交；复合 FK/唯一索引兜底；imported 仅允许 5.7 调用，不能把新计划伪装旧映射 |
+| insert_source(tx: &Transaction, source: &ValidatedSource) -> Result<SourceView> | C2/C4：先检查指纹重复并返回旧 ID，再对新身份检查容量，插入 secret/source，checked 读取 ID 并构造 View | 不另开/提交事务；满容量不遮盖重复来源；外层回滚涵盖两次插入，消除孤儿 |
+| insert_group(tx: &Transaction, group: &ValidatedGroup) -> Result<GroupView> | C2/C4：先检查组名重复，再对新组检查容量，插入 ready=false/revision=1，校验返回 ID | 只向外层事务写一条组；满容量仍返回 DuplicateGroup；不建立外部权限 |
+| insert_membership(tx: &Transaction, row: &NewMembership) -> Result<MembershipView> | NewMembership 私有临时参数含两端 ID、kind、channel_id、position、lifecycle、priority；只接受 planned/imported，先校验值域、两端、退休及成员/渠道重复，再检查容量并插入 | 不提交；满容量不遮盖已发现的重复身份；复合 FK/唯一索引兜底；imported 仅允许 5.7 调用 |
 | decode_source_view / decode_group_view / decode_membership_view(row: &Row) -> Result<View> | 读取显式命名的白名单列，检查 ID、类型、边界和生命周期字段配对；任一失败 corrupt_data | 不访问 secret/settings_json，不修改数据库；所有检查通过才构造完整 View |
 | decode_settings(text: &str) -> Result<SourceSettings> | C3：直接从文本严格解码 version=1，再复用 C4 中不含 credential 的设置校验；将结果编码为 Value 与原始 Value 对比，捕获旧类型忽略字段或默认补值 | 无外部状态写入，错误不包含 text；未知字段/缺失字段/非法值报 corrupt_data，私有设置不会被默认值“修复” |
 | From<rusqlite::Error> for CatalogError | 按结构化类型区分列解码损坏、busy/locked 和其他 storage；不解析或回显 raw message；提交失败由外层处理 | 固定 catalog 错误域和允许的 ID 是唯一常规上下文，不引入通用错误框架，不打印 SQL/参数或自行重试 |
@@ -267,6 +267,10 @@ read_source_material 仅为可信后端的后续 probe/reconciler 使用；按�
 - [x] 用户确认细化后进入编码；实现前已复核 §4.4。此自检不代替实施后双路径审计。
 
 最低测试集：非法/重复来源与组；同源多组；类型拒绝；跨组不串 channel；旧 key 顺序与显式 ID 优先；歧义名字/缺失渠道/混组/重复 credential 全量失败；重复导入及不同摘要；故障注入回滚；重开不重导；外库/高 schema 不修改；并发打开立即拒绝；WAL 备份及拒绝覆盖；JSON/Debug/错误凭据不泄漏。
+
+复审补充：满容量时重复 source/group/member 仍返回重复错误，真正新增仍拒绝；退休来源的凭据仍返回旧 SourceId。C1 同时查 source/secret 数量、引用唯一与 key 对应关系，重复组必须真实调用 create_group。C6 逐来源生成可区分的输入，完整比较关联和材料；C7 直接格式化内部敏感类型，不只检查外层容器或敏感字段名。
+
+测试 helper assert_legacy_fidelity 的前置为内存中的合法假配置、唯一渠道描述及实际导入收据；按原配置顺序独立找到渠道，再沿实际 member → source → material 引用对照 source/group/channel/order/priority、凭据、名字、备注、模型和完整 header 序列。模型期望用独立去空去重循环构造，不调用生产规范化函数。遍历上限为有限输入条目，任何差异立即断言失败；仅查询本次临时库，不修改目录、不访问网络。该 helper 供确定性回归与 C4/C6 共同使用，返回已核对快照用于重开/重放比较。
 
 属性测试覆盖共享来源唯一、同类型与 channel 全局唯一、重复导入不变、事务失败等价于操作前快照、快照序列化无秘密。纯目录操作序列与 BTreeMap/集合参考模型交叉验证，每项至少 128 cases，不用改期望掩盖失败。
 
