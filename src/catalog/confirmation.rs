@@ -15,6 +15,14 @@ use rusqlite::{params, Connection, TransactionBehavior};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
+/// 仅可信观察器提交；身份/新鲜度在调用端核实，目录仍核对完整 revision。
+pub(crate) struct ObservedFields {
+    pub member: MembershipId,
+    pub revision: Revision,
+    pub status: Option<i64>,
+    pub priority: Option<i64>,
+}
+
 impl CatalogStore {
     pub fn pending_creation(&mut self, id: MembershipId) -> ControlResult<WorkTicket> {
         self.usable()?;
@@ -251,15 +259,98 @@ impl CatalogStore {
     }
 
     pub fn due_members(&self, now: i64) -> ControlResult<Vec<MembershipId>> {
+        self.due_members_with_stops(now, &[])
+    }
+
+    pub(crate) fn due_members_with_stops(
+        &self,
+        now: i64,
+        stopped: &[SourceId],
+    ) -> ControlResult<Vec<MembershipId>> {
         self.usable()?;
         ensure(valid_timestamp(Some(now)), ControlErrorCode::InvalidInput)?;
-        let mut statement=self.conn.prepare("SELECT m.membership_id FROM memberships m JOIN member_control c USING(membership_id) JOIN sources s USING(source_id) JOIN source_control sc USING(source_id) WHERE c.dirty=1 AND c.next_attempt_at<=?1 AND m.lifecycle!='retired' ORDER BY CASE WHEN s.manual_paused OR sc.retire_requested OR c.retire_requested OR c.status_directive='disabled' THEN 0 WHEN m.observed_priority IS NOT NULL AND m.desired_priority<m.observed_priority THEN 1 ELSE 2 END,c.next_attempt_at,m.membership_id LIMIT 64")?;
-        let mut rows = statement.query([now])?;
+        ensure(stopped.len() <= MAX_SOURCES, ControlErrorCode::InvalidInput)?;
+        let stopped = serde_json::to_string(&stopped.iter().map(|s| s.get()).collect::<Vec<_>>())
+            .map_err(|_| failure(ControlErrorCode::InvalidInput))?;
+        let mut statement=self.conn.prepare("SELECT m.membership_id FROM memberships m JOIN member_control c USING(membership_id) JOIN sources s USING(source_id) JOIN source_control sc USING(source_id) WHERE c.dirty=1 AND c.next_attempt_at<=?1 AND m.lifecycle!='retired' ORDER BY CASE WHEN s.manual_paused OR sc.retire_requested OR c.retire_requested OR c.status_directive='disabled' OR m.source_id IN (SELECT value FROM json_each(?2)) THEN 0 WHEN m.observed_priority IS NOT NULL AND m.desired_priority<m.observed_priority THEN 1 ELSE 2 END,c.next_attempt_at,m.membership_id LIMIT 64")?;
+        let mut rows = statement.query(params![now, stopped])?;
         let mut result = Vec::new();
         while let Some(row) = rows.next()? {
             result.push(MembershipId::new(row.get(0)?)?);
         }
         Ok(result)
+    }
+
+    pub(crate) fn record_observed(&mut self, updates: &[ObservedFields]) -> ControlResult<()> {
+        self.usable()?;
+        ensure(
+            updates.len() <= MAX_MEMBERSHIPS,
+            ControlErrorCode::InvalidInput,
+        )?;
+        let mut seen = std::collections::HashSet::new();
+        for u in updates {
+            ensure(
+                seen.insert(u.member)
+                    && u.status.is_some() == u.priority.is_some()
+                    && u.status.is_none_or(|s| (1..=3).contains(&s))
+                    && u.priority.is_none_or(safe_number),
+                ControlErrorCode::InvalidInput,
+            )?;
+        }
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        for u in updates {
+            let w = load_work(&tx, u.member, false)?;
+            ensure(
+                w.revision() == u.revision,
+                ControlErrorCode::RevisionConflict,
+            )?;
+            tx.execute("UPDATE memberships SET observed_status=?1,observed_priority=?2 WHERE membership_id=?3",params![u.status,u.priority,u.member.get()])?;
+        }
+        commit(tx, &mut self.poisoned)?;
+        Ok(())
+    }
+
+    pub fn next_attempt_at(&self) -> ControlResult<Option<i64>> {
+        self.usable()?;
+        Ok(self.conn.query_row("SELECT MIN(c.next_attempt_at) FROM member_control c JOIN memberships m USING(membership_id) WHERE c.dirty=1 AND m.lifecycle!='retired'",[],|r|r.get(0))?)
+    }
+
+    pub(crate) fn wake_pending(
+        &mut self,
+        source: Option<SourceId>,
+        include_confirmed: bool,
+        now: i64,
+    ) -> ControlResult<()> {
+        self.usable()?;
+        ensure(valid_timestamp(Some(now)), ControlErrorCode::InvalidInput)?;
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut eligible = Vec::new();
+        {
+            let mut q=tx.prepare("SELECT c.membership_id,c.last_error_code FROM member_control c JOIN memberships m USING(membership_id) WHERE m.lifecycle!='retired' AND (?1 IS NULL OR m.source_id=?1) AND (?2 OR c.dirty=1) AND EXISTS(SELECT 1 FROM operation_targets t WHERE t.membership_id=m.membership_id)")?;
+            let mut rows = q.query(params![source.map(SourceId::get), include_confirmed])?;
+            while let Some(row) = rows.next()? {
+                let code: Option<String> = row.get(1)?;
+                if code
+                    .map(|s| ControlErrorCode::parse(&s))
+                    .transpose()?
+                    .is_none_or(|e| !terminal(e))
+                {
+                    eligible.push(row.get::<_, i64>(0)?);
+                }
+            }
+        }
+        for id in eligible {
+            tx.execute(
+                "UPDATE member_control SET dirty=1,next_attempt_at=?1 WHERE membership_id=?2",
+                params![now, id],
+            )?;
+        }
+        commit(tx, &mut self.poisoned)?;
+        Ok(())
     }
 }
 
@@ -280,7 +371,7 @@ fn creation_ticket(conn: &Connection, id: MembershipId) -> ControlResult<WorkTic
     )
 }
 
-fn terminal(code: ControlErrorCode) -> bool {
+pub(crate) fn terminal(code: ControlErrorCode) -> bool {
     matches!(
         code,
         ControlErrorCode::AuthFailed

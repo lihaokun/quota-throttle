@@ -188,6 +188,25 @@ impl<'a> ManagedChannels<'a> {
 
     /// None 要求完整扫描；Some 返回的 partial 仅覆盖明确列出的 required_ids。
     pub async fn scan_channels(&self, required_ids: Option<&HashSet<i64>>) -> Result<ChannelScan> {
+        self.scan(None, required_ids).await
+    }
+
+    pub async fn scan_group(
+        &self,
+        group: &str,
+        required_ids: Option<&HashSet<i64>>,
+    ) -> Result<ChannelScan> {
+        if !crate::catalog::types::valid_group(group) {
+            return Err(error(ManagementErrorKind::InvalidInput));
+        }
+        self.scan(Some(group), required_ids).await
+    }
+
+    async fn scan(
+        &self,
+        group: Option<&str>,
+        required_ids: Option<&HashSet<i64>>,
+    ) -> Result<ChannelScan> {
         if required_ids
             .is_some_and(|ids| ids.is_empty() || ids.len() > 10000 || ids.iter().any(|id| *id <= 0))
         {
@@ -199,7 +218,10 @@ impl<'a> ManagedChannels<'a> {
             let body = self
                 .request(
                     Method::GET,
-                    &format!("/api/channel/?p={page}&page_size=100&sort_by=id&sort_order=asc"),
+                    &format!(
+                        "/api/channel/?p={page}&page_size=100&sort_by=id&sort_order=asc{}",
+                        group.map(|g| format!("&group={g}")).unwrap_or_default()
+                    ),
                     None,
                     RequestSemantics::Read,
                     RequestClass::Observe,
@@ -237,7 +259,7 @@ impl<'a> ManagedChannels<'a> {
 
     /// true 仅表示写请求得到明确回执；协调器仍必须按本代次逐字段回读。
     pub async fn write_channel_fields(&self, id: i64, patch: ChannelPatch) -> Result<bool> {
-        let document = self.get_channel(id).await?;
+        let document = self.get_channel(id).await.map_err(|e| e.before_write())?;
         if document.observation()?.is_multi_key {
             return Err(error(ManagementErrorKind::InvalidInput));
         }

@@ -205,7 +205,7 @@ impl CatalogStore {
         Ok(store)
     }
 
-    pub(super) fn usable(&self) -> Result<()> {
+    pub(crate) fn usable(&self) -> Result<()> {
         require(!self.poisoned, ErrorKind::CommitUnknown)
     }
 

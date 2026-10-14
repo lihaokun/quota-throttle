@@ -41,12 +41,21 @@ pub enum ManagementErrorKind {
     TransportUnknown,
 }
 
+/// 只描述当前请求的证据，不等于目标完成。ResponseReceived 要求可识别的完整应用回执。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeliveryEvidence {
+    NotSent,
+    ResponseReceived,
+    Uncertain,
+}
+
 /// 不保存底层错误链（URL、header 和服务器正文均可能含秘密）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ManagementError {
     pub kind: ManagementErrorKind,
     pub status: Option<u16>,
     pub retry_after: Option<Duration>,
+    pub delivery: DeliveryEvidence,
 }
 impl fmt::Display for ManagementError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -59,6 +68,13 @@ impl fmt::Display for ManagementError {
 }
 impl std::error::Error for ManagementError {}
 impl ManagementError {
+    pub(super) fn with_delivery(mut self, delivery: DeliveryEvidence) -> Self {
+        self.delivery = delivery;
+        self
+    }
+    pub(super) fn before_write(self) -> Self {
+        self.with_delivery(DeliveryEvidence::NotSent)
+    }
     fn for_request(mut self, semantics: RequestSemantics) -> Self {
         if semantics != RequestSemantics::Read && self.kind == ManagementErrorKind::InvalidResponse
         {
@@ -73,6 +89,7 @@ pub(super) fn error(kind: ManagementErrorKind) -> ManagementError {
         kind,
         status: None,
         retry_after: None,
+        delivery: DeliveryEvidence::NotSent,
     }
 }
 
@@ -145,15 +162,20 @@ impl ManagementResponse {
         self.status
     }
     pub async fn json<T: serde::de::DeserializeOwned>(&self) -> Result<T> {
-        serde_json::from_slice(&self.body).map_err(|_| error(ManagementErrorKind::InvalidResponse))
+        serde_json::from_slice(&self.body).map_err(|_| {
+            error(ManagementErrorKind::InvalidResponse).with_delivery(DeliveryEvidence::Uncertain)
+        })
     }
     pub fn envelope(&self) -> Result<Value> {
-        let body: Value = serde_json::from_slice(&self.body)
-            .map_err(|_| error(ManagementErrorKind::InvalidResponse))?;
+        let body: Value = serde_json::from_slice(&self.body).map_err(|_| {
+            error(ManagementErrorKind::InvalidResponse).with_delivery(DeliveryEvidence::Uncertain)
+        })?;
         match body.get("success").and_then(Value::as_bool) {
             Some(true) => Ok(body),
-            Some(false) => Err(error(ManagementErrorKind::RemoteRejected)),
-            None => Err(error(ManagementErrorKind::InvalidResponse)),
+            Some(false) => Err(error(ManagementErrorKind::RemoteRejected)
+                .with_delivery(DeliveryEvidence::ResponseReceived)),
+            None => Err(error(ManagementErrorKind::InvalidResponse)
+                .with_delivery(DeliveryEvidence::Uncertain)),
         }
     }
 }
@@ -261,6 +283,7 @@ impl ManagementBudget {
                     return Err(ManagementError {
                         kind: ManagementErrorKind::RateLimited,
                         status: Some(429),
+                        delivery: DeliveryEvidence::NotSent,
                         retry_after: Some(if state.unbounded_cooldown {
                             Duration::from_secs(u64::MAX)
                         } else {
@@ -670,24 +693,29 @@ impl ManagementTransport {
         request: &ManagementRequest,
         builder: reqwest::RequestBuilder,
     ) -> Result<ManagementResponse> {
+        let mut response_info = None;
         let future = async {
-            let mut response = builder
-                .send()
-                .await
-                .map_err(|_| error(ManagementErrorKind::TransportUnknown))?;
+            let mut response = builder.send().await.map_err(|e| {
+                error(ManagementErrorKind::TransportUnknown).with_delivery(
+                    if e.is_connect() || e.is_builder() {
+                        DeliveryEvidence::NotSent
+                    } else {
+                        DeliveryEvidence::Uncertain
+                    },
+                )
+            })?;
             let status = response.status();
-            if status == StatusCode::TOO_MANY_REQUESTS {
+            let delay = if status == StatusCode::TOO_MANY_REQUESTS {
                 let delay = retry_after(
                     response.headers().get(header::RETRY_AFTER),
                     SystemTime::now(),
                 );
                 self.budget.cool_down(delay);
-                return Err(ManagementError {
-                    kind: ManagementErrorKind::RateLimited,
-                    status: Some(429),
-                    retry_after: Some(delay),
-                });
-            }
+                Some(delay)
+            } else {
+                None
+            };
+            response_info = Some((status, delay));
             // 401 的鉴权拒绝已明确，不读取不可信错误正文；其余写响应不能假定未执行。
             if status == StatusCode::UNAUTHORIZED {
                 return Ok(ManagementResponse {
@@ -695,40 +723,62 @@ impl ManagementTransport {
                     body: Vec::new(),
                 });
             }
+            if response
+                .content_length()
+                .is_some_and(|n| n > request.response_limit as u64)
+            {
+                return Err(error(ManagementErrorKind::InvalidResponse)
+                    .with_delivery(DeliveryEvidence::Uncertain));
+            }
+            let mut body = Vec::new();
+            while let Some(chunk) = response.chunk().await.map_err(|_| {
+                error(ManagementErrorKind::TransportUnknown)
+                    .with_delivery(DeliveryEvidence::Uncertain)
+            })? {
+                if chunk.len() > request.response_limit - body.len() {
+                    return Err(error(ManagementErrorKind::InvalidResponse)
+                        .with_delivery(DeliveryEvidence::Uncertain));
+                }
+                body.extend_from_slice(&chunk);
+            }
             if !status.is_success() {
+                let application_reply = serde_json::from_slice::<Value>(&body)
+                    .ok()
+                    .is_some_and(|v| v.get("success").and_then(Value::as_bool).is_some());
                 return Err(ManagementError {
-                    kind: if status.is_server_error() && request.semantics != RequestSemantics::Read
+                    kind: if status == StatusCode::TOO_MANY_REQUESTS {
+                        ManagementErrorKind::RateLimited
+                    } else if status.is_server_error()
+                        && request.semantics != RequestSemantics::Read
                     {
                         ManagementErrorKind::TransportUnknown
                     } else {
                         ManagementErrorKind::RemoteRejected
                     },
                     status: Some(status.as_u16()),
-                    retry_after: None,
+                    retry_after: delay,
+                    delivery: if application_reply {
+                        DeliveryEvidence::ResponseReceived
+                    } else {
+                        DeliveryEvidence::Uncertain
+                    },
                 });
-            }
-            if response
-                .content_length()
-                .is_some_and(|n| n > request.response_limit as u64)
-            {
-                return Err(error(ManagementErrorKind::InvalidResponse));
-            }
-            let mut body = Vec::new();
-            while let Some(chunk) = response
-                .chunk()
-                .await
-                .map_err(|_| error(ManagementErrorKind::TransportUnknown))?
-            {
-                if chunk.len() > request.response_limit - body.len() {
-                    return Err(error(ManagementErrorKind::InvalidResponse));
-                }
-                body.extend_from_slice(&chunk);
             }
             Ok(ManagementResponse { status, body })
         };
-        tokio::time::timeout(HTTP_TIMEOUT, future)
+        let result = tokio::time::timeout(HTTP_TIMEOUT, future)
             .await
-            .map_err(|_| error(ManagementErrorKind::TransportUnknown))?
+            .unwrap_or_else(|_| {
+                Err(error(ManagementErrorKind::TransportUnknown)
+                    .with_delivery(DeliveryEvidence::Uncertain))
+            });
+        result.map_err(|mut err| {
+            if let Some((status, delay)) = response_info {
+                err.status = Some(status.as_u16());
+                err.retry_after = delay;
+            }
+            err
+        })
     }
 }
 
@@ -757,5 +807,7 @@ impl Drop for RefreshCancellation<'_> {
     }
 }
 
+#[cfg(test)]
+mod delivery_tests;
 #[cfg(test)]
 pub(crate) mod tests;

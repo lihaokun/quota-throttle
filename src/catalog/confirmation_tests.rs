@@ -1,4 +1,108 @@
 use super::*;
+use crate::catalog::confirmation::ObservedFields;
+
+#[test]
+fn confirmation_record_observed_validates_batch_before_writing() {
+    let (_dir, mut store, id) = fixture(SourceKind::Volcano, true);
+    let w = store.load_work(id, false).unwrap();
+    let before = serde_json::to_value(store.snapshot().unwrap()).unwrap();
+    for (status, priority) in [
+        (Some(1), None),
+        (None, Some(0)),
+        (Some(0), Some(0)),
+        (Some(4), Some(0)),
+        (Some(1), Some(JSON_SAFE + 1)),
+    ] {
+        assert_eq!(
+            store
+                .record_observed(&[ObservedFields {
+                    member: id,
+                    revision: w.revision(),
+                    status,
+                    priority
+                }])
+                .unwrap_err()
+                .code,
+            ControlErrorCode::InvalidInput
+        );
+        assert_eq!(
+            serde_json::to_value(store.snapshot().unwrap()).unwrap(),
+            before
+        );
+    }
+    let row = || ObservedFields {
+        member: id,
+        revision: w.revision(),
+        status: Some(2),
+        priority: Some(0),
+    };
+    assert_eq!(
+        store.record_observed(&[row(), row()]).unwrap_err().code,
+        ControlErrorCode::InvalidInput
+    );
+    assert_eq!(
+        serde_json::to_value(store.snapshot().unwrap()).unwrap(),
+        before
+    );
+}
+
+#[test]
+fn confirmation_record_observed_database_failure_rolls_back_whole_batch() {
+    let (_dir, mut store, ids) = members(2, SourceKind::Volcano);
+    let updates: Vec<_> = ids
+        .iter()
+        .map(|id| ObservedFields {
+            member: *id,
+            revision: store.load_work(*id, false).unwrap().revision(),
+            status: Some(2),
+            priority: Some(99),
+        })
+        .collect();
+    let before = serde_json::to_value(store.snapshot().unwrap()).unwrap();
+    let history = receipts(&store);
+    store.conn.execute_batch(&format!("CREATE TEMP TRIGGER reject_observed BEFORE UPDATE OF observed_status ON memberships WHEN OLD.membership_id={} BEGIN SELECT RAISE(ABORT,'fixture'); END;", ids[1].get())).unwrap();
+    assert_eq!(
+        store.record_observed(&updates).unwrap_err().code,
+        ControlErrorCode::Storage
+    );
+    assert_eq!(
+        serde_json::to_value(store.snapshot().unwrap()).unwrap(),
+        before
+    );
+    assert_eq!(receipts(&store), history);
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(128))]
+    #[test]
+    fn confirmation_pbt_observation_is_atomic_diagnostic_only(n in 2usize..6, stale in 0usize..5, field in 0usize..5, status in 1i64..4, priority in -1000i64..1000) {
+        let (_dir,mut store,ids)=members(n,SourceKind::Volcano);
+        stop_all(&mut store,ids[0],false);
+        let before=serde_json::to_value(store.snapshot().unwrap()).unwrap();
+        let history=receipts(&store);let op_before=store.operation(&op(1)).unwrap();
+        let revisions:Vec<_>=ids.iter().map(|id|store.load_work(*id,false).unwrap().revision()).collect();
+        let mut updates:Vec<_>=ids.iter().zip(&revisions).map(|(id,r)|ObservedFields {member:*id,revision:*r,status:Some(status),priority:Some(priority)}).collect();
+        let changed=&mut updates[stale%n].revision;
+        match field {0=>changed.member+=1,1=>changed.source+=1,2=>changed.group+=1,3=>changed.execution+=1,_=>{}}
+        let result=store.record_observed(&updates);
+        if field<4 {
+            prop_assert_eq!(result.unwrap_err().code,ControlErrorCode::RevisionConflict);
+            prop_assert_eq!(serde_json::to_value(store.snapshot().unwrap()).unwrap(),before);
+        } else {
+            prop_assert!(result.is_ok());
+            for (id,revision) in ids.iter().zip(revisions) {
+                let w=store.load_work(*id,false).unwrap();
+                prop_assert_eq!(w.revision(),revision);
+                prop_assert_eq!((w.member.observed_status,w.member.observed_priority),(Some(status),Some(priority)));
+                prop_assert_eq!(w.member.applied_revision,None);prop_assert!(w.target.dirty);
+            }
+            for row in &mut updates {row.status=None;row.priority=None;}
+            store.record_observed(&updates).unwrap();
+            prop_assert_eq!(serde_json::to_value(store.snapshot().unwrap()).unwrap(),before);
+        }
+        prop_assert_eq!(receipts(&store),history);prop_assert_eq!(store.operation(&op(1)).unwrap(),op_before);
+    }
+}
 
 fn confirm(store: &mut CatalogStore, id: MembershipId, status: i64) -> ControlResult<()> {
     let work = store.load_work(id, false).unwrap();

@@ -52,6 +52,9 @@ impl BackendReadiness {
     pub fn ready_at(self, now: i64) -> bool {
         self.ready && valid_window(self.checked_at, self.expires_at, now)
     }
+    pub(crate) fn expires_at(self) -> i64 {
+        self.expires_at
+    }
 }
 /// 只能由可信策略层产生；没有 Deserialize，不能用面板布尔值代替策略判定。
 #[derive(Clone, Copy)]
@@ -88,7 +91,7 @@ impl RoutingPermit {
             expires_at,
         }
     }
-    fn valid_for(self, snapshot: &WorkSnapshot, now: i64) -> bool {
+    pub(crate) fn valid_for(self, snapshot: &WorkSnapshot, now: i64) -> bool {
         self.allowed
             && valid_window(self.issued_at, self.expires_at, now)
             && self.source_id == snapshot.source.source_id
@@ -97,6 +100,9 @@ impl RoutingPermit {
             && self.group_revision == snapshot.group.revision
             && self.priority == snapshot.target.desired_priority
             && (-JSON_SAFE..=JSON_SAFE).contains(&self.standby_priority)
+    }
+    pub(crate) fn expires_at(self) -> i64 {
+        self.expires_at
     }
 }
 
@@ -364,7 +370,7 @@ pub(crate) fn fresh(observation: &ChannelObservation, now: i64) -> bool {
     now.checked_sub(seconds)
         .is_some_and(|age| (0..=OBSERVATION_MAX_AGE_SECS).contains(&age))
 }
-fn identity_matches(
+pub(crate) fn identity_matches(
     identity: &ChannelIdentity,
     id: ChannelId,
     observation: &ChannelObservation,

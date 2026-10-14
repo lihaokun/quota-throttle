@@ -381,7 +381,7 @@ async fn native_managed_channel_contract_on_fresh_database() {
     config.base_url = format!("http://127.0.0.1:{port}");
     config.root_username = "auditroot".into();
     config.root_password = format!("fake-password-{}", process.0.id());
-    let client = crate::newapi::NewApiClient::new(&config).unwrap();
+    let client = Arc::new(crate::newapi::NewApiClient::new(&config).unwrap());
     client.authenticate().await.unwrap();
     let api = client.managed_channels();
     let key = SecretString::new("fake-native-upstream-key".into()).unwrap();
@@ -502,14 +502,15 @@ async fn native_managed_channel_contract_on_fresh_database() {
         all.channels.last().unwrap().observation().unwrap().name,
         "fixture-101"
     );
-    native_persisted_confirmation(&client, &directory.path().join("catalog")).await;
+    let backend = native_persisted_confirmation(&client, &directory.path().join("catalog")).await;
+    native_worker_reconcile(client.clone(), &directory.path().join("worker"), backend).await;
     drop(process); // 只终止本测试持有的 Child；临时库随后自动清理。
 }
 
 async fn native_persisted_confirmation(
     client: &crate::newapi::NewApiClient,
     directory: &std::path::Path,
-) {
+) -> crate::reconcile::planner::BackendReadiness {
     use crate::catalog::control::{ControlCommand, OperationId, OperationPhase, StatusDirective};
     use crate::catalog::{
         CatalogStore, GroupDraft, SourceDraft, SourceSettings, UpstreamProfile, VolcanoPolicy,
@@ -714,4 +715,106 @@ async fn native_persisted_confirmation(
             .status,
         2
     );
+    backend
+}
+
+async fn native_worker_reconcile(
+    client: Arc<crate::newapi::NewApiClient>,
+    directory: &std::path::Path,
+    backend: crate::reconcile::planner::BackendReadiness,
+) {
+    use crate::catalog::control::{ControlCommand, OperationId, OperationPhase};
+    use crate::catalog::{
+        CatalogStore, GroupDraft, SourceDraft, SourceSettings, UpstreamProfile, VolcanoPolicy,
+    };
+    use crate::reconcile::worker::ReconcileWorker;
+    let mut store = CatalogStore::open(&directory.join("catalog.sqlite3")).unwrap();
+    let source = store
+        .create_source(SourceDraft {
+            name: "native-worker-source".into(),
+            note: String::new(),
+            credential: SecretString::new("fake-native-worker-key".into()).unwrap(),
+            settings: SourceSettings::Volcano {
+                upstream: UpstreamProfile {
+                    channel_type: 8,
+                    base_url: "http://127.0.0.1:9/chat/completions".into(),
+                    models: vec!["fake-model-worker".into()],
+                    model_discovery: None,
+                },
+                policy: VolcanoPolicy::default(),
+            },
+        })
+        .unwrap();
+    let group = store
+        .create_group(GroupDraft {
+            name: "native-worker-group".into(),
+            newapi_group: "worker-native".into(),
+            kind: SourceKind::Volcano,
+        })
+        .unwrap();
+    let member = store
+        .plan_membership(source.source_id, group.group_id, 10)
+        .unwrap();
+    let worker = ReconcileWorker::new(store, client.clone());
+    worker.publish_backend(backend).unwrap();
+    let pause = OperationId::new("native-worker-pause-0001".into()).unwrap();
+    worker
+        .submit(
+            pause.clone(),
+            ControlCommand::SetSourcePaused {
+                source_id: source.source_id,
+                expected_revision: source.config_revision,
+                paused: true,
+            },
+        )
+        .unwrap();
+    // 未注册组、无路由许可：只验证禁用创建/完整扫描绑定/回读/归档，不启用或发推理。
+    for _ in 0..8 {
+        worker.reconcile_once().await.unwrap();
+        if worker.operation(&pause).unwrap().phase == OperationPhase::Succeeded {
+            break;
+        }
+    }
+    assert_eq!(
+        worker.operation(&pause).unwrap().phase,
+        OperationPhase::Succeeded
+    );
+    let work = worker.work(member.membership_id).unwrap();
+    let channel = work.member.channel_id.unwrap();
+    assert_eq!(work.member.observed_status, Some(2));
+    let retire = OperationId::new("native-worker-retire-0001".into()).unwrap();
+    worker
+        .submit(
+            retire.clone(),
+            ControlCommand::RetireSource {
+                source_id: source.source_id,
+                expected_revision: work.source.config_revision,
+            },
+        )
+        .unwrap();
+    for _ in 0..8 {
+        worker.reconcile_once().await.unwrap();
+        if worker.operation(&retire).unwrap().phase == OperationPhase::Succeeded {
+            break;
+        }
+    }
+    assert_eq!(
+        worker.operation(&retire).unwrap().phase,
+        OperationPhase::Succeeded
+    );
+    assert!(worker
+        .work(member.membership_id)
+        .unwrap()
+        .source
+        .retired_at
+        .is_some());
+    let actual = client
+        .managed_channels()
+        .get_channel(channel.get())
+        .await
+        .unwrap()
+        .observation()
+        .unwrap();
+    assert_eq!(actual.status, 2);
+    assert_eq!(actual.group, "worker-native");
 }

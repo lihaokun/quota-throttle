@@ -286,7 +286,7 @@ member_execution 一行/成员，保存单调 execution revision、显式启用�
 
 启用授权只在显式 EnsureMember(enabled) 或恢复来源时递增并清消费位，普通 priority/model 更新保留。确定 Enable 回执或已满足启用目标的回读消费该授权；迟到回执只消费相同授权，不覆盖后来新显式授权。GLM 普通新意图继承已消费授权时按 preserve；旧授权已消费但本次显式恢复尚未完全确认且原生又禁用时，不重复 Enable。
 
-传输错误附带交付证据，区别 NotSent、ResponseReceived、Uncertain：参数/队列/最终门禁拒绝、确认的 401、连接建立失败为 NotSent；完整 HTTP 响应为 ResponseReceived，不等于动作成功；断连、超时、正文未收完/超限为 Uncertain。写的不可解析回执仍用 transport_unknown 错误码，但完整响应可作为请求已经终止的证据，随后仍须回读验证效果。该前提限于固定同步管理接口：UpdateChannel、status 和 batch handler 在写入/缓存更新后才返回 JSON，见[原生处理器](https://github.com/QuantumNous/new-api/blob/6ce7305cd36f16506fb6a2c3c524a5a318539ba7/controller/channel.go#L996)。已绑定的 Uncertain 写不靠匹配 GET 清除；可以补偿禁用但保持未收敛，不能发相反启用或确认完成。确切终止响应若迟到，允许只结算旧尝试的终止性，而不更新新代次观测或成功收据。
+传输错误附带交付证据，区别 NotSent、ResponseReceived、Uncertain：参数/队列/最终门禁拒绝、确认的 401、连接建立失败为 NotSent；完整且可识别的应用回执为 ResponseReceived，不等于动作成功；断连、超时、正文未收完/超限及不可识别的响应为 Uncertain。固定同步管理接口 UpdateChannel、status 和 batch handler 在写入/缓存更新后才返回 JSON，见[原生处理器](https://github.com/QuantumNous/new-api/blob/6ce7305cd36f16506fb6a2c3c524a5a318539ba7/controller/channel.go#L996)。仅收完代理错误页不能证明该处理器已结束；非法 JSON/缺少布尔 success 的写回执继续 transport_unknown/Uncertain，不能无条件当作终止证据。已绑定的 Uncertain 写不靠匹配 GET 清除；可以补偿禁用但保持未收敛，不能发相反启用或确认完成。确切终止响应若迟到，允许只结算旧尝试的终止性，而不更新新代次观测或成功收据。
 
 固定版本的[管理审计](https://github.com/QuantumNous/new-api/blob/6ce7305cd36f16506fb6a2c3c524a5a318539ba7/model/log.go#L229)没有请求 ID，且[请求 ID 中间件](https://github.com/QuantumNous/new-api/blob/6ce7305cd36f16506fb6a2c3c524a5a318539ba7/middleware/request-id.go)由服务端生成 ID。因此不按时间/名字相近的审计记录认领某次未知写。需要服务端已重启等额外终止证据的场景保持 unknown；此轮不自动重启服务或增设“点击重试就认为已终止”的入口。
 
@@ -342,3 +342,52 @@ bind_created 复用 member_control.create_state=resolved 和唯一 channel_id �
 实现补充：一般未决写和操作阶段使用同一个 PENDING_EFFECT_SQL；terminal_error 逐目标读取错误并复用 Rust terminal 分类，不重复维护 SQL 错误码集合。recover_executions 将 prepared 转未知后复用操作投影，因此已绑定的创建不会在重开后伪装成尚未物化。上述 helper 只遍历当前成员或操作有限目标，不复制材料，不产生网络副作用。
 
 隔离原生测试额外校验固定构建 SHA-256，因该 rc.20/6ce7305 构建的 `/api/status` 实报 v0.0.0，测试用已核实构建身份提供 canonical version。生产 BackendReadiness 的严格版本检查未放宽；真实版本/构建身份及实例核验 producer 仍待实现。该已知差异必须在生产预检细化中显式处理，不能按“相同 URL”或未核实版本默认 ready。
+
+### HTTP 交付证据
+
+ManagementError 增加固定 DeliveryEvidence，不保存原始错误链。execute 的参数校验/最终门禁及 reqwest 明确 connect/builder 失败为 NotSent；发送后超时/断连为 Uncertain。除已核实认证拒绝 401 外，错误响应也完整有界读取，429 在收到头时立即共享冷却，随后正文失败仍保留 HTTP 状态和 Retry-After。只有完整 JSON object 且 success 为 bool 才可识别为应用回执；非 2xx 即使包体 success=true 也拒绝，不能把代理的纯文本 502/504 或 malformed 200 当作写已经终结。
+
+ManagementResponse 的 parse/envelope 错误保持同一证据口径；写 InvalidResponse 仍统一为 transport_unknown。ManagedChannels::write_channel_fields 的前置 GET、身份解析及局部 patch 若失败，一律将本次 PUT 证据标 NotSent；GET 本身可能收不到响应，不代表 PUT 已经发送。没有字段差异时返回 false，执行器可按未写而重新观察，不生成虚假写成功收据。
+
+正确性：发送准入之前不可能产生业务写；connect/builder 分类来自锁定 reqwest 的明确错误类型，其他网络错误保守未知。完整应用回执只证明受支持同步接口的应用响应，不证明目标已满足；所有成功仍经回读。字段写的 GET 前置路径明确置 NotSent，避免把只读故障变成永远无法收敛的未知写。队列/login/401 重放共用既有预算，不增加无界重试。测试覆盖真实 HTTP 前置 GET/PUT 分支、401/429/5xx/非法包体、断连/慢正文、连接拒绝和随机成功标记，且直接检查秘密不进入诊断。
+
+### 执行器组装
+
+ReconcileWorker 独占 CatalogStore 和观测缓存，借用同一个 Arc<NewApiClient>，不新建第二份管理预算。Core 的同步 mutex 只覆盖目录事务和短快照装配；单独异步 lane 串行一轮控制执行，不持 Core 锁等待网络。控制入口用 64 槽 try-acquire，满时在意图受理前返回 queue_full。组/来源策略与 BackendReadiness 仍是可信预检/策略生产者的进程内输入，不能从前端 JSON 接收。此执行器不生成供应商策略或组注册证明，不在现有 up/run 启动。
+
+每次会改变目录/策略/预检/观测的 Core mutation，先在同一锁下核对可用性和可选 expected epoch，再将原子 publication epoch 改为奇数（拒绝旧 gate），提交/失败回滚后发布新的偶数；未知提交保持奇数。计数耗尽停写，不允许回绕形成 ABA。HTTP guard 只读 epoch、停止信号与时钟，验证 backend/permit/必要观测的截止时间，绝不读取数据库或锁 Core。HTTP 返回后再次核对原目标和 publication；旧写可结算原日志，旧 GET 不发布为新观测。
+
+| 入口/步骤 | 分支与后置 |
+| --- | --- |
+| new / work / operation / snapshot | new 接管 Store 所有权，初始 backend 不就绪；只读接口不改意图。构造不发 HTTP |
+| submit / retry / 来源组成员创建 | 命令槽→Core mutation→既有 Store 事务，通知后台；retry 只按原 ID 重排，认证显式重试调用独立登录恢复，不 bootstrap/setup |
+| publish_backend / publish_route | 仅可信组件调用；route 核当前来源/组 generation，保存源级停用 gate 与该成员 permit；所有组共享同源 gate。新输入使旧发送 fence 失效；GLM 不接受供应商额度停用 gate |
+| assemble | 一致加载当前成员及完整同组可能路由集，接上 revision 匹配的缓存观测和可信输入，调用纯计划；不复制全库凭据 |
+| observe_group / lookup_create | 共享完整/覆盖扫描；观察按请求开始时的 revision 盖章，epoch 改变则丢弃；Lookup 只按持久创建票绑定。大扫描后匹配对象过期时重新 GET 校验，不把时间戳刷新成“新观察” |
+| execute_write | 重新准备并提交票据→捕获新 publication→受预算/fence 的 HTTP→按证据结算。仅 NotSent 的暂时错误允许最多三次、1/2 秒退避；已可能执行的写不盲重发；字段 no-op 记未写并继续回读 |
+| reconcile_once | 最多 64 个到期成员，每成员一项计划动作。Observe/写/绑定后保留 dirty，由后续动作回读；Confirm 才完成。每轮 lane 唯一；调用者断开不取消已受理轮次，进程崩溃仍由持久 prepared 恢复 |
+| run | 外部显式调用的后台循环，按最早到期时间或通知唤醒，最短 1 秒防忙循环；停止信号拒绝后续准入并等待当前已发请求结算。尚未接 CLI/服务启动 |
+
+普通读取同样最多三次重试，退避后复核 fence；长 Retry-After 交由持久下一时刻，不截短共享冷却。来源/组新意图使旧轮次停止处理旧 generation，不能将旧错误延期写到新操作。依赖其他组成员的降低/禁用时，先刷新陈旧 peer 观察；确有同轮可执行阻挡项则下一轮再检查，其他等待按持久延期处理。所有遍历由目录/64 个到期成员/三次重试限制，后台不忙轮询。
+
+正确性：mutation 前奇数 fence 消除 DB 已改而旧票仍获准的窗口，短锁与独立 lane 避免持锁网络等待及同组写乱序；Store 再次计划/回执代次检查负责最终本地约束，异步结果不能直接写 applied。Core 缓存以实际请求 revision 发布，epoch 拒收陈旧 GET；创建原始 key 仅在单次内部 HTTP 组包持有。初始化 readiness=false、permit 缺失拒绝启用/提升，后续生产者与部署绑定未验证时不会自动接管流量。
+
+### 执行器审核修正契约
+
+Core.input_epoch 记录最近一次成功外部发布所对应的偶数 publication 值，不另建计数器。submit、有效 retry、目录创建及可信预检/策略输入成功后更新它；内部观察、准备、结算和延期只推进 publication。确定失败回滚不推进 input_epoch，未知提交使 Store 不可用并保持奇数 fence。这样旧 HTTP 错误不能覆盖后来成功发布的立即执行状态，内部自己的回读/结算又不会让合法延期失效。defer 在同一 Core 锁内核对 input_epoch 和当前目标三重 revision，再使用当前 execution revision 执行持久延期。发送票的 gate epoch 固定为准备前 epoch+2，不能解锁后再读取可能属于新命令的 epoch。
+
+观测缓存为私有 Found(StampedObservation) 或 Unavailable{revision, code, checked_at}。不可用证据只在四重 revision 匹配且年龄 0–30 秒内有效；完整组扫描缺失 ID、身份漂移或过期时必须移除旧 Found，不能继续确认旧正结果。正常轮询复用新鲜负结果以免热循环。显式 retry 成功重排非成功历史操作后清空正/负缓存，强制重新观察远端修复；不清未知写、启用消费或历史收据。清空全缓存是有界的简单恢复动作，只发生于人工重试；成功历史重试不清缓存、不重登。
+
+| helper | 前置、步骤及后置论证 |
+| --- | --- |
+| record_observed | 调用方先核对身份/时效；输入不超过目录上限、ID 唯一，status/priority 同时有值或同时为空且值域合法。事务内逐项比较 member/source/group/execution revision，只写 observed_status/priority 诊断与排序字段；任何项失败整笔回滚。绝不写 applied、意图或确认收据，不能由观察暗中完成操作 |
+| due_members_with_stops | 接收合法时刻及有界 SourceId 停用集；SQL 在 LIMIT 64 之前排序人工停止/退役/共享来源策略停止，再按已观测的降低需求排序。只读 ID，不取 key；避免前 64 个未就绪成员饿死后面的停用任务 |
+| wake_pending / next_attempt_at | wake 事务只重排纳管、未退休、非终端错误目标，按来源和 include_confirmed 决定范围，不清错误原因；发布内存输入在 wake 成功后。next 只读最早 dirty 到期时间，后台至少等待 1 秒 |
+| can_route / peers_need_observation | 自身缺许可或未就绪先延期，不把另一个同样未就绪成员当成必须立即执行的屏障；只有缺少新鲜正/负证据的绑定 peer 才触发扫描。读取缓存需核对 publication，拒收混合快照 |
+| actionable_blocker | 核对 publication 后复用当前 Plan 的组快照和 Core 缓存，单次线性遍历到期 dirty peer，不逐 peer 重载组或 SQLite。只接受纯计划器产生的 Disable 或 priority 降低；诊断调用传空屏障集合，让 Enable/提升必然拒绝，不能把它用作执行许可。真正执行仍重新装配全组并经 Store 准备验证 |
+| refresh_creation_observations | 只对完整扫描中稳定名匹配且已过期的对象重新 GET；复用预算和 epoch guard，成功使用真实响应时间而非刷新旧戳。失败经 defer 持久延期（包含 Retry-After），若延期存储失败优先传播 Storage；不立即重扫、不认领身份、不清 unknown |
+| catalog_change / accept_background_round | 目录入口保留 CatalogError（包括 DuplicateSource 原 ID）；命令槽满报目录 Busy，其余控制入口报 QueueFull。后台遇 lane QueueFull 只等待重试，不退出；其他致命错误保留 |
+
+读取 5xx 属于暂时故障，最多三次尝试后延期；完整应用拒绝不等于所有 HTTP 状态都终端失败。HTTP 交付判断假设连接到已核实、不会伪造 NewAPI 应用回执的受信管理端；布尔 success 结构不是密码学身份认证，代理任意伪造同形 JSON 不在此故障模型。不可识别的代理回执始终 Unknown。
+
+验证补充：立即修复远端缺失 ID 后 retry 不等 TTL 即重新 GET；旧失败与新发布交错；65 成员窗口的停止优先；互相缺许可的持久延期；缺失 ID 清除正缓存且不热轮询；后台 lane 忙不退出；目录错误保真。record_observed 的代次冲突、批次回滚、零 applied/收据副作用单独验证。这里只修复执行器局部契约，真实预检 producer、R8/R10 整体门禁和部署接线仍不视为完成。

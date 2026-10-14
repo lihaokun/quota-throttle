@@ -1,6 +1,6 @@
 # 渠道协调器审核处置
 
-日期：2026-10-15。此记录覆盖前两批、第三批计划器、持久日志与绑定/回读；SGM-2 未达到整体退出条件。
+日期：2026-10-15。此记录覆盖前两批、第三批计划器、持久日志、绑定/回读与 HTTP 执行器；SGM-2 未达到整体退出条件。
 
 | 审核项 | 决策和状态 |
 | --- | --- |
@@ -47,3 +47,31 @@
 - W2 测试边界：补实际代次/写/重试性质、消费授权 tuple、future/占用 ID/绑定回滚和 GLM 消费写失败回滚。更广的多成员 partial→再写→延期/重开网络组合继续作为 worker 阶段 R3–R7 门禁，不用本步各局部测试替代完整组合证明。
 - 原生构建版本：固定测试二进制的内嵌 module/vcs 确认为 rc.20/6ce7305、modified=false，但 `/api/status` 返回 v0.0.0。测试在启动前校验冻结 SHA-256，再使用测试已核实的 canonical version；生产预检规则未放宽，此差异交由真实 producer 显式处理。
 - 当前没有自动 worker 或生产接线。代码、测试与独审见[绑定/回读审核](confirmation-audit.md)，正常服务未被重启或修改。
+
+## HTTP 交付与执行器处置
+
+- W1/W2 等待饥饿与停止优先：自身缺许可时持久延期，只有可执行的降低/禁用才作为当前阻挡；共享源停用在 LIMIT 64 前排序。65 成员窗口回归通过。
+- W3 旧错误覆盖新发布：成功外部发布记录 input_epoch，内部结算/观察不改该值；延期在同锁内校验，旧错误不能重新延迟新唤醒任务。实际排队 HTTP 的最终 guard 只读原子与时间。
+- W4/W7 正负缓存：新完整扫描缺失/漂移时清除旧正结果；新鲜负结果避免热轮询。人工 retry 非成功操作后统一清缓存，避免修复后立即重试仍失败；不引入逐目标缓存索引，不改变 unknown/授权/历史收据。
+- W5/W6 读取与后台恢复：GET 5xx 暂时失败，最多三次后延期；lane 占用仅等待，不退出后台。过期创建对象刷新 GET 失败同样持久延期，Storage 错误不吞。
+- W8 重复组装：阻挡诊断复用已装配组与缓存，线性遍历且不重新查询 SQLite；只识别降低/禁用，实际执行仍重新校验完整组屏障。没有引入通用任务框架或新计数器。
+- 新增 record_observed 只更新观测诊断/排序字段；四重 revision、批次回滚、零 applied/收据副作用经固定回归与 PBT 验证。目录入口保留 DuplicateSource 的原 ID，不扁平化为 Storage。
+- 交付证据要求受信管理端的可识别完整应用回执，代理错误页仍 Unknown；前置 GET 的错误不能冒充 PUT 已发。管理错误不计入供应商耗尽状态。
+- 两类夹具错误均按真实前提修正：私有临时目录权限设为 0700；刷新创建对象测试将假服务名称设置为持久 create_name，保留原断言。未放宽业务校验或删失败测试，独审复核通过。
+
+最终主验证：`cargo test --locked --offline --quiet` 为 240 passed / 1 ignored（54.33 秒）；ignored 原生测试另行运行 1/1 通过（39.22 秒），使用已校验构建、全新临时数据库和非生产随机端口。`bash scripts/contract_audit/sgm2_worker.sh`、release 构建通过；clippy 只有 6 条既有警告，无新警告。新增 31 项中 3 项 PBT 各 128 cases。独立路径 B 的结论见 [worker-audit.md](worker-audit.md)，不以主测试代替独审。
+
+定向变异在独立 `/tmp` 副本运行，每次清理该副本的本包构建产物、单独编译和运行对应回归，确认是测试断言失败而非编译失败；每次恢复源码，未修改开发 worktree。8/8 被捕获：
+
+| 删除或错误替换的保护 | 捕获用例 |
+| --- | --- |
+| 最终发送 publication 校验 | worker_pause_during_budget_wait_prevents_stale_enable |
+| 延期的 input_epoch 校验 | worker_old_read_failure_does_not_override_new_ready_publication |
+| retry 缓存失效 | worker_explicit_retry_observes_repaired_id_without_waiting_for_cache_ttl |
+| LIMIT 前共享来源停止排序 | worker_supplier_stop_is_prioritized_before_the_64_member_window |
+| GET 5xx 暂时错误分类 | worker_read_5xx_retries_then_remains_recoverable |
+| 前置 GET 失败覆盖为 NotSent | delivery_field_get_failure_never_marks_put_as_dispatched |
+| record_observed 四重 revision 比较 | confirmation_pbt_observation_is_atomic_diagnostic_only |
+| 代理响应与完整应用回执区分 | delivery_complete_proxy_errors_malformed_and_oversize_are_uncertain |
+
+五维度结论：契约与实现同步；遵循现有私有 Store/原生管理 API 边界；正确性回归与独审发现已关闭；无逐 peer 整组重载、无网络持目录锁；共享错误分类、源 gate 和客户端预算，没有双写者。真实预检 producer、完整 R8/R10 及跨模块组合验收仍是退出门禁，本次不将 SGM-2 标为完成，不接线或部署现行服务。

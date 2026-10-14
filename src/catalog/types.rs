@@ -321,7 +321,7 @@ pub enum ImportOutcome {
 pub(super) fn valid_name(name: &str) -> bool {
     !name.is_empty() && name.trim() == name && name.chars().count() <= 128 && !name.contains('\0')
 }
-pub(super) fn valid_group(group: &str) -> bool {
+pub(crate) fn valid_group(group: &str) -> bool {
     !group.is_empty()
         && group.len() <= 64
         && group != "auto"

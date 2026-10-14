@@ -150,6 +150,9 @@ pub struct NewApiClient {
 }
 
 impl NewApiClient {
+    pub async fn retry_management_authentication(&self) -> transport::Result<()> {
+        self.transport.retry_authentication().await
+    }
     pub fn new(cfg: &NewApiConfig) -> Result<Self> {
         Self::with_budget(cfg, ManagementBudget::new())
     }
