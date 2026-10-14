@@ -136,4 +136,6 @@ CatalogSnapshot 的 JSON 版本保持 1；数据库 schema 升到 2，两个常�
 
 2026-10-15 设计检查：schema metaschema 与设计样例通过；8 个非法样例（未知阶段、过短操作 ID、非法实体 ID、动作/目标类型冲突、成功仍带错误、失败不带错误、零 revision、额外 credential 字段）均被拒绝；本地 Markdown 链接检查通过。未修改业务源码或生产服务。
 
+补充实证：[原生恢复与暂停竞争](../../research/newapi-pause-recovery-race.md)的三个隔离场景通过，验证 R12 的前提确有必要。它验证的是固定原生版本的行为，不是尚未实现的 BackendReadiness/协调器已经通过 R12。
+
 后续路径 A：单元/边界/PBT、实际 JSON Schema 校验、流程/枚举/副作用检查、隔离原生 API 实测及定向变异。路径 B：按 workflow §6.5 给独立 subagent 契约与 diff，不给实现位置列，处理全部阻断项再更新 audit-report/decisions。最终按 §5.2 做五维度复核。

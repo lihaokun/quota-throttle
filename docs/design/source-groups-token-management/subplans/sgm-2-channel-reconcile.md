@@ -43,6 +43,8 @@
 
 AutomaticEnableChannelEnabled 已在固定版本的 [option 初始化与更新](https://github.com/QuantumNous/new-api/blob/6ce7305cd36f16506fb6a2c3c524a5a318539ba7/model/option.go) 中核实为有效键；只接受明确的 false 作为该项就绪证据，缺失、空值或解析失败都是未知，不使用默认 false。
 
+2026-10-15 的[三个隔离对照场景](../../../research/newapi-pause-recovery-race.md)进一步验证：自动启用 true 时，已回读的手动暂停 2 被测试结果改回 1；改渠道 auto_ban=0 仍复现；全局自动启用 false 时保持 2。生产配置未读取、未修改。
+
 ## 3 错误模型及分布式契约
 
 ### 3.1 错误与回执
