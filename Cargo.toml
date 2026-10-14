@@ -17,3 +17,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1"
 sha2 = "0.10"
 toml_edit = "0.25.12"
+rusqlite = { version = "=0.40.2", default-features = false, features = ["bundled", "backup"] }
+
+[dev-dependencies]
+proptest = "=1.11.0"
+tempfile = "=3.27.0"

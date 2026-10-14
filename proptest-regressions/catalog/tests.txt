@@ -1,0 +1,11 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 44015dd1d8236bd29d4317dc19f738a7b70dfa738de920858b5e742d693ce378 # shrinks to table = "source_secrets", fail_at = 1
+cc 284c917c6d05dbb09bdacbf3b63cf3d6039187dbd0c3e02d9d6a374c6e031344 # shrinks to n = 1, reverse = false, explicit = false, note = ""
+cc 3202360e89927a6f12182a7032c925a102da682fe3f553f2d676566784c98808 # shrinks to channel = 1, offset = 1
+cc 4bd9deaeee19347f4326886f00b7934d8e6351b94d8db73ea87d6cdd7ee5753d # shrinks to ops = [(0, false, 0, false)]
+cc 15e7643d1e16b3011d738a1fe732b082d2412fd92e41ec029d9b632f2445599f # shrinks to suffix = "A0aaAa0A"

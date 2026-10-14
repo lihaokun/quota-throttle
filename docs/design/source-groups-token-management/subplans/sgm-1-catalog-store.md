@@ -1,6 +1,6 @@
 # 来源目录与状态库细化设计
 
-子计划：sgm-1-catalog-store。日期：2026-10-14。状态：细化待确认，业务实现尚未开始。
+子计划：sgm-1-catalog-store。日期：2026-10-14。状态：实现及双路径验收完成，见[审核报告](../../../audits/sgm-1-catalog-store/audit-report.md)。尚未接入运行服务。
 
 ## 1 范围
 
@@ -8,9 +8,9 @@
 
 本步不连接 NewAPI 或真实供应商，不修改渠道，不接管调度，不添加三页面，不实现火山运行状态机。来源启停/删除、成员绑定渠道/退役、revision 更新和操作队列在 sgm-2 统一实现，不能先暴露不具备外部回读的管理入口。迁移 CLI 和生产切换在 sgm-7；本步只实现其纯转换与事务落库函数。
 
-拟新增 src/catalog/{mod.rs,types.rs,store.rs,legacy.rs,schema_v1.sql} 和模块测试；main.rs 仅注册模块。config.rs 仅为 HeaderKV、ModelDiscoveryConfig、ModelDiscoveryAuth 增加必要的 Serialize derive，不改变解析或默认值。Cargo 文件只增加下述依赖。orchestrator.rs、quota.rs、newapi.rs、boot.rs、status.rs 和现有测试期望均不改。
+新增 src/catalog/{mod.rs,types.rs,store.rs,legacy.rs,schema_v1.sql} 和模块测试；main.rs 仅注册模块。config.rs 仅为 HeaderKV、ModelDiscoveryConfig、ModelDiscoveryAuth 增加必要的 Serialize derive，不改变解析或默认值。Cargo 文件只增加下述依赖。orchestrator.rs、quota.rs、newapi.rs、boot.rs、status.rs 和现有测试期望均不改。
 
-验收清单：[expectations](../../../audits/sgm-1-catalog-store/expectations.md)。JSON 输出契约：[catalog snapshot schema](../schemas/catalog-snapshot.schema.json)。SQL schema 在编码阶段按本设计创建，不在本轮伪装为已实现。
+验收清单：[expectations](../../../audits/sgm-1-catalog-store/expectations.md)。JSON 输出契约：[catalog snapshot schema](../schemas/catalog-snapshot.schema.json)。SQL schema 已按本设计实现，后续变更须递增数据库版本。
 
 ## 2 与已有代码的复用点
 
@@ -48,7 +48,7 @@
 | commit_unknown | 提交时报 IO 错误，无法证明是否提交 | 将句柄标为不可继续使用；重开后按唯一键/导入标记对账，不盲目再插入 |
 | backup_failed / backup_exists | 备份失败或目标已存在 | 源库不变，目标不视为成功备份 |
 
-错误格式化只包含 kind、固定阶段名、可安全公开的实体 ID；不含凭据、指纹、header 值、URL 查询参数、配置内容或私有设置 JSON。未知枚举/字段拒绝解码，不回退成 glm/default/零值。
+错误格式化只包含 kind、固定 catalog 错误域、可安全公开的实体 ID，以及 incomplete_backup 布尔标志；不含凭据、指纹、header 值、URL 查询参数、配置内容或私有设置 JSON。incomplete_backup=true 表示失败目标可能仍残留或无法确认身份，调用方必须提示检查，不能当作成功备份。未知枚举/字段拒绝解码，不回退成 glm/default/零值。
 
 ## 4 数据结构定义
 
@@ -184,7 +184,7 @@ Store 持有唯一 SQLite Connection 和私有锁文件句柄，写方法要求 
 1. P6 校验条目总数，建立按 ID 和名字的多值索引；重复 ID 即错，名字重复保留为歧义。不取任意一个，不静默跳过解析失败条目。
 2. P7 按 cfg.keys 原顺序遍历：显式 channel_id 优先且必须存在；无 ID 时要求恰好一个同名渠道。两个 key 指向同一 channel_id 或使用同一凭据，拒绝整批，不能擅自合并不同 selector。已有配置的“未解析 key 跳过”不适用于迁移，因为迁移必须全量可回退。
 3. P8 所选渠道必须同属一个明确非 auto 的单组；有模板时验证组/type/base_url 与模板相符。模型使用渠道实际 models，不用模板 fallback 重写。模板提供已加载的 model_discovery；无模板则保持 None，不在此猜测发现端点。
-4. P9 每项创建 GLM SourceDraft：quota_url、global_headers 和 key_headers 分别保留，调用 C4 校验；name/note 按 §4 规范，输出顺序不变。记录实际 channel_id、priority，不把它们解释成已核对的 active/available。
+4. P9 先检查原始 models_csv 的逗号分隔条目数 ≤1000、两层 header 各 ≤64，再规范化/复制。每项创建 GLM SourceDraft：quota_url、global_headers 和 key_headers 分别保留，调用 C4 校验；name/note 按 §4 规范，输出顺序不变。记录实际 channel_id、priority，不把它们解释成已核对的 active/available。
 5. P10 对规范导入结构固定序列化并计算摘要，构造字段私有的 Plan。任一错误不返回半份计划。for 循环最多 1000 次，每次消费一条，必终止。
 
 正确性论证：P6/P7 的唯一解析使“配置 key → channel”是单射；P8 固定组确保旧路由归属不被迁移重写；P9 原样保留两层 header 和旧顺序，不改变 GLM 参数。C4 全量通过才进入 P10，Plan 可以作为下一函数的合法输入；函数只读内存，零文件/网络副作用。
@@ -220,7 +220,7 @@ read_source_material 仅为可信后端的后续 probe/reconciler 使用；按�
 
 前置：Store 无活动事务，目标为显式私有目录中的新文件，不与源路径相同。后置：成功目标可独立打开且具有相同 schema、目录、凭据和导入标记；源库不变；失败不发布成功文件。
 
-步骤：校验父目录/目标权限和不存在 → 在目标目录 create_new 保留目标名，0600 → 建立独立目标连接 → C6 Backup::new → 最多 10000 次 step(128)，Busy/Locked 累计最多 100 次，每次等待 10ms，且总尝试期限 10 秒 → Done 后退出 Backup、关闭目标连接、sync_all → 返回成功。任何错误释放句柄，删除的仅是本次 create_new 创建且身份未变化的失败目标；删除失败返回固定错误并标明不完整文件，不能删用户已有目标。
+步骤：校验父目录/目标权限、目标及其 WAL/SHM/journal 均不存在 → 在目标目录 create_new 保留目标名，0600 → 建立独立目标连接 → C6 Backup::new → 最多 10000 次 step(128)，Busy/Locked 累计最多 100 次，每次等待 10ms，且总尝试期限 10 秒 → Done 后退出 Backup、关闭目标连接、sync_all → 返回成功。任何错误释放句柄，删除的仅是本次 create_new 创建且身份未变化的失败目标；删除失败或无法核对身份返回 BackupFailed 且 incomplete_backup=true，不能删用户已有目标。
 
 正确性论证：备份读取 SQLite 已提交视图而不是裸拷贝主文件，包含 WAL 中已提交数据；固定步数与重试上限保证循环结束。create_new 排除覆盖已有备份，错误清理目标由本次创建身份限定，源库只有读操作。10 秒是重试循环期限，不保证底层单次文件系统调用可被硬中断。
 
@@ -237,8 +237,19 @@ read_source_material 仅为可信后端的后续 probe/reconciler 使用；按�
 | insert_group(tx: &Transaction, group: &ValidatedGroup) -> Result<GroupView> | C2/C4：容量与组名检查，插入 ready=false/revision=1，校验返回 ID | 只向外层事务写一条组，不建立外部权限，错误由外层回滚 |
 | insert_membership(tx: &Transaction, row: &NewMembership) -> Result<MembershipView> | NewMembership 私有临时参数含两端 ID、kind、channel_id、position、lifecycle、priority；只接受 planned/imported，校验 §4 值域及两端类型、退休/有效唯一，再插入 | 不提交；复合 FK/唯一索引兜底；imported 仅允许 5.7 调用，不能把新计划伪装旧映射 |
 | decode_source_view / decode_group_view / decode_membership_view(row: &Row) -> Result<View> | 读取显式命名的白名单列，检查 ID、类型、边界和生命周期字段配对；任一失败 corrupt_data | 不访问 secret/settings_json，不修改数据库；所有检查通过才构造完整 View |
-| decode_settings(text: &str) -> Result<SourceSettings> | C3：严格解码 version=1 与枚举，再复用 C4 中不含 credential 的设置校验；未知版本/字段和值域均报 corrupt_data | 无外部状态写入，错误不包含 text；私有设置不会被默认值“修复” |
-| map_storage_error(stage: 固定枚举, error: rusqlite::Error) -> CatalogError | 按结构化 SQLite 错误码区分 busy/约束/IO；约束无法精确分类时 storage，不解析或回显 raw message；提交 IO 由外层转 commit_unknown | 固定阶段名和允许的 ID 是唯一输出，既不打印 SQL/参数，也不重试 |
+| decode_settings(text: &str) -> Result<SourceSettings> | C3：直接从文本严格解码 version=1，再复用 C4 中不含 credential 的设置校验；将结果编码为 Value 与原始 Value 对比，捕获旧类型忽略字段或默认补值 | 无外部状态写入，错误不包含 text；未知字段/缺失字段/非法值报 corrupt_data，私有设置不会被默认值“修复” |
+| From<rusqlite::Error> for CatalogError | 按结构化类型区分列解码损坏、busy/locked 和其他 storage；不解析或回显 raw message；提交失败由外层处理 | 固定 catalog 错误域和允许的 ID 是唯一常规上下文，不引入通用错误框架，不打印 SQL/参数或自行重试 |
+| validate_url / validate_settings | URL 仅解析校验；设置按 GLM/火山分支先检查列表上限，再遍历 headers/models 和调用 URL 校验；无网络 | 返回规范化设置或 invalid_input；有限输入遍历终止；不修补持久值，持久解码另与原 Value 对比 |
+| fingerprint / encode_settings | 前者按固定域前缀计算 SHA256；后者对已验证设置包装 version=1 后序列化 | 仅生成内存敏感值，供入库/摘要使用；不输出到日志/快照，序列化失败 storage |
+| commit(tx, poisoned) | 消费事务执行 commit；成功返回；busy 依赖事务 Drop 回滚；其余失败设置 poisoned 并返回 commit_unknown | 无未知结果被当成功；毒化位只从 false 变 true，必须重开才能继续 |
+| usable / capacity | usable 为单一毒化位判断，trivial；capacity 仅对模块内固定表名 COUNT 并比较上限 | 无写入；毒化返回 commit_unknown，达容量返回 invalid_input；表名不接受用户文本 |
+| member_parents | 同事务查询两端，缺失/退休/类型不匹配逐分支拒绝，再解析唯一 SourceKind | 无写入；成功意味着当前事务内两端可建立关系；SQL 列解码错误为 corrupt_data |
+| verify_schema | 查询元版本，遍历本版本有限 CREATE 语句，与 sqlite_master 原 DDL 精确比较 | 缺表/索引或约束弱化报 corrupt_data，不重建、不修改数据库；有限 DDL 集合保证终止 |
+| map_probe_error | 身份探查的 NotADatabase 映射 foreign_database，其他错误复用结构化 From；只读连接也显式设置 busy_timeout=1000ms | 不把暂时 Busy/Locked 误报成外库；无状态写入、无原始错误回显 |
+| read_rows / verify_snapshot | 前者在 LIMIT 数量保护下逐行解码；后者构建来源/组映射并核对每个成员的类型、渠道唯一、有效组合与顺序唯一 | 任意失败不发布部分快照；最多允许的行数或下一超限行后退出；集合不包含凭据 |
+| verify_receipt | 先校验数量及 ID 唯一，逐对查询收据来源/成员/组关系存在；退休/改名不改变历史关系 | 只读，不把收据重放变成 UPDATE；最多 1000 对，缺失或错认则 corrupt_data |
+| read_material(id, allow_retired) | usable 后 JOIN source/secret；公开调用拒绝退休，open 校验历史时允许退休；严格解码并核对 kind 与凭据指纹 | 返回只供后端的非序列化 SourceMaterial；无凭据日志，SQL 类型损坏报 corrupt_data |
+| cleanup_failed_backup(target, identity, remove) | 比较当前 dev/ino/文件类型；只对本次目标调用 remove；缺失视为无残留；身份改变、无法检查或删除失败标记 incomplete_backup | 永不删除身份不符目标，返回固定 BackupFailed；remove 参数只为私有函数测试注入，生产使用 fs::remove_file |
 
 表内非平凡 helper 的共同论证：调用前的 C1/C2/C3/C4 分别提供受控文件、活动事务或已验证类型；每一步显式检查排除非法中间值；只有完整成功路径构造输出，失败路径不自行提交。循环均遍历有界输入/结果，退出传播给 5.3–5.9 的资源释放或事务回滚路径。新增其他非平凡 helper 时，必须先补同等规约，不用 unwrap/panic 处理用户输入错误。
 
@@ -253,7 +264,7 @@ read_source_material 仅为可信后端的后续 probe/reconciler 使用；按�
 - [x] 身份、同类型、唯一性、历史映射、私有字段等跨模块不变量与架构一致。
 - [x] 源/组的本地创建与外部生效区分；旧渠道导入不冒充已确认。
 - [x] JSON 输出白名单 schema、十节 expectations 先于实现产出。
-- [ ] 用户确认本细化后进入编码；实现前重新检查 §4.4，不将本自检当成实施后审计。
+- [x] 用户确认细化后进入编码；实现前已复核 §4.4。此自检不代替实施后双路径审计。
 
 最低测试集：非法/重复来源与组；同源多组；类型拒绝；跨组不串 channel；旧 key 顺序与显式 ID 优先；歧义名字/缺失渠道/混组/重复 credential 全量失败；重复导入及不同摘要；故障注入回滚；重开不重导；外库/高 schema 不修改；并发打开立即拒绝；WAL 备份及拒绝覆盖；JSON/Debug/错误凭据不泄漏。
 

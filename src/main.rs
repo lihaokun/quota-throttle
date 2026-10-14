@@ -1,4 +1,5 @@
 mod boot;
+pub mod catalog;
 mod config;
 mod model_catalog;
 mod newapi;

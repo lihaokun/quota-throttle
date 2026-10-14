@@ -1,6 +1,6 @@
 # 来源目录与状态库契约验收清单
 
-子计划：sgm-1-catalog-store。日期：2026-10-14。状态：Step 0 预期，未实施。只从设计契约提取；下表不回填任何尚未存在的实现位置。
+子计划：sgm-1-catalog-store。日期：2026-10-14。状态：保留 Step 0 事前预期，实施后逐项核对通过。预期在基线 27a03b7 已提交，未从实现反向编造；修正和新增回归见 decisions.md。
 
 ## 1 契约源
 
@@ -56,27 +56,27 @@ sgm-1 只产生 planned/imported；其余生命周期为 schema 约束及历史�
 
 ## 5 行为契约
 
-- [ ] create_source 不复制同凭据来源；归档身份也不能被重复创建绕过。
-- [ ] create_group 只建本地 ready=false 记录，不注册外部组。
-- [ ] plan_membership 校验存在、类型、退休、唯一性，允许对暂停源建立未生效计划但不启用。
-- [ ] 同一来源加入两个同类型组后只有一份 source/secret，两个独立 membership。
-- [ ] importer 不采用现有 CLI 的“缺失渠道跳过”行为；任意歧义/冲突全量失败。
-- [ ] 同计划重复导入不新增、不重置字段；不同计划和非空首次导入明确拒绝。
-- [ ] 新建来源不填写虚假的用量 0 或可用状态；火山仅保存策略配置。
-- [ ] unknown enum/字段及非法库内容报错，不转成 GLM/default/零值。
-- [ ] 快照不是备份；私有材料读取不具备 Serialize，也不供 HTTP 直接返回。
-- [ ] 备份包含 WAL 已提交数据；目标已存在时不覆盖。
+- [x] create_source 不复制同凭据来源；归档身份也不能被重复创建绕过。
+- [x] create_group 只建本地 ready=false 记录，不注册外部组。
+- [x] plan_membership 校验存在、类型、退休、唯一性，允许对暂停源建立未生效计划但不启用。
+- [x] 同一来源加入两个同类型组后只有一份 source/secret，两个独立 membership。
+- [x] importer 不采用现有 CLI 的“缺失渠道跳过”行为；任意歧义/冲突全量失败。
+- [x] 同计划重复导入不新增、不重置字段；不同计划和非空首次导入明确拒绝。
+- [x] 新建来源不填写虚假的用量 0 或可用状态；火山仅保存策略配置。
+- [x] unknown enum/字段及非法库内容报错，不转成 GLM/default/零值。
+- [x] 快照不是备份；私有材料读取不具备 Serialize，也不供 HTTP 直接返回。
+- [x] 备份包含 WAL 已提交数据；目标已存在时不覆盖。
 
 ## 6 时序和状态契约
 
-- [ ] 单 Store/进程锁先于 SQLite 事务；连接私有，写接口 &mut self，无网络等待。
-- [ ] commit 成功后才发布 View/收据；提交不明毒化句柄，重开后对账。
-- [ ] 来源/secret 成组提交，导入批次与 marker 成组提交；故障不留半份目录。
-- [ ] imported 不等于 ready；观测字段/applied_revision 为空，旧路由不变。
-- [ ] 已导入后修改/退休记录，重放旧计划不能恢复其旧值。
-- [ ] 退休渠道身份保持 UNIQUE，channel_id 不能改认其他来源或组。
-- [ ] 进程退出释放 OS 锁；遗留锁文件不误判为永久占用。
-- [ ] 外库/高 schema 拒绝前不切换 journal_mode、不写 schema、不清空目录。
+- [x] 单 Store/进程锁先于 SQLite 事务；连接私有，写接口 &mut self，无网络等待。
+- [x] commit 成功后才发布 View/收据；提交不明毒化句柄，重开后对账。
+- [x] 来源/secret 成组提交，导入批次与 marker 成组提交；故障不留半份目录。
+- [x] imported 不等于 ready；观测字段/applied_revision 为空，旧路由不变。
+- [x] 已导入后修改/退休记录，重放旧计划不能恢复其旧值。
+- [x] 退休渠道身份保持 UNIQUE，channel_id 不能改认其他来源或组。
+- [x] 进程退出释放 OS 锁；遗留锁文件不误判为永久占用。
+- [x] 外库/高 schema 拒绝前不切换 journal_mode、不写 schema、不清空目录。
 
 ## 7 不变量和属性测试
 
@@ -96,37 +96,37 @@ sgm-1 只产生 planned/imported；其余生命周期为 schema 约束及历史�
 
 ## 8 性能契约
 
-- [ ] 最大来源 1000、组 100、成员 10000；超限错误不改变目录。
-- [ ] models≤1000、每层 header≤64；大输入在循环前拒绝。
-- [ ] SQLite busy_timeout 显式 1000ms；锁竞争测试不无限等候。
-- [ ] 备份最多 10000 steps；Busy/Locked 最多 100 次，重试循环期限 10 秒。
-- [ ] 标准临时目录中 1000 来源导入和一次快照在本地/CI 普通测试环境各有 elapsed<10s 的宽裕断言；不把此阈值当线上磁盘 SLA。
-- [ ] 源码确认没有每实体网络请求、没有事务内 await、没有全量快照中的私有配置复制。
+- [x] 最大来源 1000、组 100、成员 10000；超限错误不改变目录。
+- [x] models≤1000、每层 header≤64；大输入在循环前拒绝。
+- [x] SQLite busy_timeout 显式 1000ms；锁竞争测试不无限等候。
+- [x] 备份最多 10000 steps；Busy/Locked 最多 100 次，重试循环期限 10 秒。
+- [x] 标准临时目录中 1000 来源导入和一次快照在本地/CI 普通测试环境各有 elapsed<10s 的宽裕断言；不把此阈值当线上磁盘 SLA。
+- [x] 源码确认没有每实体网络请求、没有事务内 await、没有全量快照中的私有配置复制。
 
 ## 9 安全与副作用
 
-- [ ] 运行依赖只新增固定版本 rusqlite；proptest/tempfile 仅 dev-dependencies。
-- [ ] 凭据仅在应用私有 SQLite/备份明文保存，权限检查有效；不虚称加密。
-- [ ] 错误、Debug、普通快照不回显敏感字段；参数化 SQL，不拼接用户值。
-- [ ] schema/application_id 门禁阻止误开 NewAPI/任意 SQLite 库。
-- [ ] 所有测试使用 TempDir/假凭据，不读真实 config.toml，不发真实网络请求。
-- [ ] main.rs 仅注册模块；config.rs 仅必要 Serialize derive；既有六个运行模块保持零业务改动。
-- [ ] 不修改生产数据库/渠道/token、进程、端口或启动参数，不自动迁移。
-- [ ] 备份错误只清理本次创建的失败目标，绝不覆盖/删除既有文件。
+- [x] 运行依赖只新增固定版本 rusqlite；proptest/tempfile 仅 dev-dependencies。
+- [x] 凭据仅在应用私有 SQLite/备份明文保存，权限检查有效；不虚称加密。
+- [x] 错误、Debug、普通快照不回显敏感字段；参数化 SQL，不拼接用户值。
+- [x] schema/application_id 门禁阻止误开 NewAPI/任意 SQLite 库。
+- [x] 所有测试使用 TempDir/假凭据，不读真实 config.toml，不发真实网络请求。
+- [x] main.rs 仅注册模块；config.rs 仅必要 Serialize derive；既有六个运行模块保持零业务改动。
+- [x] 不修改生产数据库/渠道/token、进程、端口或启动参数，不自动迁移。
+- [x] 备份错误只清理本次创建的失败目标，绝不覆盖/删除既有文件。
 
 ## 10 跨实现一致性
 
-- [ ] Rust 枚举/Serde 字段与 JSON schema 一致；SQL CHECK/外键与同一值域一致。
-- [ ] 公开 ID 字符串经 JSON 往返不丢精度；>i64::MAX 的十进制输入由 Rust 拒绝。
-- [ ] Store 查询结果和独立参考模型相同，不以 SQL 表自行计算的派生结果作唯一 oracle。
-- [ ] 既有 58 个 Rust 测试保留并通过；此数字是实施前基线，不是新模块验收数。
+- [x] Rust 枚举/Serde 字段与 JSON schema 一致；SQL CHECK/外键与同一值域一致。
+- [x] 公开 ID 字符串经 JSON 往返不丢精度；>i64::MAX 的十进制输入由 Rust 拒绝。
+- [x] Store 查询结果和独立参考模型相同，不以 SQL 表自行计算的派生结果作唯一 oracle。
+- [x] 既有 58 个 Rust 测试保留并通过；此数字是实施前基线，不是新模块验收数。
 
 ## Step 5 验证记录
 
-尚未实施。JSON schema 结构/负例检查属于本轮文档检查，不等于实现输出通过 schema。
+实现后验证完成，详见 [audit-report](audit-report.md) 与 [decisions](decisions.md)。82 个测试通过，新增 24 项包含 C1–C7 属性检查。release 构建及机械契约检查通过；独立审核未发现未解决项。
 
 Step 0 文档检查已执行：check-jsonschema 验证 metaschema 与设计样例通过；8 个变异负例（额外 credential 字段、auto 组、imported 无渠道、planned 有渠道、退休缺时间、未知来源类型、数字 ID、零 revision）全部被拒绝。Markdown 本地链接检查和 git diff --check 通过；src 与 Cargo 文件无变更。
 
-后续路径 A：cargo test --locked（含属性/边界/性能）、实际快照 JSON Schema 校验、步骤注释和枚举一致性检查、git diff 副作用检查。
+路径 A 已执行：cargo test --locked --offline -j 2；bash scripts/contract_audit/sgm1.sh 校验实际快照、schema/SQL/编译枚举、负例、步骤和副作用；cargo build --release --locked --offline -j 2 通过。Clippy 仅有 6 条未修改旧模块警告。
 
-后续路径 B：按 workflow §6.5 给独立 subagent 契约与本子计划 diff，不提供完整代码或实现位置列；产出 audit-report.md，处理所有阻断项并记录 decisions.md。实现前不生成“通过”的空审计报告。
+路径 B 已执行：独立 subagent 先提取契约再审核本子计划 diff，不提供完整业务源码或实现位置列。首轮问题已补修复/测试/文档并经复核，报告与决策记录齐备。
