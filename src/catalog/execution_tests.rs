@@ -5,6 +5,9 @@ use crate::newapi::managed_channels::{ChannelObservation, NativeRecoveryCheck};
 use crate::reconcile::planner::*;
 use std::time::{Duration, SystemTime};
 
+#[path = "confirmation_tests.rs"]
+mod confirmation;
+
 fn op(n: usize) -> OperationId {
     OperationId::new(format!("execution-test-{n:016}")).unwrap()
 }

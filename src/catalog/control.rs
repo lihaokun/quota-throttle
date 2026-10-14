@@ -469,7 +469,10 @@ fn affected_members(
     }
     Ok(members)
 }
-fn operation_projection(conn: &Connection, id: &OperationId) -> ControlResult<OperationView> {
+pub(super) fn operation_projection(
+    conn: &Connection,
+    id: &OperationId,
+) -> ControlResult<OperationView> {
     let row=conn.query_row("SELECT kind,target_type,target_id,phase,target_revision,error_code,updated_at,expected_targets FROM control_operations WHERE operation_id=?1",[id.as_str()],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?,r.get::<_,String>(3)?,r.get::<_,i64>(4)?,r.get::<_,Option<String>>(5)?,r.get::<_,i64>(6)?,r.get::<_,i64>(7)?))).optional()?.ok_or_else(||failure(ControlErrorCode::NotFound))?;
     let (total, confirmed): (i64, i64) = conn.query_row(
         "SELECT count(*),count(confirmed_at) FROM operation_targets WHERE operation_id=?1",

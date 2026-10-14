@@ -325,6 +325,12 @@ async fn native_managed_channel_contract_on_fresh_database() {
     let binary = std::env::var_os("QUOTA_THROTTLE_NEWAPI_TEST_BINARY")
         .expect("explicit native binary required");
     assert!(std::path::Path::new(&binary).is_absolute());
+    use sha2::{Digest, Sha256};
+    assert_eq!(
+        format!("{:x}", Sha256::digest(std::fs::read(&binary).unwrap())),
+        "90c333eb7ace489d46e25cb687767c25c3e28584ce80384f111c03ff5f5b1205",
+        "isolated contract fixture requires the independently verified rc.20 build"
+    );
     let directory = tempfile::tempdir().unwrap();
     let reservation = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = reservation.local_addr().unwrap().port();
@@ -496,5 +502,216 @@ async fn native_managed_channel_contract_on_fresh_database() {
         all.channels.last().unwrap().observation().unwrap().name,
         "fixture-101"
     );
+    native_persisted_confirmation(&client, &directory.path().join("catalog")).await;
     drop(process); // 只终止本测试持有的 Child；临时库随后自动清理。
+}
+
+async fn native_persisted_confirmation(
+    client: &crate::newapi::NewApiClient,
+    directory: &std::path::Path,
+) {
+    use crate::catalog::control::{ControlCommand, OperationId, OperationPhase, StatusDirective};
+    use crate::catalog::{
+        CatalogStore, GroupDraft, SourceDraft, SourceSettings, UpstreamProfile, VolcanoPolicy,
+    };
+    use crate::reconcile::planner::{
+        BackendReadiness, PendingWrite, PlanContext, StampedObservation, SUPPORTED_BACKEND_VERSION,
+    };
+    fn now() -> i64 {
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+    }
+    let api = client.managed_channels();
+    // 仅本测试持有的已验证随机端口/全新数据库：不得套用到现有服务 URL。
+    client
+        .transport
+        .send(
+            ManagementRequest::new(
+                Method::PUT,
+                "/api/option/",
+                Some(json!({"key":"AutomaticEnableChannelEnabled","value":"false"})),
+                RequestSemantics::IdempotentWrite,
+                SINGLE_BODY_LIMIT,
+            )
+            .unwrap(),
+            RequestClass::Control,
+        )
+        .await
+        .unwrap();
+    let recovery = api.check_native_recovery().await.unwrap();
+    assert_eq!(recovery, NativeRecoveryCheck::Disabled);
+    let status = client
+        .transport
+        .send(
+            ManagementRequest::new(
+                Method::GET,
+                "/api/status",
+                None,
+                RequestSemantics::Read,
+                SINGLE_BODY_LIMIT,
+            )
+            .unwrap(),
+            RequestClass::Observe,
+        )
+        .await
+        .unwrap()
+        .envelope()
+        .unwrap();
+    let version = status["data"]["version"].as_str().unwrap();
+    // 固定哈希构建的元数据是 rc.20/6ce7305...，但该构建运行版本字段为 v0.0.0。
+    // 本测试用启动前的构建身份核验提供 canonical version；不放宽生产预检类型。
+    assert_eq!(version, "v0.0.0");
+    let backend = BackendReadiness::from_preflight(
+        SUPPORTED_BACKEND_VERSION,
+        recovery,
+        true,
+        now(),
+        now() + 120,
+    );
+    let mut store = CatalogStore::open(&directory.join("catalog.sqlite3")).unwrap();
+    let source = store
+        .create_source(SourceDraft {
+            name: "native-catalog-source".into(),
+            note: String::new(),
+            credential: SecretString::new("fake-native-catalog-key".into()).unwrap(),
+            settings: SourceSettings::Volcano {
+                upstream: UpstreamProfile {
+                    channel_type: 8,
+                    base_url: "http://127.0.0.1:9/chat/completions".into(),
+                    models: vec!["fake-model-native".into()],
+                    model_discovery: None,
+                },
+                policy: VolcanoPolicy::default(),
+            },
+        })
+        .unwrap();
+    let group = store
+        .create_group(GroupDraft {
+            name: "native-catalog-group".into(),
+            newapi_group: "catalog-native".into(),
+            kind: SourceKind::Volcano,
+        })
+        .unwrap();
+    let member = store
+        .plan_membership(source.source_id, group.group_id, 10)
+        .unwrap();
+    let ensure = OperationId::new("native-ensure-0001".into()).unwrap();
+    let retire = OperationId::new("native-retire-0001".into()).unwrap();
+    store
+        .submit_operation(
+            ensure,
+            ControlCommand::EnsureMember {
+                membership_id: member.membership_id,
+                expected_revision: 1,
+                status: StatusDirective::Enabled,
+            },
+            now(),
+        )
+        .unwrap();
+    let work = store.load_work(member.membership_id, false).unwrap();
+    let members = [member.membership_id];
+    let context = PlanContext {
+        backend,
+        permit: None,
+        expected_members: &members,
+        peers: &[],
+        now: now(),
+    };
+    let ticket = store
+        .prepare_execution(member.membership_id, work.revision(), false, None, &context)
+        .unwrap();
+    let key = SecretString::new("fake-native-catalog-key".into()).unwrap();
+    api.create_disabled_channel(DisabledChannelSpec {
+        name: &work.target.create_name,
+        source_kind: SourceKind::Volcano,
+        channel_type: 8,
+        key: &key,
+        base_url: &work.identity.base_url,
+        models: &work.models.join(","),
+        group: &work.identity.group,
+        standby_priority: 10,
+    })
+    .await
+    .unwrap();
+    // 故意丢弃 HTTP 回执，不结算 prepared；模拟创建提交后本地进程退出。
+    store
+        .submit_operation(
+            retire.clone(),
+            ControlCommand::RetireSource {
+                source_id: source.source_id,
+                expected_revision: source.config_revision,
+            },
+            now(),
+        )
+        .unwrap();
+    drop(store);
+    let mut store = CatalogStore::open(&directory.join("catalog.sqlite3")).unwrap();
+    assert_eq!(
+        store
+            .load_work(member.membership_id, false)
+            .unwrap()
+            .pending_write,
+        PendingWrite::Unknown
+    );
+    let recovered = store.pending_creation(member.membership_id).unwrap();
+    assert_eq!(recovered, ticket);
+    let scan = api.scan_channels(None).await.unwrap();
+    let channels: Vec<_> = scan
+        .channels
+        .iter()
+        .map(|d| d.observation().unwrap())
+        .collect();
+    let id = store
+        .bind_created(&recovered, scan.complete, &channels, backend, now())
+        .unwrap();
+    assert_eq!(store.operation(&retire).unwrap().confirmed_targets, 0);
+    let current = store.load_work(member.membership_id, false).unwrap();
+    let actual = api
+        .get_channel(id.get())
+        .await
+        .unwrap()
+        .observation()
+        .unwrap();
+    assert_eq!(actual.status, 2);
+    let observed = StampedObservation {
+        revision: current.revision(),
+        channel: actual,
+    };
+    let context = PlanContext {
+        backend,
+        permit: None,
+        expected_members: &members,
+        peers: &[],
+        now: now(),
+    };
+    store
+        .confirm_member(
+            member.membership_id,
+            current.revision(),
+            false,
+            Some(&observed),
+            &context,
+        )
+        .unwrap();
+    assert_eq!(
+        store.operation(&retire).unwrap().phase,
+        OperationPhase::Succeeded
+    );
+    assert!(store
+        .load_work(member.membership_id, false)
+        .unwrap()
+        .source
+        .retired_at
+        .is_some());
+    assert_eq!(
+        api.get_channel(id.get())
+            .await
+            .unwrap()
+            .observation()
+            .unwrap()
+            .status,
+        2
+    );
 }

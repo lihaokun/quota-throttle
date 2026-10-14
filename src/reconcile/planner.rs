@@ -352,7 +352,7 @@ fn waiting_for_write(pending: PendingWrite) -> PlanStep {
 fn valid_window(start: i64, end: i64, now: i64) -> bool {
     (0..=JSON_SAFE).contains(&start) && (0..=JSON_SAFE).contains(&end) && start <= now && now < end
 }
-fn fresh(observation: &ChannelObservation, now: i64) -> bool {
+pub(crate) fn fresh(observation: &ChannelObservation, now: i64) -> bool {
     let Some(seconds) = observation
         .observed_at
         .duration_since(SystemTime::UNIX_EPOCH)

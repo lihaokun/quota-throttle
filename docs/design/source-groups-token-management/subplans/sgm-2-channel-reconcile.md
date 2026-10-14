@@ -1,6 +1,6 @@
 # 渠道协调器与持久控制操作细化设计
 
-子计划：sgm-2-channel-reconcile。日期：2026-10-15。基线：f9f02aa。状态：用户以“继续吧”确认推进，管理接口、目录意图、计划器与 v3 持久日志已验证；回读确认与 worker 待实现，不授权部署。
+子计划：sgm-2-channel-reconcile。日期：2026-10-15。基线：f9f02aa。状态：用户以“继续吧”确认推进，管理接口、目录意图、计划器、v3 持久日志与绑定/回读已验证；真实 HTTP 结果分类和 worker 待实现，不授权部署。
 
 ## 1 范围
 
@@ -316,3 +316,29 @@ worker 独占 CatalogStore 的外部写入口，通过短互斥区串行事务�
 - WorkTicket 绑定 catalog_instance_id、member/sequence、目标三重代次、epoch 和效果，不能跨目录错投。settle_execution 先比对整张票，再处理重复（零写）、冲突终态（拒绝）、prepared/uncertain→证据状态。结算及重开恢复也递增 execution，使终止证据之前发起的 GET 失效；因此序号可有间隙，不是尝试计数。明确 NotSent 只有在无其他可能创建记录且未绑定时才恢复 Never。迟到成功只消费相同 epoch 的 Enable，不写 observed/applied/收据；目标三重代次不再匹配时也不改新操作阶段。mark_operations 检查同一操作全部成员的 uncertain，不被另一成员 ACK 覆盖。循环/SQL 范围由成员或该操作目标限制，历史记录按索引查找。
 - recover_executions 在发布 Store 前同事务把 prepared 转 uncertain、dirty 置位、保留暂停与创建状态；仅对这些成员推进 execution，重复重开无新推进。verify_execution 检查侧表完整、代次上界、唯一 prepared、效果白名单和状态/错误组合；流式校验历史行，不一次加载全部历史。迁移复用同一校验，失败不发布部分升级的 Store。协议语义错误不含原始材料。
 - submit_operation 只有显式 enabled/来源恢复增加授权 epoch，普通 priority/models 保留；溢出与成员 fan-out 均同事务回滚。GLM 继承已消费授权时 preserve；若成功回执晚于普通更新，则通过授权起始 revision 区分旧授权与新显式恢复，仍不重新启用。新显式恢复 epoch 不同，旧回执不能消费它。上述规则不改变火山恢复规则或 GLM 额度算法。
+
+### 绑定和完成确认
+
+本步落实 P14/P15 的身份绑定、逐目标回读确认，以及 P16 的持久延期/显式重试/有限工作读取。仍不接生产 up/run；HTTP 交付证据与 worker 在后续接线。
+
+创建是未决写的一项有条件特例，不改变一般字段/状态未知写的规则。固定版本 AddChannel 的 single 模式只产生一个渠道，BatchInsertChannels 在同一事务内创建渠道和能力记录；提交后 handler 只重置代理缓存、写审计和返回响应，不再次写渠道。因此，在同一已核实实例、单写者和稳定唯一关联名的前提下，完整唯一匹配且新鲜的对象证明该次创建效果已经持久化。依据：[AddChannel](https://github.com/QuantumNous/new-api/blob/6ce7305cd36f16506fb6a2c3c524a5a318539ba7/controller/channel.go#L563)、[BatchInsertChannels](https://github.com/QuantumNous/new-api/blob/6ce7305cd36f16506fb6a2c3c524a5a318539ba7/model/channel.go)。这是效果已完成的推论，不伪造收到 HTTP 响应。
+
+bind_created 复用 member_control.create_state=resolved 和唯一 channel_id 保存上述证据；尚未结算的 prepared 创建在同事务转 uncertain，表示交付仍未知而非伪造 responded，也释放唯一 prepared 槽供下一动作使用。仅已完成绑定的 create 尝试不再参与 pending_write；其他 unknown/prepared 不豁免。已物化创建不能接受矛盾的 NotSent 结算。不新增数据库版本或凭据副本。0 匹配保持 unknown；多匹配 ambiguous；全部明确 NotSent 的尝试不能认领同名对象。绑定不写 observed/applied/确认收据，旧创建结果只能登记不可变身份，随后必须按最新暂停/退役目标重新回读。
+
+| 函数 | 前置与分支 | 后置及论证 |
+| --- | --- | --- |
+| pending_creation | 按成员 PK 查询且恰有一个非 NotSent 创建记录，重建内部 WorkTicket，校验固定效果与实例命名空间；无/多候选分别拒绝 | 重开可查创建，不发第二次 POST；有限索引查询不加载全库材料 |
+| bind_created | 比对整张持久票、当前稳定身份、有效 BackendReadiness；调用 resolve_created 检查完整唯一集合，再核对匹配对象时效；冲突 ID/属性拒绝 | 同事务绑定 ID、Resolved、created_disabled、dirty、推进 execution；重复同 ID 零写；从未改认既有 ID，任何错误整笔回滚 |
+| confirm_member | 一致事务重新装配并比较四重 revision；重新计划仅接受 Confirm/RetireAbsent，无未决写；有渠道必须新鲜身份匹配观测 | 更新当前 observed/applied，按匹配成员 revision 仅首次保存安全摘要收据；不会用 ACK/批量 changed 计数；退役确认保留物理 ID，源的最后成员退休才归档 |
+| refresh_operations | 读取未终结操作的冻结目标集合；校验数量/当前 revision，按真实收据集合投影 | 旧 succeeded/superseded 不变；其余依次为代次失效→superseded、全确认→succeeded、unknown、终端错误→failed、部分确认→partial、prepared→applying、指定 waiting/queued。循环受目标数上限，不能通过丢行得到成功 |
+| defer_member | 比较四重 revision，验证固定安全错误码与时间；失败不撤销原意图 | 临时错误保留 dirty，next_attempt 至少 now+30 或更晚 Retry-After；认证/漂移/歧义/明确拒绝等需人工处理则 failed 且停止自动尝试；不清 unknown |
+| retry_operation | 原幂等 ID，先读历史；成功返回原收据，superseded 或目标代次不符拒绝；只重排未确认目标 | 不新增操作、不清暂停/耗尽/启用消费、不重发未知创建；持久 queued/unknown/partial，由 worker 再观察；认证显式重试仍由传输层执行 |
+| due_members | 合法 UTC 时刻，读取 dirty 且到期未退休成员，最多 64 个 | 停止/退役优先，其次已知降低，再普通任务；仅 ID，无全库 key；全部延期返回空，由 worker 计算等待而非忙轮询 |
+
+确认不会重新写已存在的历史成功收据；同一 member revision 重复回读不增加 confirmed。未完成操作的某成员如果再次准备写，该成员先前的临时确认同事务失效，必须重新回读；否则其新 ACK 可能错误地凑齐全集。此规则不删除 succeeded/superseded 历史，也不重开 GLM 已消费的启用授权。当前观察可以反映后来的原生状态，但成功收据只陈述曾经完成。GLM Enabled 在实际 status=1 被回读满足时消费当前授权，即使没有发 Enable（例如原本已开启）；普通后续更新仍 preserve。若同源多个组只确认一部分，其操作不能成功/归档；错误或回滚点不留下半张成功收据。source/member 退休、applied、收据和操作阶段同事务。
+
+事前测试：唯一/缺失/歧义/属性漂移/已占用 ID、旧创建在暂停/退役后绑定、崩溃后创建对账；过期各维代次与观测时间、字段不符、unknown/ACK 不确认；同源两组暂停/退役的随机回读顺序与重复、部分失败/重开/重试、source 归档门槛、GLM/火山状态所有权。至少 128 cases 的 R3/R4/R5/R6/R11 组合性质；定向删除完整集合/代次/未知写/收据全集检查必须使对应测试失败。
+
+实现补充：一般未决写和操作阶段使用同一个 PENDING_EFFECT_SQL；terminal_error 逐目标读取错误并复用 Rust terminal 分类，不重复维护 SQL 错误码集合。recover_executions 将 prepared 转未知后复用操作投影，因此已绑定的创建不会在重开后伪装成尚未物化。上述 helper 只遍历当前成员或操作有限目标，不复制材料，不产生网络副作用。
+
+隔离原生测试额外校验固定构建 SHA-256，因该 rc.20/6ce7305 构建的 `/api/status` 实报 v0.0.0，测试用已核实构建身份提供 canonical version。生产 BackendReadiness 的严格版本检查未放宽；真实版本/构建身份及实例核验 producer 仍待实现。该已知差异必须在生产预检细化中显式处理，不能按“相同 URL”或未核实版本默认 ready。

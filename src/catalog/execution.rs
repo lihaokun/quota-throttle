@@ -15,6 +15,10 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::time::SystemTime;
 
+/// 查询别名固定为 a=attempt、m=membership、c=control；仅此常量定义创建物化豁免。
+pub(super) const PENDING_EFFECT_SQL: &str =
+    "a.action!='create' OR m.channel_id IS NULL OR c.create_state!='resolved'";
+
 /// 白名单效果；无 credential、请求头或原生渠道正文。仅私有数据库序列化。
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
@@ -79,7 +83,7 @@ impl ExecutionEffect {
 }
 
 /// 无 Deserialize/公开构造器；只能由已提交的 prepare_execution 产生。
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct WorkTicket {
     catalog_instance_id: String,
     membership_id: MembershipId,
@@ -192,6 +196,9 @@ impl CatalogStore {
             "UPDATE member_control SET dirty=1 WHERE membership_id=?1",
             [id.get()],
         )?;
+        // 尚未完成的操作中再次写这个成员，旧回读不能替代本次写后的确认。
+        // 已 succeeded 的历史收据不修改，GLM 已消费/曾 applied 的授权也不重新打开。
+        tx.execute("UPDATE operation_targets SET confirmed_at=NULL,receipt_json=NULL WHERE membership_id=?1 AND target_member_revision=?2 AND operation_id IN (SELECT operation_id FROM control_operations WHERE phase NOT IN ('succeeded','superseded'))",params![id.get(),expected.member])?;
         mark_operations(&tx, id, expected.member, "applying", None, context.now)?;
         let ticket = WorkTicket {
             catalog_instance_id: tx.query_row(
@@ -256,6 +263,12 @@ impl CatalogStore {
         // Step P14: 迟到票只能结算自身；新授权不被旧成功消费，新目标没有成功收据。
         tx.execute("UPDATE execution_attempts SET state=?1,error_code=?2,finished_at=?3 WHERE membership_id=?4 AND sequence=?5",params![state,code.map(ControlErrorCode::as_str),now.max(row.7),ticket.membership_id.get(),ticket.revision.execution])?;
         let current = load_work(&tx, ticket.membership_id, false)?;
+        ensure(
+            !(matches!(outcome, ExecutionOutcome::NotSent(_))
+                && matches!(effect, ExecutionEffect::Create { .. })
+                && current.member.channel_id.is_some()),
+            ControlErrorCode::RevisionConflict,
+        )?;
         // 终止证据改变 pending 状态，也必须使在终止之前发起的 GET 失效。
         tx.execute(
             "UPDATE member_execution SET sequence=?1 WHERE membership_id=?2",
@@ -311,11 +324,26 @@ impl CatalogStore {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let affected: Vec<(i64, i64)> = {
+            let mut q=tx.prepare("SELECT DISTINCT c.membership_id,c.revision FROM member_control c JOIN execution_attempts a USING(membership_id) WHERE a.state='prepared'")?;
+            let rows = q.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            rows.collect::<std::result::Result<_, _>>()?
+        };
         // Step P16: 崩溃窗口保守按未知；不清暂停、原始创建意图或历史映射。
         tx.execute("UPDATE member_execution SET sequence=sequence+1 WHERE membership_id IN (SELECT membership_id FROM execution_attempts WHERE state='prepared')",[])?;
         tx.execute("UPDATE member_control SET dirty=1,next_attempt_at=0 WHERE membership_id IN (SELECT membership_id FROM execution_attempts WHERE state='prepared')",[])?;
-        tx.execute("UPDATE control_operations SET phase='unknown',error_code='transport_unknown',updated_at=?1 WHERE phase NOT IN ('succeeded','superseded') AND operation_id IN (SELECT t.operation_id FROM operation_targets t JOIN member_control c USING(membership_id) JOIN execution_attempts a USING(membership_id) WHERE a.state='prepared' AND t.target_member_revision=c.revision)",[now])?;
         tx.execute("UPDATE execution_attempts SET state='uncertain',error_code='transport_unknown',finished_at=MAX(started_at,?1) WHERE state='prepared'",[now])?;
+        for (id, revision) in affected {
+            super::confirmation::refresh_operations(
+                &tx,
+                MembershipId::new(id)?,
+                revision,
+                super::control::OperationPhase::Waiting,
+                None,
+                now,
+            )
+            .map_err(|_| error(ErrorKind::CorruptData))?;
+        }
         commit(tx, &mut self.poisoned)
     }
 }
@@ -328,12 +356,17 @@ fn mark_operations(
     code: Option<ControlErrorCode>,
     now: i64,
 ) -> ControlResult<()> {
-    // 同一操作任何成员仍未知，就不能被另一个成员的 ACK 降格成普通 waiting。
-    conn.execute("UPDATE control_operations AS o SET phase=CASE WHEN EXISTS(SELECT 1 FROM operation_targets t JOIN execution_attempts a USING(membership_id) WHERE t.operation_id=o.operation_id AND a.state='uncertain') THEN 'unknown' WHEN EXISTS(SELECT 1 FROM operation_targets t JOIN execution_attempts a USING(membership_id) WHERE t.operation_id=o.operation_id AND a.state='prepared') THEN 'applying' ELSE ?1 END,error_code=CASE WHEN EXISTS(SELECT 1 FROM operation_targets t JOIN execution_attempts a USING(membership_id) WHERE t.operation_id=o.operation_id AND a.state='uncertain') THEN 'transport_unknown' ELSE ?2 END,updated_at=?3 WHERE phase NOT IN ('succeeded','superseded') AND operation_id IN (SELECT operation_id FROM operation_targets WHERE membership_id=?4 AND target_member_revision=?5)",params![phase,code.map(ControlErrorCode::as_str),now,id.get(),revision])?;
-    Ok(())
+    super::confirmation::refresh_operations(
+        conn,
+        id,
+        revision,
+        super::control::OperationPhase::parse(phase)?,
+        code,
+        now,
+    )
 }
 
-fn load_work(
+pub(super) fn load_work(
     conn: &Connection,
     id: MembershipId,
     policy_disabled: bool,
@@ -372,7 +405,7 @@ fn load_work(
         SourceSettings::Glm { upstream, .. } | SourceSettings::Volcano { upstream, .. } => upstream,
     };
     let (sequence,consumed,origin):(i64,bool,i64)=conn.query_row("SELECT sequence,enable_consumed,enable_requested_revision FROM member_execution WHERE membership_id=?1",[id.get()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
-    let (prepared,unknown):(bool,bool)=conn.query_row("SELECT EXISTS(SELECT 1 FROM execution_attempts WHERE membership_id=?1 AND state='prepared'),EXISTS(SELECT 1 FROM execution_attempts WHERE membership_id=?1 AND state='uncertain')",[id.get()],|r|Ok((r.get(0)?,r.get(1)?)))?;
+    let (prepared, unknown) = pending_writes(conn, id)?;
     let managed: bool = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM operation_targets WHERE membership_id=?1)",
         [id.get()],
@@ -407,6 +440,35 @@ fn load_work(
         execution_revision: sequence,
         enable_consumed: consumed,
         enable_requested_revision: origin,
+    })
+}
+
+pub(super) fn pending_writes(conn: &Connection, id: MembershipId) -> ControlResult<(bool, bool)> {
+    // 唯一绑定证明单次禁用创建已物化，不伪造 HTTP 响应；一般未知写不豁免。
+    Ok(conn.query_row(&format!("SELECT COALESCE(MAX(a.state='prepared'),0),COALESCE(MAX(a.state='uncertain'),0) FROM execution_attempts a JOIN memberships m USING(membership_id) JOIN member_control c USING(membership_id) WHERE a.membership_id=?1 AND ({PENDING_EFFECT_SQL})"),[id.get()],|r|Ok((r.get(0)?,r.get(1)?)))?)
+}
+
+pub(super) fn read_ticket(
+    conn: &Connection,
+    id: MembershipId,
+    sequence: i64,
+) -> ControlResult<WorkTicket> {
+    let row=conn.query_row("SELECT member_revision,source_revision,group_revision,enable_epoch,effect_json FROM execution_attempts WHERE membership_id=?1 AND sequence=?2",params![id.get(),sequence],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?,r.get::<_,String>(4)?))).optional()?.ok_or_else(||failure(ControlErrorCode::NotFound))?;
+    Ok(WorkTicket {
+        catalog_instance_id: conn.query_row(
+            "SELECT catalog_instance_id FROM catalog_meta",
+            [],
+            |r| r.get(0),
+        )?,
+        membership_id: id,
+        revision: Revision {
+            member: row.0,
+            source: row.1,
+            group: row.2,
+            execution: sequence,
+        },
+        enable_epoch: row.3,
+        effect: serde_json::from_str(&row.4).map_err(|_| failure(ControlErrorCode::Storage))?,
     })
 }
 
