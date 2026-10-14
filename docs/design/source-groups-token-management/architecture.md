@@ -1,6 +1,6 @@
 # 来源共享 分组路由和用量面板架构
 
-日期：2026-10-14。状态：用户已在确认分支后指示按 workflow 开发，进入第一子计划细化。需求依据：[最新版方案](../../research/source-groups-token-management-research.md)。接口实证：[实现前审核](review.md)。架构确认不包含生产部署授权。
+日期：2026-10-15。状态：架构已确认，sgm-1 及其复审修复已完成，sgm-2 进入细化确认。需求依据：[最新版方案](../../research/source-groups-token-management-research.md)。接口实证：[实现前审核](review.md)。架构确认不包含生产部署授权。
 
 ## 目标与边界
 
@@ -236,3 +236,23 @@ priority 是对支持该请求模型的候选表达偏好。原生单次重试�
 | LegacyChannel / LegacyImportPlan / ImportOutcome | 无凭据渠道描述、规范导入内容及摘要、Applied/AlreadyApplied 收据 | 迁移调用方与 catalog 共享；Plan 字段私有，只由纯转换构造，收据无凭据 |
 
 共享枚举在 src/catalog/types.rs 唯一定义；ModelDiscoveryAuth 沿用 config.rs。JSON 字段契约由 [schema](schemas/catalog-snapshot.schema.json) 固化。目录的请求类型与导入收据只在进程内传递，不是面板 API；外部操作 ID 和错误码待控制面子计划定义。
+
+## 第二子计划共享类型补充
+
+以下为 [sgm-2 细化草案](subplans/sgm-2-channel-reconcile.md) 的共享接口，待细化确认；不改变既定模块职责或提供者策略。
+
+| 类型 | 共享字段与约束 | 所有者和消费者 |
+| --- | --- | --- |
+| OperationId / ControlCommand | 稳定幂等 ID、受管动作、目标身份、expected_revision 与规范参数；同 ID 不变载荷 | 控制入口 → catalog/control；具体字段见子计划 §4.1 |
+| MemberTarget / StatusDirective | 成员 revision、priority、preserve/enabled/disabled、退役请求、稳定创建关联名 | catalog 写；reconciler 与后续策略读；源级 gate 始终更高优先 |
+| RoutingPermit | source/group 身份与 generation、启用资格、期望 priority；非序列化 | 策略/预检层产生，协调器消费；前端不得提供许可布尔值代替它 |
+| WorkTicket / WorkSnapshot | 成员动作与 generation，一致读取的 member/source/group/目标及必要同组状态 | store/worker/planner；不包含公开可序列化凭据 |
+| BackendReadiness | 已核实的管理能力、原生自动启用开关、实例绑定及检查时间 | 只读预检 → 协调器；冲突不静默修改现有全局配置 |
+| ChannelObservation | 实际 channel 身份、路由字段、原生状态及观测时间 | NewAPI 客户端 → reconciler；原始 JSON 私有，未知不当零 |
+| OperationView | 操作身份/类型/阶段、目标 generation、确认计数、安全错误码及时间 | store 发布给面板；具体格式由 [schema](schemas/control-operation.schema.json) 约束 |
+
+创建关联名使用本工具实例 ID 与 MembershipId，不用 key 或可改展示名。状态管理区分 GLM 正常 preserve 与火山显式 1/2；人工暂停/退役覆盖两者。数据库 v2 通过私有侧表保存控制数据，核心 CatalogSnapshot wire 版本仍为 1；操作历史保存匹配 generation 的确认收据，不能因后来变更丢失旧成功证据。
+
+NewAPI 无远端 CAS：本地 revision 防止错记旧 ACK，不等于可以撤销已经发出的写。目标完成以匹配回读为依据；未决相反写与漂移必须显式显示，并在既定单写者假设下持续对账。不能把此执行层宣称为硬实时或严格 exactly-once 控制器。
+
+sgm-2 源码核对发现原生自动启用也可能成为并发状态写者。因此受管状态模式上线前必须确认其关闭；若现有实例开启，不自动修改、不中断旧部署，须在发布阶段另行确认处理方式。GLM 的原 auto_ban 和额度选择规则不变。此为细化新增的部署前提，不是已核实当前生产配置满足条件的声明。
