@@ -246,7 +246,7 @@ priority 是对支持该请求模型的候选表达偏好。原生单次重试�
 | OperationId / ControlCommand | 稳定幂等 ID、受管动作、目标身份、expected_revision 与规范参数；同 ID 不变载荷 | 控制入口 → catalog/control；具体字段见子计划 §4.1 |
 | MemberTarget / StatusDirective | 成员 revision、priority、preserve/enabled/disabled、退役请求、稳定创建关联名 | catalog 写；reconciler 与后续策略读；源级 gate 始终更高优先 |
 | RoutingPermit | source/group 身份与 generation、启用资格、期望 priority；非序列化 | 策略/预检层产生，协调器消费；前端不得提供许可布尔值代替它 |
-| WorkTicket / WorkSnapshot | 目录实例、成员动作与 member/source/group generation、执行序号及启用授权 epoch，一致读取的目标及完整可能路由的同组状态（含退役中成员） | store/worker/planner；目录持久票据及快照已实现，HTTP worker 尚待接线；不包含公开可序列化凭据 |
+| WorkTicket / WorkSnapshot | 目录实例、成员动作与 member/source/group generation、执行序号及启用授权 epoch，一致读取的目标及完整可能路由的同组状态（含退役中成员） | store/worker/planner；目录持久票据及快照供已实现的显式 worker 消费，尚未接现行 CLI；不包含公开可序列化凭据 |
 | ExecutionEffect / ExecutionOutcome | 私有白名单写效果；明确未发出、完整响应（可失败）、不确定三种结算证据 | catalog/execution；仅可信执行器生产结算证据，不接受前端 JSON；完整响应不等于目标完成 |
 | BackendReadiness | 已核实的管理能力、原生自动启用开关、实例绑定及检查时间 | 只读预检 → 协调器；冲突不静默修改现有全局配置 |
 | ChannelObservation | 实际 channel 身份、路由字段、原生状态及观测时间 | NewAPI 客户端 → reconciler；原始 JSON 私有，未知不当零 |

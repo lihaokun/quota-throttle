@@ -3,6 +3,13 @@ use crate::newapi::transport::tests::{Fake, Reply};
 use proptest::prelude::*;
 use std::sync::{Arc, Mutex};
 
+#[test]
+fn r10_scan_accumulator_has_no_debug_or_serialize() {
+    use crate::newapi::transport::assurance_tests::assert_not_impl;
+    assert_not_impl!(ScanAccumulator, std::fmt::Debug);
+    assert_not_impl!(ScanAccumulator, serde::Serialize);
+}
+
 fn channel(id: i64) -> Value {
     json!({"id":id,"name":format!("member-{id}"),"type":8,"group":format!("group-{id}"),
         "base_url":format!("https://example.invalid/{id}"),"models":format!("model-{id},shared"),

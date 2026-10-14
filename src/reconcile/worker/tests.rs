@@ -5,6 +5,19 @@ use serde_json::{json, Value};
 use std::os::unix::fs::PermissionsExt;
 use std::sync::atomic::AtomicUsize;
 
+#[test]
+fn r10_worker_private_snapshots_have_no_debug_or_serialize() {
+    use crate::newapi::transport::assurance_tests::assert_not_impl;
+    assert_not_impl!(Core, std::fmt::Debug);
+    assert_not_impl!(Core, serde::Serialize);
+    assert_not_impl!(CachedObservation, std::fmt::Debug);
+    assert_not_impl!(CachedObservation, serde::Serialize);
+    assert_not_impl!(Plan, std::fmt::Debug);
+    assert_not_impl!(Plan, serde::Serialize);
+    assert_not_impl!(ReconcileWorker, std::fmt::Debug);
+    assert_not_impl!(ReconcileWorker, serde::Serialize);
+}
+
 struct NativeState {
     channels: Mutex<HashMap<i64, Value>>,
     bad_create: AtomicBool,

@@ -75,3 +75,27 @@
 | 代理响应与完整应用回执区分 | delivery_complete_proxy_errors_malformed_and_oversize_are_uncertain |
 
 五维度结论：契约与实现同步；遵循现有私有 Store/原生管理 API 边界；正确性回归与独审发现已关闭；无逐 peer 整组重载、无网络持目录锁；共享错误分类、源 gate 和客户端预算，没有双写者。真实预检 producer、完整 R8/R10 及跨模块组合验收仍是退出门禁，本次不将 SGM-2 标为完成，不接线或部署现行服务。
+
+## R8 R10 验收补齐
+
+- A1 短冷却缺少独立 oracle：已补。每波四个请求分属两个身份且响应序列不同；记录头处理时的冷却事件和后续准入起点，与独立生成的 429 数量及固定 2 秒 Retry-After 核对。所有后续身份的准入必须满足截止，前已在途请求不误判。独审最终重跑通过。
+- A3 脚本隐私覆盖不全：已补。除 r10_ 测试，显式运行现有 key/header/selector/指纹、真实 WorkTicket、实际 OperationView 和 ControlCommand 的三项回归，不用新类型断言代替这些实际输出检查。
+- W1 证据范围：接受并写入契约。时间窗 oracle 是预算准入时刻，服务端次数与业务/登录路径用于对照；不声称逐请求跨网络时间配对或物理到达硬实时。64 槽、取消/超时仍保留既有边界测试；完整 worker 组合验收不由这四并发测试替代。负 trait 断言仅防指定类型误加能力，不是任意未来手写日志的信息流证明。
+- 独审阅读边界：审核者曾收到包含 Step 5 历史的过宽输出，已在报告披露；本轮期待从原契约推导，证据由独立执行产生，未依赖主测试结果，不宣称完全盲读。
+
+主验证：`cargo test --locked --offline --quiet` 为 245 passed / 1 ignored（55.40 秒）；新增 5 项中 2 项 PBT 各 128 cases。`bash scripts/contract_audit/sgm2_assurance.sh`、release 和 diff 检查通过；clippy 仅原有 6 条警告。生产源码只有 cfg(test) 的观测事件和测试模块声明增量，旧运行算法、数据库、依赖和配置均不变；原生隔离测试本轮未重跑，保持此前的独立结果，不冒充新增证据。
+
+6 项变异在独立临时副本、独立 target 中逐项运行并恢复源码：
+
+| 变异 | 预期捕获及实际结果 |
+| --- | --- |
+| 业务请求跳过预算 | R8 HTTP PBT 运行时失败：准入与服务端请求数不等 |
+| 登录跳过预算 | 同上，登录没有被计入预算 |
+| 不发布共享冷却截止 | R8 HTTP PBT 运行时失败：违反独立短 Retry-After 截止 |
+| ManagementRequest 增加 Debug | 仓库负 trait 断言触发 E0283，编译拒绝 |
+| RawChannelDocument 增加 Serialize | 仓库负 trait 断言触发 E0283，编译拒绝 |
+| ExecutionEffect Debug 输出字段 | 内部 Debug PBT 运行时捕获哨兵泄漏 |
+
+路径 B 见[独审报告](assurance-audit.md)，0 未关闭阻断项。五维度复核：本轮仅增强既有契约门禁；测试辅助宏无新依赖，事件仅测试编译可见；独立 oracle、字段哨兵与仓库变异共同验证测试有效性；有限虚拟时钟驱动，无新增生产开销；共用既有 Fake、预算、隐私回归，没有另建运行框架。
+
+真实预检未实现。候选本地托管方案不写 NewAPI option，但会限制首个 producer 的部署范围，因此先向用户确认是否本版还需远程 NewAPI。尚未得到选择，不自动以本地方案替代原目标；其他安全独立验收可继续推进，SGM-2 和完整 feature 均不标完成。

@@ -193,6 +193,10 @@ struct BudgetState {
     queue: VecDeque<Waiter>,
     active: usize,
     background: usize,
+    #[cfg(test)]
+    admissions: Vec<(Instant, RequestClass)>,
+    #[cfg(test)]
+    cooldowns: Vec<(usize, Instant, Duration)>,
 }
 /// 显式共享而不是全局单例；后续普通签发身份必须复用同一个 Arc。
 pub struct ManagementBudget {
@@ -213,6 +217,10 @@ impl ManagementBudget {
                 queue: VecDeque::new(),
                 active: 0,
                 background: 0,
+                #[cfg(test)]
+                admissions: Vec::new(),
+                #[cfg(test)]
+                cooldowns: Vec::new(),
             }),
             changed: Notify::new(),
             requests: Arc::new(Semaphore::new(QUEUE_LIMIT)),
@@ -229,6 +237,11 @@ impl ManagementBudget {
         let now = Instant::now();
         let mut state = self.state.lock().unwrap();
         // 不可表示的截止时间保持熔断，不截短服务器要求。
+        #[cfg(test)]
+        {
+            let next = state.admissions.len();
+            state.cooldowns.push((next, now, delay));
+        }
         match now.checked_add(delay) {
             Some(until) => state.cooldown = state.cooldown.max(until),
             None => state.unbounded_cooldown = true,
@@ -318,6 +331,7 @@ impl ManagementBudget {
                     #[cfg(test)]
                     {
                         admission.admitted_at = Some(admitted_at);
+                        state.admissions.push((admitted_at, class));
                     }
                     drop(state);
                     self.changed.notify_waiters();
@@ -807,6 +821,8 @@ impl Drop for RefreshCancellation<'_> {
     }
 }
 
+#[cfg(test)]
+pub(crate) mod assurance_tests;
 #[cfg(test)]
 mod delivery_tests;
 #[cfg(test)]
