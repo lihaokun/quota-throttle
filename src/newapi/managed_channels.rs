@@ -10,6 +10,7 @@ use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::time::SystemTime;
 
+#[derive(Clone)]
 pub struct ChannelObservation {
     pub observed_at: SystemTime,
     pub channel_id: i64,
@@ -95,7 +96,7 @@ impl RawChannelDocument {
         Ok(changed.then_some(self.0))
     }
 }
-#[derive(Default)]
+#[derive(Default, Clone, PartialEq, Eq)]
 pub struct ChannelPatch {
     pub priority: Option<i64>,
     pub models: Option<String>,
@@ -127,10 +128,24 @@ pub enum NativeRecoveryCheck {
 
 pub struct ManagedChannels<'a> {
     transport: &'a ManagementTransport,
+    guard: Option<&'a (dyn Fn() -> bool + Send + Sync)>,
 }
 impl<'a> ManagedChannels<'a> {
     pub fn new(transport: &'a ManagementTransport) -> Self {
-        Self { transport }
+        Self {
+            transport,
+            guard: None,
+        }
+    }
+
+    pub fn fenced<'b>(
+        &'b self,
+        guard: &'b (dyn Fn() -> bool + Send + Sync),
+    ) -> ManagedChannels<'b> {
+        ManagedChannels {
+            transport: self.transport,
+            guard: Some(guard),
+        }
     }
 
     async fn request(
@@ -142,13 +157,12 @@ impl<'a> ManagedChannels<'a> {
         class: RequestClass,
         limit: usize,
     ) -> Result<Value> {
-        self.transport
-            .send(
-                ManagementRequest::new(method, path, body, semantics, limit)?,
-                class,
-            )
-            .await?
-            .envelope()
+        let request = ManagementRequest::new(method, path, body, semantics, limit)?;
+        let response = match self.guard {
+            Some(guard) => self.transport.send_fenced(request, class, guard).await?,
+            None => self.transport.send(request, class).await?,
+        };
+        response.envelope()
     }
 
     pub async fn get_channel(&self, id: i64) -> Result<RawChannelDocument> {

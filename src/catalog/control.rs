@@ -432,7 +432,14 @@ fn affected_members(
     let mut members = Vec::new();
     while let Some(row) = rows.next()? {
         ensure(members.len() < MAX_MEMBERSHIPS, ControlErrorCode::Storage)?;
-        members.push(member_target(tx, MembershipId::new(row.get(0)?)?)?);
+        let mut target = member_target(tx, MembershipId::new(row.get(0)?)?)?;
+        if target.status_directive == StatusDirective::Enabled {
+            let completed_glm:bool=tx.query_row("SELECT s.kind='glm' AND COALESCE(m.applied_revision=?2,0) FROM memberships m JOIN sources s USING(source_id) WHERE membership_id=?1",params![target.membership_id.get(),target.revision],|r|r.get(0))?;
+            if completed_glm {
+                target.status_directive = StatusDirective::Preserve;
+            }
+        }
+        members.push(target);
     }
     if let ControlCommand::SetGroupPriorities { priorities, .. } = command {
         ensure(

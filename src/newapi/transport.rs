@@ -32,6 +32,7 @@ pub enum RequestSemantics {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ManagementErrorKind {
     InvalidInput,
+    RevisionConflict,
     QueueFull,
     AuthFailed,
     RemoteRejected,
@@ -214,6 +215,14 @@ impl ManagementBudget {
         self.changed.notify_waiters();
     }
     async fn admit(self: &Arc<Self>, class: RequestClass) -> Result<Admission> {
+        self.admit_checked(class, &|| Ok(())).await
+    }
+
+    async fn admit_checked(
+        self: &Arc<Self>,
+        class: RequestClass,
+        check: &(dyn Fn() -> Result<()> + Send + Sync),
+    ) -> Result<Admission> {
         let id = {
             let mut state = self.state.lock().unwrap();
             if state.queue.len() >= QUEUE_LIMIT {
@@ -232,6 +241,8 @@ impl ManagementBudget {
             id,
             class,
             active: false,
+            #[cfg(test)]
+            admitted_at: None,
         };
         loop {
             // 注册再检查，避免 drop/新高优先请求的通知落在检查与等待之间。
@@ -268,11 +279,23 @@ impl ManagementBudget {
                     && state.cooldown <= now
                     && state.credit >= TOKEN_NS
                 {
+                    // guard 只读当前已发布状态，不做 IO/等待/预算重入。
+                    // 先判定再计费；调用后重新取时间，不能把迟到退款算成新 token。
+                    check()?;
+                    let admitted_at = Instant::now();
+                    state.credit = (state.credit
+                        + admitted_at.duration_since(state.last).as_nanos())
+                    .min(2 * TOKEN_NS);
+                    state.last = admitted_at;
                     state.queue.retain(|q| q.id != id);
                     state.credit -= TOKEN_NS;
                     state.active += 1;
                     state.background += usize::from(class != RequestClass::Control);
                     admission.active = true;
+                    #[cfg(test)]
+                    {
+                        admission.admitted_at = Some(admitted_at);
+                    }
                     drop(state);
                     self.changed.notify_waiters();
                     return Ok(admission);
@@ -299,6 +322,8 @@ struct Admission {
     id: u64,
     class: RequestClass,
     active: bool,
+    #[cfg(test)]
+    admitted_at: Option<Instant>,
 }
 impl Drop for Admission {
     fn drop(&mut self) {
@@ -396,6 +421,15 @@ impl ManagementTransport {
         request: ManagementRequest,
         class: RequestClass,
     ) -> Result<ManagementResponse> {
+        self.send_fenced(request, class, &|| true).await
+    }
+
+    pub async fn send_fenced(
+        &self,
+        request: ManagementRequest,
+        class: RequestClass,
+        guard: &(dyn Fn() -> bool + Send + Sync),
+    ) -> Result<ManagementResponse> {
         // 包括等待 refresh 锁的调用；不能让认证等待绕开 64 槽上限。
         let _request = self.budget.register_request()?;
         let pending = {
@@ -409,8 +443,6 @@ impl ManagementTransport {
             self.refresh_session(0).await?;
         }
         for attempt in 0..2 {
-            // Step P2: 每次实际发送均先获共享预算；普通请求不持有 auth 锁。
-            let admission = self.budget.admit(class).await?;
             let (auth, generation) = {
                 let state = self.auth.lock().unwrap();
                 if state.failed {
@@ -418,7 +450,21 @@ impl ManagementTransport {
                 }
                 (state.auth.clone(), state.generation)
             };
-            let response = self.execute(&request, Some(&auth)).await;
+            let builder = self.prepare_request(&request, Some(&auth))?;
+            let check = || {
+                // 固定锁序 Budget -> auth；其它路径均先释放 auth 再申请预算。
+                if self.auth.lock().unwrap().failed {
+                    return Err(error(ManagementErrorKind::AuthFailed));
+                }
+                if !guard() {
+                    return Err(error(ManagementErrorKind::RevisionConflict));
+                }
+                Ok(())
+            };
+            // Step P2: 每次发送均获取预算；普通响应等待不持有 auth 锁。
+            // Step P13: 预算等待/401 恢复之后，同一次最终准入检查当前意图及认证熔断。
+            let admission = self.budget.admit_checked(class, &check).await?;
+            let response = self.execute(&request, builder).await;
             drop(admission);
             // Step P3: 释放在途槽后才能单飞登录；仅明确 401 允许重放创建。
             match response {
@@ -471,6 +517,7 @@ impl ManagementTransport {
             RequestSemantics::Create,
             SINGLE_BODY_LIMIT,
         )?;
+        let builder = self.prepare_request(&request, None)?;
         let _admission = self.budget.admit(RequestClass::Control).await?;
         // 登录已经发出后取消也不能让下一位等待者无条件再打登录。
         let mut cancellation = RefreshCancellation {
@@ -479,7 +526,7 @@ impl ManagementTransport {
             completed: false,
         };
         let result = self
-            .execute(&request, None)
+            .execute(&request, builder)
             .await
             .and_then(|r| r.envelope())
             .and_then(|b| {
@@ -571,9 +618,10 @@ impl ManagementTransport {
     }
 
     async fn unauthenticated(&self, request: &ManagementRequest) -> Result<ManagementResponse> {
+        let builder = self.prepare_request(request, None)?;
         let _admission = self.budget.admit(RequestClass::Control).await?;
         let response = self
-            .execute(request, None)
+            .execute(request, builder)
             .await
             .map_err(|err| err.for_request(request.semantics))?;
         response
@@ -582,39 +630,47 @@ impl ManagementTransport {
         Ok(response)
     }
 
-    async fn execute(
+    fn prepare_request(
         &self,
         request: &ManagementRequest,
         auth: Option<&Auth>,
+    ) -> Result<reqwest::RequestBuilder> {
+        let mut headers = self.extra_headers.clone();
+        match auth {
+            Some(Auth::Token(value)) => {
+                headers.insert(header::AUTHORIZATION, value.clone());
+            }
+            Some(Auth::Session(id)) => {
+                // RequestBuilder::header 是 append；必须先在 HeaderMap 中覆盖旧静态 ID。
+                headers.insert(
+                    "new-api-user",
+                    header::HeaderValue::from_str(&id.to_string())
+                        .map_err(|_| error(ManagementErrorKind::InvalidInput))?,
+                );
+            }
+            _ => {}
+        }
+        let mut builder = self
+            .client
+            .request(
+                request.method.clone(),
+                format!("{}{}", self.base_url, request.path),
+            )
+            .headers(headers);
+        if let Some(body) = &request.body {
+            builder = builder
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(body.clone());
+        }
+        Ok(builder)
+    }
+
+    async fn execute(
+        &self,
+        request: &ManagementRequest,
+        builder: reqwest::RequestBuilder,
     ) -> Result<ManagementResponse> {
         let future = async {
-            let mut headers = self.extra_headers.clone();
-            match auth {
-                Some(Auth::Token(value)) => {
-                    headers.insert(header::AUTHORIZATION, value.clone());
-                }
-                Some(Auth::Session(id)) => {
-                    // RequestBuilder::header 是 append；必须先在 HeaderMap 中覆盖旧静态 ID。
-                    headers.insert(
-                        "new-api-user",
-                        header::HeaderValue::from_str(&id.to_string())
-                            .map_err(|_| error(ManagementErrorKind::InvalidInput))?,
-                    );
-                }
-                _ => {}
-            }
-            let mut builder = self
-                .client
-                .request(
-                    request.method.clone(),
-                    format!("{}{}", self.base_url, request.path),
-                )
-                .headers(headers);
-            if let Some(body) = &request.body {
-                builder = builder
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(body.clone());
-            }
             let mut response = builder
                 .send()
                 .await

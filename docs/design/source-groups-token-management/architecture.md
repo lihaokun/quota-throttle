@@ -1,6 +1,6 @@
 # 来源共享 分组路由和用量面板架构
 
-日期：2026-10-15。状态：架构已确认，sgm-1 及其复审修复已完成，sgm-2 前两批已验证，协调执行未实现。需求依据：[最新版方案](../../research/source-groups-token-management-research.md)。接口实证：[实现前审核](review.md)。架构确认不包含生产部署授权。
+日期：2026-10-15。状态：架构已确认，sgm-1 及其复审修复已完成，sgm-2 前两批及计划器小步已验证，持久执行/恢复未接线。需求依据：[最新版方案](../../research/source-groups-token-management-research.md)。接口实证：[实现前审核](review.md)。架构确认不包含生产部署授权。
 
 ## 目标与边界
 
@@ -246,7 +246,7 @@ priority 是对支持该请求模型的候选表达偏好。原生单次重试�
 | OperationId / ControlCommand | 稳定幂等 ID、受管动作、目标身份、expected_revision 与规范参数；同 ID 不变载荷 | 控制入口 → catalog/control；具体字段见子计划 §4.1 |
 | MemberTarget / StatusDirective | 成员 revision、priority、preserve/enabled/disabled、退役请求、稳定创建关联名 | catalog 写；reconciler 与后续策略读；源级 gate 始终更高优先 |
 | RoutingPermit | source/group 身份与 generation、启用资格、期望 priority；非序列化 | 策略/预检层产生，协调器消费；前端不得提供许可布尔值代替它 |
-| WorkTicket / WorkSnapshot | 成员动作与 generation，一致读取的 member/source/group/目标及必要同组状态 | store/worker/planner；不包含公开可序列化凭据 |
+| WorkTicket / WorkSnapshot | 成员动作与 member/source/group generation、写执行序号，一致读取的目标及完整可能路由的同组状态（含退役中成员） | store/worker/planner；纯计划类型已实现，持久票据/装配仍待接线；不包含公开可序列化凭据 |
 | BackendReadiness | 已核实的管理能力、原生自动启用开关、实例绑定及检查时间 | 只读预检 → 协调器；冲突不静默修改现有全局配置 |
 | ChannelObservation | 实际 channel 身份、路由字段、原生状态及观测时间 | NewAPI 客户端 → reconciler；原始 JSON 私有，未知不当零 |
 | OperationView | 操作身份/类型/阶段、目标 generation、确认计数、安全错误码及时间 | store 发布给面板；具体格式由 [schema](schemas/control-operation.schema.json) 约束 |

@@ -797,6 +797,97 @@ fn full_group_operation_is_bounded_and_preserves_each_priority() {
     }
 }
 
+#[test]
+fn priority_and_model_commands_do_not_rearm_completed_glm_enable() {
+    for kind in [SourceKind::Glm, SourceKind::Volcano] {
+        for completed in [false, true] {
+            let (_dir, mut store) = setup();
+            let source = store
+                .create_source(source("fake-enable-once", kind))
+                .unwrap();
+            let group = store.create_group(group("once", kind)).unwrap();
+            let member = store
+                .plan_membership(source.source_id, group.group_id, 10)
+                .unwrap();
+            store
+                .submit_operation(
+                    op(1),
+                    ControlCommand::EnsureMember {
+                        membership_id: member.membership_id,
+                        expected_revision: 1,
+                        status: StatusDirective::Enabled,
+                    },
+                    1,
+                )
+                .unwrap();
+            if completed {
+                store
+                    .conn
+                    .execute("UPDATE memberships SET applied_revision=2", [])
+                    .unwrap();
+            }
+            store
+                .submit_operation(
+                    op(2),
+                    ControlCommand::SetGroupPriorities {
+                        group_id: group.group_id,
+                        expected_revision: 1,
+                        priorities: vec![(member.membership_id, 100)],
+                    },
+                    2,
+                )
+                .unwrap();
+            let expected = if kind == SourceKind::Glm && completed {
+                StatusDirective::Preserve
+            } else {
+                StatusDirective::Enabled
+            };
+            assert_eq!(
+                store
+                    .member_target(member.membership_id)
+                    .unwrap()
+                    .status_directive,
+                expected
+            );
+            if completed {
+                store
+                    .conn
+                    .execute("UPDATE memberships SET applied_revision=3", [])
+                    .unwrap();
+            }
+            store
+                .submit_operation(
+                    op(3),
+                    ControlCommand::SyncSourceModels {
+                        source_id: source.source_id,
+                        expected_revision: 1,
+                        models: vec!["changed-model".into()],
+                    },
+                    3,
+                )
+                .unwrap();
+            assert_eq!(
+                store
+                    .member_target(member.membership_id)
+                    .unwrap()
+                    .status_directive,
+                expected
+            );
+            store
+                .submit_operation(op(4), pause(source.source_id, 2, false), 4)
+                .unwrap();
+            assert_eq!(
+                store
+                    .member_target(member.membership_id)
+                    .unwrap()
+                    .status_directive,
+                StatusDirective::Enabled,
+                "new explicit resume may enable once again"
+            );
+        }
+    }
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(128))]
     #[test]

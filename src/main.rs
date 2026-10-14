@@ -5,6 +5,7 @@ mod model_catalog;
 pub mod newapi;
 mod orchestrator;
 mod quota;
+pub mod reconcile;
 mod status;
 
 use crate::boot::NewApiProcess;

@@ -1,6 +1,6 @@
 # 来源共享功能实施准备计划
 
-日期：2026-10-15。状态：[架构](architecture.md)已确认，sgm-1 完成，sgm-2 前两批已验证，协调执行未实现；不是授权部署清单。
+日期：2026-10-15。状态：[架构](architecture.md)已确认，sgm-1 完成，sgm-2 前两批及计划器小步已验证，持久执行/恢复未接线；不是授权部署清单。
 
 ## 当前完成与未完成
 
@@ -8,6 +8,7 @@
 - 已完成：[sgm-1](subplans/sgm-1-catalog-store.md) 的独立目录库及导入函数、[schema](schemas/catalog-snapshot.schema.json)、[审核与复审记录](../../audits/sgm-1-catalog-store/audit-report.md)。复审后的局部修复为 85 项测试及 release 构建通过，四种定向变异被 PBT 检出；不接管 CLI/运行服务。
 - 已验证：58 个既有 Rust 测试通过；11 项原生 NewAPI 契约检查通过，隔离进程退出。
 - 当前实施：[sgm-2 细化](subplans/sgm-2-channel-reconcile.md)、[操作 schema](schemas/control-operation.schema.json)、[事前 expectations](../../audits/sgm-2-channel-reconcile/expectations.md)。第一批管理传输与渠道接口完成测试和[独立审核](../../audits/sgm-2-channel-reconcile/audit-report.md)。第二批目录 v2 与本地持久意图完成[审核](../../audits/sgm-2-channel-reconcile/batch-2-audit.md)：当前全量 141 项普通测试及本批 3 项变异通过。协调执行和剩余整体验收仍待第三批。
+- 第三批进度：[计划器与发送门禁](../../audits/sgm-2-channel-reconcile/planner-audit.md)已验证，当前 164 项普通测试及本小步 6 项变异通过；真实预检、持久执行记录、ACK/回读、恢复 worker 尚未接线。
 - 未完成：sgm-2 第三批及整体验收；sgm-3 至 sgm-7 的细化/expectations 与实现，包括调度适配、用量采集、访问 key 管理、三页面 UI、生产迁移与发布。
 - 不开展：逐访问 key 上游绑定、火山临期、积分换算、硬 token 限额、修改 GLM 算法、定制 NewAPI 推理路由。
 

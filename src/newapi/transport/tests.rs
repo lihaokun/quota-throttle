@@ -709,3 +709,159 @@ async fn bootstrap_setup_malformed_write_receipt_is_unknown_without_login_or_ret
     assert_eq!(calls.len(), 2);
     assert!(calls.iter().all(|c| c.path == "/api/setup"));
 }
+
+#[tokio::test]
+async fn stale_intent_after_budget_wait_is_not_sent_or_charged() {
+    use std::sync::atomic::AtomicBool;
+    let fake = Fake::start(|_| Reply::json(json!({"success":true}))).await;
+    let client = fake.transport(true);
+    drop(client.budget.admit(RequestClass::Control).await.unwrap());
+    drop(client.budget.admit(RequestClass::Control).await.unwrap());
+    let current = AtomicBool::new(true);
+    let guard = || current.load(Ordering::SeqCst);
+    let request = ManagementRequest::new(
+        Method::POST,
+        "/api/channel/1/status",
+        Some(json!({"status":1})),
+        RequestSemantics::IdempotentWrite,
+        SINGLE_BODY_LIMIT,
+    )
+    .unwrap();
+    let mut waiting = Box::pin(client.send_fenced(request, RequestClass::Control, &guard));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), &mut waiting)
+            .await
+            .is_err()
+    );
+    current.store(false, Ordering::SeqCst);
+    assert_eq!(
+        waiting.await.err().unwrap().kind,
+        ManagementErrorKind::RevisionConflict
+    );
+    assert!(fake.calls.lock().unwrap().is_empty());
+    assert!(tokio::time::timeout(
+        Duration::from_millis(200),
+        client.send(read(), RequestClass::Control)
+    )
+    .await
+    .unwrap()
+    .is_ok());
+    assert_eq!(fake.calls.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn queued_request_rechecks_auth_circuit_at_final_admission() {
+    let fake = Fake::start(|_| Reply::json(json!({"success":true}))).await;
+    let client = fake.transport(true);
+    drop(client.budget.admit(RequestClass::Control).await.unwrap());
+    drop(client.budget.admit(RequestClass::Control).await.unwrap());
+    let mut waiting = Box::pin(client.send(read(), RequestClass::Control));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), &mut waiting)
+            .await
+            .is_err()
+    );
+    client.fail_generation(0);
+    assert_eq!(
+        waiting.await.err().unwrap().kind,
+        ManagementErrorKind::AuthFailed
+    );
+    assert!(fake.calls.lock().unwrap().is_empty());
+    drop(
+        tokio::time::timeout(
+            Duration::from_millis(200),
+            client.budget.admit(RequestClass::Control),
+        )
+        .await
+        .unwrap()
+        .unwrap(),
+    );
+}
+
+#[tokio::test]
+async fn slow_guard_never_creates_late_refund_or_stale_admission_burst() {
+    // 故意阻塞 guard 模拟线程调度暂停；生产 guard 禁止 IO/等待。
+    for accepted in [false, true] {
+        let budget = ManagementBudget::new();
+        let start = Instant::now();
+        let mut trace = Vec::new();
+        let first = budget.admit(RequestClass::Control).await.unwrap();
+        trace.push(first.admitted_at.unwrap().duration_since(start).as_nanos());
+        drop(first);
+        let check = || {
+            std::thread::sleep(Duration::from_millis(2100));
+            if accepted {
+                Ok(())
+            } else {
+                Err(error(ManagementErrorKind::RevisionConflict))
+            }
+        };
+        let result = budget.admit_checked(RequestClass::Control, &check).await;
+        if accepted {
+            let admitted = result.unwrap();
+            let at = admitted.admitted_at.unwrap();
+            assert!(at.duration_since(start) >= Duration::from_millis(2100));
+            trace.push(at.duration_since(start).as_nanos());
+            drop(admitted);
+        } else {
+            assert_eq!(
+                result.err().unwrap().kind,
+                ManagementErrorKind::RevisionConflict
+            );
+        }
+        for _ in 0..3 {
+            let admitted = budget.admit(RequestClass::Control).await.unwrap();
+            trace.push(
+                admitted
+                    .admitted_at
+                    .unwrap()
+                    .duration_since(start)
+                    .as_nanos(),
+            );
+            drop(admitted);
+        }
+        for i in 0..trace.len() {
+            for j in i..trace.len() {
+                assert!(
+                    (j - i + 1) as u128 <= 2 + (trace[j] - trace[i]) / 1_000_000_000,
+                    "late admission violated burst bound"
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn intent_invalidated_during_login_is_not_replayed_after_401() {
+    use std::sync::atomic::AtomicBool;
+    let current = Arc::new(AtomicBool::new(true));
+    let marker = current.clone();
+    let fake = Fake::start(move |call| {
+        if call.path == "/api/user/login" {
+            marker.store(false, Ordering::SeqCst);
+            Reply::json(json!({"success":true,"data":{"id":42}}))
+        } else {
+            Reply::status(401)
+        }
+    })
+    .await;
+    let client = fake.transport(false);
+    client.auth.lock().unwrap().auth = Auth::Session(1);
+    let guard = || current.load(Ordering::SeqCst);
+    assert_eq!(
+        client
+            .send_fenced(read(), RequestClass::Control, &guard)
+            .await
+            .err()
+            .unwrap()
+            .kind,
+        ManagementErrorKind::RevisionConflict
+    );
+    let calls = fake.calls.lock().unwrap();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(
+        calls.iter().filter(|c| c.path == "/api/channel/1").count(),
+        1
+    );
+    assert_eq!(client.budget.state.lock().unwrap().active, 0);
+}
