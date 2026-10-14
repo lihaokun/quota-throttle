@@ -1,6 +1,6 @@
 # 渠道协调器与持久控制操作细化设计
 
-子计划：sgm-2-channel-reconcile。日期：2026-10-15。基线：f9f02aa。状态：用户以“继续吧”确认推进，第一批管理传输与渠道接口已验证；目录 v2 与协调器待实现，不授权部署。
+子计划：sgm-2-channel-reconcile。日期：2026-10-15。基线：f9f02aa。状态：用户以“继续吧”确认推进，前两批管理接口、目录 v2 与持久意图已验证；协调器待实现，不授权部署。
 
 ## 1 范围
 
@@ -96,7 +96,7 @@ ControlCommand 的引用和类型匹配在同一事务验证。相同 operation_
 
 - source_control：source_id PK/FK、retire_requested。来源手动暂停仍在 sources.manual_paused；来源控制变更增加 config_revision，后续策略改变可路由资格时也必须使相关控制 generation 失效。
 - member_control：membership_id PK/FK、revision、status_directive、retire_requested、create_state、create_name、dirty、next_attempt_at、last_error_code。create_state 为 never / may_have_been_sent / resolved；create_name 唯一，retired 后不复用。原 observed/applied 字段继续在 memberships，不复制第二份观测值。
-- control_operations：operation_id PK、kind、target_type/ID、payload_digest、target_revision、phase、error_code、created_at/updated_at。
+- control_operations：operation_id PK、kind、target_type/ID、payload_digest、target_revision、expected_targets、phase、error_code、created_at/updated_at。expected_targets 冻结提交时的目标数量，不因子收据行丢失而把非零操作误判为零目标成功。
 - operation_targets：operation_id/member_id 联合主键、target_member_revision、confirmed_at、非敏感回读摘要；确认数从已核对的目标收据集合计算，不凭收到几次 ACK 递增。成功操作的历史收据不因后来更新成员而消失；尚未完成的操作被新目标取代时标为 superseded，旧回执不能完成新操作。
 
 catalog_meta 重建为 version=2 并增加随机 catalog_instance_id（SQLite randomblob 生成 128 位十六进制标识），与 PRAGMA user_version 在同一事务更新。新库先建不可变 v1 核心，再运行相同 v1→v2 迁移；旧库先只读验证 v1 身份/约束和完整性，成功备份后才迁移。迁移失败回滚，未知提交重开核对，绝不初始化成空库。
@@ -233,3 +233,23 @@ RawChannelDocument::patch 对应 patch_owned_fields；ScanAccumulator::append �
 这些辅助函数只操作有限输入或预算状态：逐页最多 100 项、全扫描最多 10000 项、队列最多 64 项；HTTP 总时限包括响应体读取。解析失败不产生空成功；错误类型不保存原始响应或 reqwest 错误链。新模块供后续协调器调用，尚未接入生产运行模式。旧 NewApiClient 仅替换管理传输和集合尾斜杠，模型发现使用独立 HTTP client，原 GLM 选择函数不改。
 
 NewApiClient::new 委托 with_budget；后者由组装层注入同实例预算，managed_channels 借用同一传输，不创建第二套管理会话或预算。三个包装函数仅构造/借用既有类型，无新业务状态；新模式仍不得与旧调度器同时写相同渠道。ManagementError::for_request 将写请求的不可解析/超限回执转为 transport_unknown，读请求保留 invalid_response；显式 setup 和受管业务写均使用此分类，login 失败仍统一认证熔断。会话身份在 HeaderMap 中覆盖 New-Api-User，避免追加静态旧 ID；token 模式保留配置的用户 ID。
+
+### 第二批数据库与操作边界
+
+本批实现 P8–P10，仅产生本地目标和 queued/superseded/无外部目标时的 succeeded；不发送 HTTP，不生成远端确认，不实现 P14–P16 的 ACK/重试入口。控制共享类型暂归 catalog/control，后续协调器引用，不重复定义枚举。数据库版本常量与 CatalogSnapshot/OperationView 格式版本分开。
+
+open 保留现有私有路径和 OS 锁检查。旧库在只读连接中核对版本、DDL、quick_check、外键、完整目录及私有材料，再打开可写连接。合法旧 v1 库使用既有 backup_to 生成同私有目录下不覆盖的 catalog-v1-before-v2-<随机标识>.sqlite3，备份文件与所在目录同步成功后才开启迁移事务；新空库无需冗余备份。迁移先重建元表，再建立侧表与索引、填充所有来源/成员控制行、设置两个版本标记，提交后复核。迁移失败保留原库和备份，重试生成新备份，不覆盖旧文件。
+
+verify_schema 按版本比较不可变 v1 核心及对应元表/侧表 DDL；verify_control 检查一对一完整性、创建名与实例/成员身份的一致性、创建状态与 channel_id 一致性。新增侧表使用 STRICT 和有限值域/FK/CHECK，操作按 PK 读取，目标最多 10000 个，不把全部历史操作加载内存。insert_source/insert_membership 在原事务补对应控制行；retire_requested 或已归档来源拒绝新成员。
+
+canonical_command_digest 的输入只有受限命令：操作 ID 16..64 ASCII、正 expected_revision、合法实体 ID；priority 集合排序并拒绝重复，模型列表规范为非空有界集合后排序；正文不含凭据。摘要包括 expected_revision，不包括当前时刻。submit_operation 先规范载荷并查同 ID，完全相同返回历史收据；新 ID 才核对当前 revision 与完整有效成员集。相同 ID 不同参数、缺失对象、退休对象、溢出或不完整组计划均整笔拒绝。
+
+提交时 source/group 命令递增相应实体 generation，受影响成员递增 revision、清 applied_revision、置 dirty，并在同事务保存操作与目标行。来源暂停 true/退役指定 disabled；恢复记录 enabled 请求，但不生成 RoutingPermit、不开启渠道、不清供应商耗尽状态。完整组 priority 只更新该组有效成员，来源模型成功发现只更新自身 settings 中的模型字段及关联有效成员目标，保留 quota/header/key。退休来源不能新增成员，成员退役请求不得被普通 EnsureMember 撤销。
+
+新命令替换成员目标时，关联的旧未完成操作标 superseded；已有 succeeded 收据及目标行不删除。来源级命令覆盖仍有效的全部成员，已退休身份继续保留而不再启用。零成员的暂停/模型更新仅有本地效果，可立即 succeeded；零有效成员的来源退役同时归档。非零目标无论是否已有观测均 queued，确认数为 0，后续必须新鲜回读。operation_projection 只按目标收据集合计算确认数并验证 succeeded/failed 的组合，不凭 phase 或 ACK 次数编造确认。
+
+审核补充：原始 expected_targets 在操作创建时固定，OperationView 的 total_targets 来自这一值，并核对实际子行数；membership 类型必须恰好一个目标。子行丢失时读取/重开均报告存储损坏，不能把“当前没有子行”解释为原本零目标本地操作。此私有计数不替代逐成员收据或新鲜回读。
+
+正确性依据：单写者事务使意图/成员代次/收据目标同时可见，失败回滚不留下半个暂停；先查幂等 ID 保留重放语义；保留旧成功收据避免历史随新目标改变。新库及迁移库使用同一侧表初始化，实例 ID 只生成一次，创建关联名不依赖名称/模型/凭据。所有循环受目录容量或当前操作目标数限制；备份继续使用有界分步 SQLite backup。
+
+本批测试须覆盖随机 v1 来源/组/成员完整材料迁移、迁移 DDL 中途失败回滚、私有备份与旧格式、侧表破坏拒绝、容量重复不退化；操作重复/不同载荷/过期 revision、跨组 priority 隔离、来源暂停扇出、退休拒绝新增成员、同事务注入故障、重开与历史收据保持。R1/R2/R11 可在本批测试本地语义；实际网络 ACK/gate/恢复仍待第三批，不把本地测试冒充远端协调验收。

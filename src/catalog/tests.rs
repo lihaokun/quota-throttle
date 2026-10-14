@@ -6,6 +6,9 @@ use std::collections::BTreeMap;
 use std::os::unix::fs::{symlink, PermissionsExt};
 use tempfile::TempDir;
 
+#[path = "control_tests.rs"]
+mod control;
+
 fn setup() -> (TempDir, CatalogStore) {
     let dir = private_dir();
     let store = CatalogStore::open(&dir.path().join("catalog.sqlite3")).unwrap();

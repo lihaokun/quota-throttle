@@ -1,6 +1,6 @@
 # 渠道协调器契约验收清单
 
-子计划：sgm-2-channel-reconcile。日期：2026-10-15。状态：事前预期已冻结，第一批已验证；不是整体验收通过记录。不能根据实现结果反向删掉验收项。
+子计划：sgm-2-channel-reconcile。日期：2026-10-15。状态：事前预期已冻结，前两批已验证；不是整体验收通过记录。不能根据实现结果反向删掉验收项。
 
 ## 1 契约源
 
@@ -132,7 +132,7 @@ CatalogSnapshot 的 JSON 版本保持 1；数据库 schema 升到 2，两个常�
 
 ## Step 5 记录
 
-第一批管理传输与渠道接口已验证。P8–P16、目录 v2 和持久操作尚未实现；不得将传输测试通过记为 sgm-2 整体完成。NativeRecoveryCheck 只是 BackendReadiness 的一个前提。
+P1–P10 的管理传输、渠道接口、目录 v2 与本地持久意图已验证。P11–P16 尚未实现；不得将前两批通过记为 sgm-2 整体完成。NativeRecoveryCheck 只是 BackendReadiness 的一个前提。
 
 2026-10-15 设计检查：schema metaschema 与设计样例通过；8 个非法样例（未知阶段、过短操作 ID、非法实体 ID、动作/目标类型冲突、成功仍带错误、失败不带错误、零 revision、额外 credential 字段）均被拒绝；本地 Markdown 链接检查通过。未修改业务源码或生产服务。
 
@@ -141,3 +141,5 @@ CatalogSnapshot 的 JSON 版本保持 1；数据库 schema 升到 2，两个常�
 后续路径 A：单元/边界/PBT、实际 JSON Schema 校验、流程/枚举/副作用检查、隔离原生 API 实测及定向变异。路径 B：按 workflow §6.5 给独立 subagent 契约与 diff，不给实现位置列，处理全部阻断项再更新 audit-report/decisions。最终按 §5.2 做五维度复核。
 
 第一批验证记录：120 个普通测试通过；另行运行的原生隔离测试通过。新增 5 项 PBT 各 128 cases，3 项定向变异均被捕获。P1–P7 机械检查、旧目录实际快照 schema、release 构建通过。独立审核及修正见 [审核报告](audit-report.md) 与 [处置](decisions.md)。R8/R10 的完整防退化门禁和 P8–P16 仍未完成，因此本清单整体不勾选通过。
+
+第二批验证记录：141 个普通测试通过（含新增 21 项，其中 4 项 PBT 各 128 cases），3 项定向变异均被捕获；第二批机械检查、OperationView 实际输出及枚举/SQL/schema、旧快照 v1、release 构建通过。独审发现并修复“目标子行丢失仍可显示成功”：新增冻结 expected_targets 与读取/重开集合核对。详见[第二批审核](batch-2-audit.md)。当前尚欠 P11–P16、完整 ACK/permit/worker PBT 与第一批 R8/R10 防退化门禁，整体仍不勾选退出通过。

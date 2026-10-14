@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 const APPLICATION_ID: i64 = 0x51545343;
 const SCHEMA: &str = include_str!("schema_v1.sql");
+const SCHEMA_V2: &str = include_str!("schema_v2.sql");
 const SOURCE_COLUMNS: &str = "source_id,kind,name,note,manual_paused,retired_at,config_revision";
 const GROUP_COLUMNS: &str = "group_id,newapi_group,name,kind,revision,ready";
 const MEMBER_COLUMNS: &str = "membership_id,source_id,group_id,channel_id,position,lifecycle,desired_priority,observed_status,observed_priority,applied_revision,retired_at";
@@ -40,10 +41,10 @@ impl From<rusqlite::Error> for CatalogError {
 
 /// 字段顺序保证 SQLite 连接先于进程锁释放。连接不会对外暴露。
 pub struct CatalogStore {
-    conn: Connection,
+    pub(super) conn: Connection,
     _lock: File,
     path: PathBuf,
-    poisoned: bool,
+    pub(super) poisoned: bool,
 }
 
 impl CatalogStore {
@@ -97,6 +98,7 @@ impl CatalogStore {
             Err(_) => return Err(error(ErrorKind::Storage)),
         };
         // Step P3: 外库/高版本在任何持久 pragma 之前拒绝。
+        let mut version = 1;
         if !new_file {
             let probe = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)
                 .map_err(map_probe_error)?;
@@ -105,9 +107,19 @@ impl CatalogStore {
                 .pragma_query_value(None, "application_id", |r| r.get(0))
                 .map_err(map_probe_error)?;
             require(app == APPLICATION_ID, ErrorKind::ForeignDatabase)?;
-            let version: i64 = probe.pragma_query_value(None, "user_version", |r| r.get(0))?;
-            require(version == SCHEMA_VERSION, ErrorKind::UnsupportedSchema)?;
-            verify_schema(&probe)?;
+            version = probe.pragma_query_value(None, "user_version", |r| r.get(0))?;
+            require(
+                (1..=DATABASE_SCHEMA_VERSION).contains(&version),
+                ErrorKind::UnsupportedSchema,
+            )?;
+            // Step P8: 旧库在只读事务完整验证后才备份/迁移，不初始化成空库。
+            probe.execute_batch("BEGIN")?;
+            verify_schema(&probe, version)?;
+            verify_core_data(&probe)?;
+            if version == 2 {
+                super::control::verify_control(&probe)?;
+            }
+            probe.execute_batch("ROLLBACK")?;
         }
         // Step P4: 仅初始化本次创建的库；schema 与版本标记同事务。
         let mut conn = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
@@ -116,11 +128,28 @@ impl CatalogStore {
         if new_file {
             let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
             tx.execute_batch(SCHEMA)?;
-            tx.execute("INSERT INTO catalog_meta VALUES(1,?1)", [SCHEMA_VERSION])?;
+            tx.execute("INSERT INTO catalog_meta VALUES(1,1)", [])?;
             tx.pragma_update(None, "application_id", APPLICATION_ID)?;
-            tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+            tx.pragma_update(None, "user_version", 1)?;
             tx.commit()?;
         }
+        let mut store = Self {
+            conn,
+            _lock: lock,
+            path,
+            poisoned: false,
+        };
+        if version == 1 {
+            if !new_file {
+                let suffix: String =
+                    store
+                        .conn
+                        .query_row("SELECT lower(hex(randomblob(16)))", [], |r| r.get(0))?;
+                store.backup_to(&parent.join(format!("catalog-v1-before-v2-{suffix}.sqlite3")))?;
+            }
+            store.migrate_v1()?;
+        }
+        let conn = &store.conn;
         // Step P5: 配置回读及数据检查完成才发布 Store。
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "FULL")?;
@@ -138,12 +167,8 @@ impl CatalogStore {
                 r.get(0)
             })?;
         require(fk_errors == 0, ErrorKind::CorruptData)?;
-        let mut store = Self {
-            conn,
-            _lock: lock,
-            path,
-            poisoned: false,
-        };
+        verify_schema(conn, DATABASE_SCHEMA_VERSION)?;
+        super::control::verify_control(conn)?;
         let snapshot = store.snapshot()?;
         for source in &snapshot.sources {
             store.read_material(source.source_id, true)?;
@@ -163,8 +188,26 @@ impl CatalogStore {
         Ok(store)
     }
 
-    fn usable(&self) -> Result<()> {
+    pub(super) fn usable(&self) -> Result<()> {
         require(!self.poisoned, ErrorKind::CommitUnknown)
+    }
+
+    fn migrate_v1(&mut self) -> Result<()> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute("DROP TABLE catalog_meta", [])?;
+        tx.execute_batch(SCHEMA_V2)?;
+        tx.execute(
+            "INSERT INTO catalog_meta VALUES(1,2,lower(hex(randomblob(16))))",
+            [],
+        )?;
+        tx.execute("INSERT INTO source_control(source_id,retire_requested) SELECT source_id,0 FROM sources",[])?;
+        tx.execute("INSERT INTO member_control(membership_id,revision,status_directive,retire_requested,create_state,create_name,dirty,next_attempt_at) SELECT membership_id,1,'preserve',0,CASE WHEN channel_id IS NULL THEN 'never' ELSE 'resolved' END,'qt-'||(SELECT catalog_instance_id FROM catalog_meta)||'-m'||membership_id,0,0 FROM memberships",[])?;
+        tx.pragma_update(None, "user_version", DATABASE_SCHEMA_VERSION)?;
+        verify_schema(&tx, DATABASE_SCHEMA_VERSION)?;
+        super::control::verify_control(&tx)?;
+        commit(tx, &mut self.poisoned)
     }
 
     pub fn create_source(&mut self, draft: SourceDraft) -> Result<SourceView> {
@@ -287,28 +330,7 @@ impl CatalogStore {
     pub fn snapshot(&mut self) -> Result<CatalogSnapshot> {
         self.usable()?;
         let tx = self.conn.transaction()?;
-        let snapshot = CatalogSnapshot {
-            schema_version: SCHEMA_VERSION,
-            sources: read_rows(
-                &tx,
-                &format!("SELECT {SOURCE_COLUMNS} FROM sources ORDER BY source_id"),
-                MAX_SOURCES,
-                decode_source_view,
-            )?,
-            groups: read_rows(
-                &tx,
-                &format!("SELECT {GROUP_COLUMNS} FROM source_groups ORDER BY group_id"),
-                MAX_GROUPS,
-                decode_group_view,
-            )?,
-            memberships: read_rows(
-                &tx,
-                &format!("SELECT {MEMBER_COLUMNS} FROM memberships ORDER BY membership_id"),
-                MAX_MEMBERSHIPS,
-                decode_membership_view,
-            )?,
-        };
-        verify_snapshot(&snapshot)?;
+        let snapshot = read_snapshot(&tx)?;
         // 只读事务结束不提交写入，不可能生成新的外部效果。
         tx.rollback()?;
         Ok(snapshot)
@@ -318,21 +340,7 @@ impl CatalogStore {
     }
     fn read_material(&self, id: SourceId, allow_retired: bool) -> Result<SourceMaterial> {
         self.usable()?;
-        let row: Option<(String, String, String, String, Option<i64>)> = self.conn.query_row(
-            "SELECT s.kind,s.settings_json,k.raw_key,s.credential_fingerprint,s.retired_at FROM sources s JOIN source_secrets k ON s.secret_id=k.secret_id WHERE s.source_id=?1",
-            [id.get()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional()?;
-        let (kind, json, raw_key, hash, retired) = row.ok_or_else(|| error(ErrorKind::NotFound))?;
-        require(allow_retired || retired.is_none(), ErrorKind::Retired)?;
-        let settings = decode_settings(&json)?;
-        let credential = SecretString::new(raw_key).map_err(|_| error(ErrorKind::CorruptData))?;
-        require(
-            settings.kind().as_str() == kind && fingerprint(&credential) == hash,
-            ErrorKind::CorruptData,
-        )?;
-        Ok(SourceMaterial {
-            settings,
-            credential,
-        })
+        read_material(&self.conn, id, allow_retired)
     }
 
     #[cfg(not(unix))]
@@ -416,6 +424,9 @@ impl CatalogStore {
             dest.close().map_err(|_| error(ErrorKind::BackupFailed))?;
             file.sync_all()
                 .map_err(|_| error(ErrorKind::BackupFailed))?;
+            File::open(&parent)
+                .and_then(|directory| directory.sync_all())
+                .map_err(|_| error(ErrorKind::BackupFailed))?;
             Ok(())
         })();
         if result.is_err() {
@@ -425,6 +436,49 @@ impl CatalogStore {
         }
         Ok(())
     }
+}
+
+fn read_snapshot(conn: &Connection) -> Result<CatalogSnapshot> {
+    let snapshot = CatalogSnapshot {
+        schema_version: CATALOG_SNAPSHOT_VERSION,
+        sources: read_rows(
+            conn,
+            &format!("SELECT {SOURCE_COLUMNS} FROM sources ORDER BY source_id"),
+            MAX_SOURCES,
+            decode_source_view,
+        )?,
+        groups: read_rows(
+            conn,
+            &format!("SELECT {GROUP_COLUMNS} FROM source_groups ORDER BY group_id"),
+            MAX_GROUPS,
+            decode_group_view,
+        )?,
+        memberships: read_rows(
+            conn,
+            &format!("SELECT {MEMBER_COLUMNS} FROM memberships ORDER BY membership_id"),
+            MAX_MEMBERSHIPS,
+            decode_membership_view,
+        )?,
+    };
+    verify_snapshot(&snapshot)?;
+    Ok(snapshot)
+}
+fn read_material(conn: &Connection, id: SourceId, allow_retired: bool) -> Result<SourceMaterial> {
+    let row: Option<(String, String, String, String, Option<i64>)> = conn.query_row(
+            "SELECT s.kind,s.settings_json,k.raw_key,s.credential_fingerprint,s.retired_at FROM sources s JOIN source_secrets k ON s.secret_id=k.secret_id WHERE s.source_id=?1",
+            [id.get()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional()?;
+    let (kind, json, raw_key, hash, retired) = row.ok_or_else(|| error(ErrorKind::NotFound))?;
+    require(allow_retired || retired.is_none(), ErrorKind::Retired)?;
+    let settings = decode_settings(&json)?;
+    let credential = SecretString::new(raw_key).map_err(|_| error(ErrorKind::CorruptData))?;
+    require(
+        settings.kind().as_str() == kind && fingerprint(&credential) == hash,
+        ErrorKind::CorruptData,
+    )?;
+    Ok(SourceMaterial {
+        settings,
+        credential,
+    })
 }
 
 #[cfg(unix)]
@@ -451,7 +505,7 @@ fn cleanup_failed_backup(
     }
 }
 
-fn commit(tx: Transaction<'_>, poisoned: &mut bool) -> Result<()> {
+pub(super) fn commit(tx: Transaction<'_>, poisoned: &mut bool) -> Result<()> {
     match tx.commit() {
         Ok(()) => Ok(()),
         Err(e) => {
@@ -509,7 +563,7 @@ fn map_probe_error(err: rusqlite::Error) -> CatalogError {
     }
 }
 
-fn verify_schema(conn: &Connection) -> Result<()> {
+fn verify_schema(conn: &Connection, expected_version: i64) -> Result<()> {
     let version: i64 = conn
         .query_row(
             "SELECT schema_version FROM catalog_meta WHERE singleton=1",
@@ -517,12 +571,25 @@ fn verify_schema(conn: &Connection) -> Result<()> {
             |r| r.get(0),
         )
         .map_err(|_| error(ErrorKind::CorruptData))?;
-    require(version == SCHEMA_VERSION, ErrorKind::CorruptData)?;
+    require(version == expected_version, ErrorKind::CorruptData)?;
     // 比较本版本 DDL，检测被删除/弱化的索引、FK、CHECK，不自动补表。
-    for statement in SCHEMA.split(';').map(str::trim).filter(|s| !s.is_empty()) {
+    let statements = SCHEMA
+        .split(';')
+        .map(str::trim)
+        .filter(|s| {
+            !(s.is_empty() || expected_version == 2 && s.starts_with("CREATE TABLE catalog_meta"))
+        })
+        .chain(
+            SCHEMA_V2
+                .split(';')
+                .map(str::trim)
+                .filter(|s| expected_version == 2 && !s.is_empty()),
+        );
+    for statement in statements {
         let tail = statement
             .strip_prefix("CREATE TABLE ")
             .or_else(|| statement.strip_prefix("CREATE UNIQUE INDEX "))
+            .or_else(|| statement.strip_prefix("CREATE INDEX "))
             .ok_or_else(|| error(ErrorKind::CorruptData))?;
         let name = tail
             .split([' ', '('])
@@ -537,6 +604,40 @@ fn verify_schema(conn: &Connection) -> Result<()> {
             actual.as_deref().is_some_and(|v| v.trim() == statement),
             ErrorKind::CorruptData,
         )?;
+    }
+    Ok(())
+}
+
+fn verify_core_data(conn: &Connection) -> Result<()> {
+    let check: String = conn.query_row("PRAGMA quick_check", [], |r| r.get(0))?;
+    require(check == "ok", ErrorKind::CorruptData)?;
+    let fk: i64 = conn.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| {
+        r.get(0)
+    })?;
+    require(fk == 0, ErrorKind::CorruptData)?;
+    let snapshot = read_snapshot(conn)?;
+    for source in &snapshot.sources {
+        read_material(conn, source.source_id, true)?;
+    }
+    let secrets: i64 = conn.query_row("SELECT count(*) FROM source_secrets", [], |r| r.get(0))?;
+    require(
+        secrets == snapshot.sources.len() as i64,
+        ErrorKind::CorruptData,
+    )?;
+    let receipt: Option<(String, String)> = conn
+        .query_row(
+            "SELECT digest,receipt_json FROM legacy_import WHERE singleton=1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    if let Some((digest, receipt)) = receipt {
+        require(
+            digest.len() == 64 && digest.bytes().all(|c| c.is_ascii_hexdigit()),
+            ErrorKind::CorruptData,
+        )?;
+        let receipt = serde_json::from_str(&receipt).map_err(|_| error(ErrorKind::CorruptData))?;
+        verify_receipt(conn, &receipt)?;
     }
     Ok(())
 }
@@ -571,8 +672,13 @@ fn insert_source(tx: &Transaction<'_>, source: &ValidatedSource) -> Result<Sourc
     let kind = source.draft.settings.kind();
     tx.execute("INSERT INTO sources(kind,name,note,secret_id,credential_fingerprint,settings_json,config_revision,manual_paused) VALUES(?1,?2,?3,?4,?5,?6,1,0)",
         params![kind.as_str(), source.draft.name, source.draft.note, secret.0, source.fingerprint, json])?;
+    let source_id = SourceId::new(tx.last_insert_rowid())?;
+    tx.execute(
+        "INSERT INTO source_control(source_id,retire_requested) VALUES(?1,0)",
+        [source_id.get()],
+    )?;
     Ok(SourceView {
-        source_id: SourceId::new(tx.last_insert_rowid())?,
+        source_id,
         kind,
         name: source.draft.name.clone(),
         note: source.draft.note.clone(),
@@ -621,6 +727,12 @@ fn member_parents(tx: &Transaction<'_>, source: SourceId, group: GroupId) -> Res
         .optional()?;
     let g = g.ok_or_else(|| error(ErrorKind::NotFound))?;
     require(retired.is_none(), ErrorKind::Retired)?;
+    let retiring: bool = tx.query_row(
+        "SELECT retire_requested FROM source_control WHERE source_id=?1",
+        [source.get()],
+        |r| r.get(0),
+    )?;
+    require(!retiring, ErrorKind::Retired)?;
     require(kind == g, ErrorKind::TypeMismatch)?;
     SourceKind::parse(&kind)
 }
@@ -660,8 +772,10 @@ fn insert_membership(tx: &Transaction<'_>, row: &NewMembership) -> Result<Member
     capacity(tx, "memberships", MAX_MEMBERSHIPS)?;
     tx.execute("INSERT INTO memberships(source_id,group_id,kind,channel_id,position,lifecycle,desired_priority) VALUES(?1,?2,?3,?4,?5,?6,?7)",
         params![row.source.get(),row.group.get(),row.kind.as_str(),row.channel.map(ChannelId::get),row.position,row.lifecycle.as_str(),row.priority])?;
+    let membership_id = MembershipId::new(tx.last_insert_rowid())?;
+    tx.execute("INSERT INTO member_control(membership_id,revision,status_directive,retire_requested,create_state,create_name,dirty,next_attempt_at) VALUES(?1,1,'preserve',0,?2,'qt-'||(SELECT catalog_instance_id FROM catalog_meta)||'-m'||?1,0,0)",params![membership_id.get(),if row.channel.is_some(){"resolved"}else{"never"}])?;
     Ok(MembershipView {
-        membership_id: MembershipId::new(tx.last_insert_rowid())?,
+        membership_id,
         source_id: row.source,
         group_id: row.group,
         channel_id: row.channel,
