@@ -12,6 +12,7 @@ const APPLICATION_ID: i64 = 0x51545343;
 const SCHEMA: &str = include_str!("schema_v1.sql");
 const SCHEMA_V2: &str = include_str!("schema_v2.sql");
 const SCHEMA_V3: &str = include_str!("schema_v3.sql");
+const SCHEMA_V4: &str = include_str!("schema_v4.sql");
 pub(super) const SOURCE_COLUMNS: &str =
     "source_id,kind,name,note,manual_paused,retired_at,config_revision";
 pub(super) const GROUP_COLUMNS: &str = "group_id,newapi_group,name,kind,revision,ready";
@@ -121,8 +122,11 @@ impl CatalogStore {
             if version >= 2 {
                 super::control::verify_control(&probe)?;
             }
-            if version == 3 {
+            if version >= 3 {
                 super::execution::verify_execution(&probe)?;
+            }
+            if version >= 4 {
+                super::policy::verify_policy(&probe)?;
             }
             probe.execute_batch("ROLLBACK")?;
         }
@@ -164,6 +168,16 @@ impl CatalogStore {
             }
             store.migrate_v2()?;
         }
+        if version <= 3 {
+            if !new_file && version == 3 {
+                let suffix: String =
+                    store
+                        .conn
+                        .query_row("SELECT lower(hex(randomblob(16)))", [], |r| r.get(0))?;
+                store.backup_to(&parent.join(format!("catalog-v3-before-v4-{suffix}.sqlite3")))?;
+            }
+            store.migrate_v3()?;
+        }
         let conn = &store.conn;
         // Step P5: 配置回读及数据检查完成才发布 Store。
         conn.pragma_update(None, "journal_mode", "WAL")?;
@@ -185,6 +199,7 @@ impl CatalogStore {
         verify_schema(conn, DATABASE_SCHEMA_VERSION)?;
         super::control::verify_control(conn)?;
         super::execution::verify_execution(conn)?;
+        super::policy::verify_policy(conn)?;
         let snapshot = store.snapshot()?;
         for source in &snapshot.sources {
             store.read_material(source.source_id, true)?;
@@ -243,6 +258,27 @@ impl CatalogStore {
         tx.pragma_update(None, "user_version", 3)?;
         verify_schema(&tx, 3)?;
         super::execution::verify_execution(&tx)?;
+        commit(tx, &mut self.poisoned)
+    }
+
+    fn migrate_v3(&mut self) -> Result<()> {
+        // Step B8: 旧库只读验证及原版本备份后，一事务追加状态并保留实例身份。
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let instance: String = tx.query_row(
+            "SELECT catalog_instance_id FROM catalog_meta WHERE singleton=1",
+            [],
+            |r| r.get(0),
+        )?;
+        tx.execute("DROP TABLE catalog_meta", [])?;
+        tx.execute_batch(SCHEMA_V4)?;
+        tx.execute("INSERT INTO catalog_meta VALUES(1,4,?1)", [instance])?;
+        tx.execute("INSERT INTO volcano_runtime(source_id) SELECT source_id FROM sources WHERE kind='volcano'", [])?;
+        tx.execute("INSERT INTO group_policy_state(group_id,kind,regime) SELECT group_id,kind,CASE WHEN kind='glm' THEN 'normal' END FROM source_groups", [])?;
+        tx.pragma_update(None, "user_version", 4)?;
+        verify_schema(&tx, 4)?;
+        super::policy::verify_policy(&tx)?;
         commit(tx, &mut self.poisoned)
     }
 
@@ -620,11 +656,16 @@ fn verify_schema(conn: &Connection, expected_version: i64) -> Result<()> {
                 && !s.is_empty()
                 && !(expected_version >= 3 && s.starts_with("CREATE TABLE catalog_meta"))
         }))
+        .chain(SCHEMA_V3.split(';').map(str::trim).filter(|s| {
+            expected_version >= 3
+                && !s.is_empty()
+                && !(expected_version >= 4 && s.starts_with("CREATE TABLE catalog_meta"))
+        }))
         .chain(
-            SCHEMA_V3
+            SCHEMA_V4
                 .split(';')
                 .map(str::trim)
-                .filter(|s| expected_version == 3 && !s.is_empty()),
+                .filter(|s| expected_version >= 4 && !s.is_empty()),
         );
     for statement in statements {
         let tail = statement
@@ -718,6 +759,12 @@ fn insert_source(tx: &Transaction<'_>, source: &ValidatedSource) -> Result<Sourc
         "INSERT INTO source_control(source_id,retire_requested) VALUES(?1,0)",
         [source_id.get()],
     )?;
+    if kind == SourceKind::Volcano {
+        tx.execute(
+            "INSERT INTO volcano_runtime(source_id) VALUES(?1)",
+            [source_id.get()],
+        )?;
+    }
     Ok(SourceView {
         source_id,
         kind,
@@ -741,8 +788,21 @@ fn insert_group(tx: &Transaction<'_>, group: &ValidatedGroup) -> Result<GroupVie
         "INSERT INTO source_groups(newapi_group,name,kind,revision,ready) VALUES(?1,?2,?3,1,0)",
         params![g.newapi_group, g.name, g.kind.as_str()],
     )?;
+    let group_id = GroupId::new(tx.last_insert_rowid())?;
+    tx.execute(
+        "INSERT INTO group_policy_state(group_id,kind,regime) VALUES(?1,?2,?3)",
+        params![
+            group_id.get(),
+            g.kind.as_str(),
+            if g.kind == SourceKind::Glm {
+                Some("normal")
+            } else {
+                None
+            }
+        ],
+    )?;
     Ok(GroupView {
-        group_id: GroupId::new(tx.last_insert_rowid())?,
+        group_id,
         newapi_group: g.newapi_group.clone(),
         name: g.name.clone(),
         kind: g.kind,

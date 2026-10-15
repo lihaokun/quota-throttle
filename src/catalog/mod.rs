@@ -4,6 +4,7 @@ pub mod confirmation;
 pub mod control;
 pub mod execution;
 mod legacy;
+pub(crate) mod policy;
 mod store;
 pub mod types;
 

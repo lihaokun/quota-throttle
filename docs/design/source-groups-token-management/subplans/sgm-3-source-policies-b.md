@@ -1,6 +1,6 @@
 # SGM-3 第二批火山状态与策略持久化
 
-状态：用户已确认 B，纯函数小步已实现并完成独立复审；验证记录见[纯函数审核](../../../audits/sgm-3-source-policies/batch-b-pure-audit.md)。存储与迁移尚未编码。设计基线 `2ec8b50`，确认后实施基线 `7f4fe7b`，属于 [SGM-3](sgm-3-source-policies.md) 的 B 批，不新开功能或改变部署架构。第一批 GLM 算法和已完成的认证修复保持不变。
+状态：用户已确认 B，纯函数和 v4 存储小步已实现并完成独立复审，见[纯函数审核](../../../audits/sgm-3-source-policies/batch-b-pure-audit.md)和[存储审核](../../../audits/sgm-3-source-policies/batch-b-storage-audit.md)。复杂历史迁移组合及完整 B 退出仍未完成。设计基线 `2ec8b50`，纯函数实施基线 `7f4fe7b`，存储实施基线 `0b52e50`；属于 [SGM-3](sgm-3-source-policies.md) 的 B 批，不新开功能或改变部署架构。第一批 GLM 算法和已完成的认证修复保持不变。
 
 ## 1 范围与交付边界
 
@@ -146,7 +146,7 @@ insert_source 在原事务追加火山未初始化行；insert_group 在原事�
 
 ## 6 存储函数和并发责任
 
-拟新增 `src/catalog/policy.rs`，公开范围仅 crate 内；复用 ControlResult。纯策略在 `src/source_policy/volcano.rs`，不让 SQL 层重写算法。
+`src/catalog/policy.rs` 的接口可见范围仅 crate 内；复用 ControlResult。纯策略在 `src/source_policy/volcano.rs`，不让 SQL 层重写算法。
 
 | 入口 | 校验与步骤 | 返回与副作用 |
 | --- | --- | --- |
@@ -159,6 +159,10 @@ insert_source 在原事务追加火山未初始化行；insert_group 在原事�
 update 是内部 enum，不是新增 ControlCommand 或前端 JSON。证据批次 Stale/Duplicate 不能改原因；若同次调用恰逢应重置，已完成的合法时间推进仍可提交。非法输入、Gap/NotReady 或版本冲突回滚整个事务，包括本次临时计算的重置。
 
 事务级 helper 接受已有 Transaction，供 C/SGM-4 把运行状态、操作/事实检查点、历史边界和成员目标组成一个事务；本批便利入口只验证本地持久化，不声称已具备该组合保证。跨重启必须先读取持久值、运行首次 Tick，再发布路由许可；CatalogStore::open 不擅自读取系统时钟清空额度。
+
+事务 helper 的调用前提：由已通过 usable 的 Store 单写者持有 IMMEDIATE 事务；任何 Err 都须回滚整个组合事务，不可捕获错误后提交前半段。便利入口以 RAII 回滚错误并复用 commit 的未知提交毒化。read_runtime/decode_runtime 严格区分缺行、全零占位和完整初始化；read_group_policy/decode_group_policy 核类型专属字段，再核成员归组。source_record/group_record 复用既有目录解码；前者只读本次所需配置，不读取 raw_key。get/volcano_policy/policy_error 为简单解码/类型分支/错误映射；write_runtime 仅按主键更新且要求恰好一行，不使用 UPSERT 补损坏。
+
+存储正确性论证：先读出并验证旧状态及两个版本，才计算候选；纯算法错误不触碰 SQL。配置内容与运行内容分别比较，故只改未触及上限时仅提升 source revision；需要写时同一事务提交，SQL/递增失败全部回滚。组状态先验证类型与归属，再进行 no-op 判断/提升版本，不以内容相同绕过版本冲突。verify_policy 限界读取来源/组 ID，再核行数、逐行值域及引用；不把缺失自动初始化。默认行与目录行在同一事务建立，故失败时不会只留下来源凭据或空组。
 
 所有运行期写入最终由既有 worker Core 单写者调用，网络不在事务/同步锁内。本批不新增 worker 写入口；C 接线前不得从旁路获取 Store 修改在线状态，也不得将新的 SourceSettings/Runtime 或组状态保存当成实际恢复成功。
 
@@ -186,7 +190,7 @@ C/SGM-4 必须另行给出并实测：终态识别、同源重试最终成功、
 
 事前测试见 [B 批 expectations](../../../audits/sgm-3-source-policies/batch-b-expectations.md)。PBT 覆盖独立原因、时钟/改规则、证据幂等、轮转及持久化保真，至少 128 cases/项；旧 GLM golden 继续运行。变异必须源码/target 双隔离。
 
-拟变更仅 source_policy 的 B 实现/测试、catalog 新策略持久化及迁移相关代码/测试、共享类型补充和本批机械脚本。旧 DDL、GLM 算法、NewAPI 管理/认证、worker 实际发布、CLI、面板零业务修改；旧测试仅更新“当前数据库版本”的断言，历史版本 fixture 和约束不得批量替换。
+变更仅 source_policy 的 B 实现/测试、catalog 新策略持久化及迁移相关代码/测试、共享类型补充和本批机械脚本。旧 DDL、GLM 算法、NewAPI 管理/认证、worker 实际发布、CLI、面板零业务修改。旧测试保持原断言；从当前库构造历史版本的 fixture 只追加移除 v4 侧表，保留真实旧版本结构，不批量替换历史字段、版本或约束。
 
 ## 10 完整性检查
 

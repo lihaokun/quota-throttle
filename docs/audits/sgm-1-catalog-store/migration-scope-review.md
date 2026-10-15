@@ -1,6 +1,6 @@
 # 来源目录后续迁移的版本范围与增量核对
 
-日期：2026-10-15。源码基线：`2c65f20`。对应外部审核 P1。本记录补齐 SGM-1 与 SGM-2 的契约承接，并只读核对受影响路径；不是重写历史审核、重跑测试或新增一轮完整独立 §6 验收。
+日期：2026-10-15。原只读核对基线：`2c65f20`，对应外部审核 P1。前述历史核对补齐 SGM-1 与 SGM-2 的契约承接，不重写历史审核；文末另行登记 SGM-3 B 引入的 v4 及其独立验证记录。
 
 ## 版本归属
 
@@ -11,7 +11,7 @@
 | SGM-2 持久执行小步 | v2→v3、执行侧表、验证及 prepared 重开恢复 | [执行日志审核](../sgm-2-channel-reconcile/execution-journal-audit.md) |
 | SGM-3 第一批 | 共享 quota 和 GLM 组适配，无数据库版本变更 | [第一批审核](../sgm-3-source-policies/audit-report.md) |
 
-当前 DATABASE_SCHEMA_VERSION=3，但 CatalogSnapshot/OperationView wire 仍为 1。v2/v3 都由 SGM-2 引入，不属于 SGM-3 A；旧阶段文档中的版本号和验证数字必须按其历史范围阅读。
+该历史基线 DATABASE_SCHEMA_VERSION=3，CatalogSnapshot/OperationView wire 为 1。v2/v3 都由 SGM-2 引入，不属于 SGM-3 A；旧阶段文档中的版本号和验证数字必须按其历史范围阅读。
 
 ## 受影响路径核对
 
@@ -32,3 +32,17 @@
 SGM-2 的独立审核分别覆盖新增迁移和执行恢复；SGM-3 A 最终记录的 277 passed/1 ignored 为该代码基线的全量回归历史证据。本次只补文档和做只读代码对照，没有新增执行结果，也不宣称重做 SGM-1 全范围独审。
 
 仍未接入生产运行服务。应用目录 schema 升级不等于旧 config 导入或 NewAPI 生产部署迁移；后两者的启用、备份与切换窗口仍归 SGM-7，需单独授权。
+
+## SGM-3 B 的 v4 增量登记
+
+存储小步实施基线 `0b52e50`。v4 由 SGM-3 B 引入，新增 volcano_runtime 和 group_policy_state；公开 CatalogSnapshot/OperationView wire 仍为 1。详见 [B 存储契约](../../design/source-groups-token-management/subplans/sgm-3-source-policies-b.md)及[存储审核](../sgm-3-source-policies/batch-b-storage-audit.md)。
+
+| 路径 | v4 新增行为 | 保留边界 |
+| --- | --- | --- |
+| open / migrate_v3 | 原始 v3 先只读完整验证并生成私有备份；事务追加状态、回填占位/组初值，保留实例 ID | v1/v2 仍先走旧链，保留进入 open 时原版本备份；不声称整链原子回滚 |
+| verify_schema / verify_policy | 继续验证 v1/v2/v3 业务 DDL，并核全部 v4 必需行、形态、策略一致性和组归属 | 损坏缺行拒绝；打开不读取当前时间清用量；原执行恢复链保留 |
+| insert_source | 火山来源同事务追加未初始化行；GLM 不创建此行 | 不复制凭据或来源用量；缺行不被 initialize 自动修补 |
+| insert_group | 同事务追加类型专属空选择状态 | 不是生产活动/pin 导入，不生成渠道许可 |
+| insert_membership | 无 v4 来源运行行复制 | 同源多组共享一份 Runtime，独立保存组首选 |
+
+v1/v2 历史测试 helper 仅追加删除 v4 表，使其继续构造真实旧库；冻结 DDL、旧字段与旧断言不变。本轮基础迁移、重开、故障注入与全量回归已验证，复杂历史随机组合 PBT B5 仍属下一小步，不把新结论写回 SGM-1/2 的历史验收。

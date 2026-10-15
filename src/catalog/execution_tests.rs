@@ -135,7 +135,7 @@ fn as_v2(store: &mut CatalogStore) {
         })
         .unwrap();
     tx.execute_batch(
-        "DROP TABLE execution_attempts; DROP TABLE member_execution; DROP TABLE catalog_meta;",
+        "DROP TABLE group_policy_state; DROP TABLE volcano_runtime; DROP TABLE execution_attempts; DROP TABLE member_execution; DROP TABLE catalog_meta;",
     )
     .unwrap();
     tx.execute_batch(SCHEMA_V2.split(';').next().unwrap())

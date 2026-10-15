@@ -10,6 +10,8 @@ use tempfile::TempDir;
 mod control;
 #[path = "execution_tests.rs"]
 mod execution;
+#[path = "policy_tests.rs"]
+mod policy;
 
 fn setup() -> (TempDir, CatalogStore) {
     let dir = private_dir();
