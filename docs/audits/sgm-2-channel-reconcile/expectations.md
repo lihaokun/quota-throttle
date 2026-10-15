@@ -9,7 +9,7 @@
 - [操作 schema](../../design/source-groups-token-management/schemas/control-operation.schema.json)：OperationView 的字段/枚举/类型。
 - [sgm-1 修正记录](../../fixes/catalog-fix-capacity-and-pbt.md)：不能仅比较数量；输入按来源区分，直接检查内部敏感类型；保留全部 85 项原测试。
 - [workflow](../../workflow.md)：§4.4/§5/§6 与附录 A。
-- [认证重试修正方案](../../fixes/newapi-fix-healthy-auth-retry.md)：外部复审 F1；待确认/实施，原认证测试通过不代表覆盖健康会话重复登录。
+- [认证重试修正记录](../../fixes/newapi-fix-healthy-auth-retry.md)：外部复审 F1 已在 3b1bbae 修复并验证；原先测试未覆盖的健康会话重复登录已有红绿回归。
 
 ## 2 Schema 字段
 
@@ -80,7 +80,7 @@ CatalogSnapshot 的 JSON 版本保持 1；数据库依次迁移到 v2 意图表�
 - [ ] 新成员在来源暂停、退役及组未就绪时保持禁用；imported 未接管时不自动改旧路由。
 - [ ] 降旧首选的 ACK/回读未完成前不提升新首选；恢复的 enable 不越过 priority 安全屏障。
 - [ ] 暂时错误每轮最多三次，之后自动延期而非丢失 dirty；认证失败熔断，不反复打登录限流。
-- [ ] F1 修正待验证：未熔断的显式 retry 不登录、不改变认证代次；真正熔断才显式恢复，Token 不 root 登录；判断与恢复沿用单飞锁，取消/失败保持熔断，逻辑 64 槽与 HTTP 共享预算不绕过。
+- [x] F1 局部修复已验证：未熔断的显式 retry 不登录、不改变认证代次；真正熔断才显式恢复，Token 不 root 登录；判断与恢复沿用单飞锁，取消/失败保持熔断，逻辑 64 槽与 HTTP 共享预算不绕过。新增 11 项测试含 128 cases PBT，4 项变异捕获；全量 288 passed/1 ignored。此项完成不代表整个 SGM-2 退出。
 - [ ] 每个实际网络请求，包括登录/401 重放/重试，都计入共享预算；退避不占普通执行槽。
 - [ ] 401 在等待登录前释放在途槽；两条并发 401 不会占满槽位使刷新死锁。
 - [ ] unknown 与 partial 不混同成功；确认收据的历史和当前 generation 分开。

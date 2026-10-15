@@ -15,7 +15,7 @@
 - 未完成：sgm-2 第三批及整体验收；sgm-3 后续批次细化/expectations 与实现；sgm-4 至 sgm-7 的细化/expectations 与实现，包括用量采集、访问 key 管理、三页面 UI、生产迁移与发布。
 - 不开展：逐访问 key 上游绑定、火山临期、积分换算、硬 token 限额、修改 GLM 算法、定制 NewAPI 推理路由。
 
-当前插入的复审修正：先按 [F1 方案](../../fixes/newapi-fix-healthy-auth-retry.md)处理健康会话显式 retry 多余登录，方案待确认、代码未修；P1 已补[迁移归属及只读增量核对](../../audits/sgm-1-catalog-store/migration-scope-review.md)，保留历史审核证据。F1 修复验证后继续 SGM-3 火山状态/持久化细化，不以可选代码清理扩大范围，不改运行服务。
+复审修正已完成：健康会话显式 retry 多余登录已在 `3b1bbae` 修复，[F1 记录](../../fixes/newapi-fix-healthy-auth-retry.md)包含红绿回归、11 项新增测试（含 128 cases PBT）和 4 项变异；全量 288 passed/1 ignored，release 通过。P1 已补[迁移归属及只读增量核对](../../audits/sgm-1-catalog-store/migration-scope-review.md)，保留历史审核证据。下一步回到 SGM-3 火山状态/持久化细化，不以可选代码清理扩大范围，不改运行服务。
 
 ## 分步实施顺序
 

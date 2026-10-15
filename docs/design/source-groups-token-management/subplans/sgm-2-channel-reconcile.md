@@ -8,7 +8,7 @@
 
 事前验收清单见 [expectations](../../../audits/sgm-2-channel-reconcile/expectations.md)，操作回执格式见 [schema](../schemas/control-operation.schema.json)。本文定义完整设计，各小步实际验证范围以对应审核记录为准。
 
-外部复审修正提案：`2c65f20` 的显式 retry 会对未熔断 Session 额外登录，已确认偏离“仅显式恢复认证熔断”的意图。修正方案及待验证的健康 no-op、单飞/取消边界见[认证重试修正方案](../../../fixes/newapi-fix-healthy-auth-retry.md)；方案待确认，代码尚未修复，不能将本补记算作验证通过。目录 v2/v3 对 SGM-1 的覆盖关系另见[迁移增量核对](../../../audits/sgm-1-catalog-store/migration-scope-review.md)。
+外部复审修正记录：`2c65f20` 的显式 retry 对未熔断 Session 额外登录，已在 `3b1bbae` 修复并验证健康 no-op、真实熔断恢复、单飞/取消及 Token 边界，见[认证重试修正记录](../../../fixes/newapi-fix-healthy-auth-retry.md)。本次是局部 §7 修复，不替代完整 SGM-2 退出验收。目录 v2/v3 对 SGM-1 的覆盖关系另见[迁移增量核对](../../../audits/sgm-1-catalog-store/migration-scope-review.md)。
 
 仍然不代理模型请求，不维护 NewAPI fork，不实现逐访问 key 绑定。GLM 的 decide/pin/95%/降级/临期规则由 sgm-3 适配，火山耗尽判定由 sgm-3/4 实现；本模块不能根据 429 或管理错误自行判断上游额度。组注册/签发权限在 sgm-5，面板在 sgm-6，正式模式切换在 sgm-7。
 
@@ -228,7 +228,9 @@ P15 对本代次写后重新获取目标实际状态，逐 ID/字段比较。只
 
 ManagementBudget 以显式共享 Arc 注入各身份的传输，容量和令牌由同一个短临界区维护；Admission 负责排队取消与在途释放。第一批增加保守入口门禁：最多 64 个逻辑请求，包括等待认证、等待发送和在途；内部登录不重复占逻辑槽，但仍消耗发送预算。这比“64 个等待槽另加 2 个在途”更严格，防止认证锁外形成无界等待。admit 先注册通知再检查条件，避免丢唤醒；只有选中的最高优先级可发送者设置定时唤醒，其余等状态通知，不忙轮询。后台只占一个槽，取消排队不消耗令牌，发送之后取消不退还令牌。不可表示的 Retry-After 截止时间保持冷却，不缩短服务器要求。
 
-refresh_session 对应 P3：生成代次快照→单飞锁复核→共享预算→登录→更新会话。登录已经发出后取消，RefreshCancellation 将对应代次标为认证失败，避免下一等待者无条件再次登录。排队尚未获准不属于登录失败。retry_authentication 只重置认证熔断并尝试登录，不重放业务命令；bootstrap 只用于既有 CLI 显式首启，自动重登不调用它。保留反向代理 base_url 路径前缀；拒绝 URL 自带凭据及覆盖 Authorization/Cookie/Host 的额外头，配置错误不回显内容。
+refresh_session 对应 P3：生成代次快照→单飞锁复核→共享预算→登录→更新会话。锁内逻辑由私有 refresh_session_locked 复用，调用者持有 guard，helper 不重入该锁。登录成功同一临界区更新 Session/generation 并清 failed；迟到旧代次失败不能污染新会话。普通自动登录发出后取消，RefreshCancellation 将对应代次标为认证失败；尚未获准的普通登录取消不构成一次已发失败。
+
+retry_authentication 仍先受 64 个逻辑调用槽限制，再在单飞锁内核对 failed：未熔断直接成功，不发 HTTP、不改变代次；Token 只清熔断，永不使用 root 登录；熔断的 Session/Pending 最多登录一次。显式恢复从清 failed 之前建立取消护栏，预算等待取消、网络取消或错误均保持同代次熔断；整个判断/恢复持同一 refresh 锁，auth 同步锁不跨 await。成功后的并发等待者为 no-op，失败后的另一个显式动作可以再尝试一次。不重放业务命令，不 bootstrap/setup。bootstrap 只用于既有 CLI 显式首启；保留反向代理 base_url 路径前缀，拒绝 URL 自带凭据及覆盖 Authorization/Cookie/Host 的额外头，配置错误不回显内容。
 
 RawChannelDocument::patch 对应 patch_owned_fields；ScanAccumulator::append 对应 P4/P5 的逐页校验；creation_payload 对应 build_creation_spec 的 HTTP 组包部分，稳定关联名的持久化仍由后续协调器承担。字段更新只返回是否收到写回执，不产生 applied_revision。NativeRecoveryCheck/check_native_recovery/parse_recovery_option 只验证原生自动启用开关，不能被当作完整 BackendReadiness；实例绑定、版本/能力和策略许可将在协调执行批次合并。
 
