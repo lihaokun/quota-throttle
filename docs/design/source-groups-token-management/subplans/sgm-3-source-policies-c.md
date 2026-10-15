@@ -1,0 +1,147 @@
+# SGM-3 C 策略发布接线方案
+
+日期：2026-10-16。状态：待用户确认。源码基线 `8113696`；A/B 已验收，本次只提交 C 总体边界及 C-1 可实施细化，不改代码、数据库或运行服务。C-2/C-3 仍须补各自函数级设计，不以确认本文件代替后续事实能力和部署验收。
+
+## 1 范围与实施顺序
+
+目标承接架构 G2/G3/G6：策略选择、持久目标和执行许可使用同一版本，来源仍共享、组选择仍独立。复用一个 CatalogStore、一个 ReconcileWorker 和原生 NewAPI 执行链，不增加服务、推理代理、第二份账本或逐 key 上游绑定。
+
+| 小步 | 交付 | 前置/退出边界 |
+| --- | --- | --- |
+| C-1 本次待确认 | 共享 GLM 采集 → 当前目录/组状态计算 → 同事务保存选择与必要 priority 变化 → 一次发布许可 | 不改 GLM 算法；不新增表/公开命令；通过原子性、取消、过期、接管边界测试 |
+| C-2 后续细化 | 组 pin、火山撤错/编辑、来源模型发现等管理动作与幂等收据接线 | 补命令/schema/收据语义；模型按来源、添加/显式同步触发，不进周期轮询 |
+| C-3 与 SGM-4 合流 | 火山事实、周期历史、来源 gate、各组目标和许可原子提交/发布 | 真实生产者证明终态/去重/覆盖；不得以原生 error log 条数或外部布尔值签发许可 |
+
+C-1 不接 up/run/sync、现行面板或生产配置。火山 Runtime、组状态和渠道目标本步不变，不执行日重置、人工撤错或 Evidence 消费，也不签发火山启用/晋升许可。暂停/退役仍走既有控制入口。完整火山自动调度只能在 C-3/SGM-4 门禁通过后启用。
+
+## 2 已核实的接线缺口与复用
+
+基线中 `ReconcileWorker::publish_route` 逐成员更新 source_disabled/permit；`save_group_policy` 独立提交组状态；`submit_operation(SetGroupPriorities)` 则每次提升组/成员版本并产生操作。把这些入口顺序调用，既不是同事务，也会在周期性 no-op 时制造新操作。
+
+另一个边界是 `WorkSnapshot.managed`：它来自既有 operation_targets，不是“目录里存在成员”。未接管的 imported/planned 成员不能因自动策略发布就被隐式接管。
+
+| 复用项 | C-1 处理 |
+| --- | --- |
+| SourceProbe/ProbeInput/ProbeCycle | 保留一源一查、来源版本和单飞轮次；采集不持 Core/目录事务锁 |
+| decide_glm_group/GlmGroupState | 不改原 95%/降级/90%/临期/pin/未知行为；读取 B 的持久组状态 |
+| save_group_policy_tx | 在当前事务保存组状态，内容相同不增 policy_revision |
+| member_control/memberships/旧控制语义 | 仅更新受管、可编辑且 priority 实际变化的成员，保留原 GLM 启用消费规则与历史成功收据 |
+| worker mutate/publication/input_epoch | 提交前封旧发送 gate，成功后一次替换完整许可集；未知提交保持关闭 |
+| planner/prepare_execution/回读屏障 | 保留先降旧、回读，再提升新首选；不绕过未知执行和实例预检 |
+
+现有 `load_work`/`group_work`、组状态只读 helper 可按需要开放 catalog 内事务使用；不把 Connection 暴露给页面/CLI，也不复制一套 SQL 解码器。
+
+## 3 错误与不变量
+
+复用 ControlResult：非法配置/时刻为 InvalidInput；过期、资格不足为无许可/NotReady；旧轮次拒绝为 RevisionConflict；队列/采集单飞占用为 QueueFull；SQL、解码损坏和版本耗尽为 Storage。quota 单源失败仍是 Unavailable，不转换为 0 或来源耗尽。commit 不确定沿用 Store poisoned 和关闭 publication，不发布成功。
+
+- I-C1：组状态与对应成员 priority 目标要么同事务提交，要么全部回滚。
+- I-C2：新许可只能引用已提交的成员/来源/组身份与版本；commit 之前不可见。
+- I-C3：同源观测跨组复用，unknown 不被造为 0；原 GLM 纯函数及结果保持不变。
+- I-C4：未 managed、暂停、退役、未绑定、组未 ready 或预检不通过的成员不得获启用/晋升许可。
+- I-C5：普通 priority 更新不重新授予 GLM 已消费的显式启用权；不改 execution_attempts、旧成功回执或来源 manual_paused。
+- I-C6：没有目标变化就不提升持久版本、不新建控制操作；新的合法观测轮次可以更新内存许可时限。仅资格从无效变有效时，可唤醒既有 NotReady 待办，不每轮重置退避。
+
+依赖：现有单写者/私有库锁、SQLite 回滚与 commit 契约、SGM-2 发送 fence/回读规则。外部 NewAPI 不提供远端 CAS，因此“原子发布”仅指本地状态与发送资格；已经发出的旧请求仍按既有未知写/对账机制处理，不承诺即时撤回。
+
+## 4 内部类型与所有权
+
+C-1 不改数据库 v4 和公开 CatalogSnapshot/OperationView wire=1。所有新增输入/结果不实现 Deserialize/公开 Serialize；private material 不进入日志、Report 或 Debug。
+
+| 类型/字段 | 所有者与生命周期 | 约束 |
+| --- | --- | --- |
+| worker 的 `policy_config: Arc<Config>` | worker 创建时接收现有配置，生命周期内只读 | 不新增另一套配置格式或热重载；new 的测试调用补同一份假配置 |
+| worker 的 `probe: AsyncMutex<SourceProbe>` | 一个 worker 一个采集器 | try_lock 单飞；只锁采集器，可 await，不锁 Core |
+| Core 的 `last_glm_cycle: Option<u64>` | 本进程成功发布后更新，重启为空 | 轮次不落库；旧轮次不可重放刷新 lease |
+| `GlmPolicyCommit` | catalog 原子更新 → worker；只在内部返回 | cycle_id、完整新 GLM permit map、changed_group/member ID 集合和安全计数；所有容量沿用 MAX_GROUPS/MAX_MEMBERSHIPS |
+| `PolicyRefreshReport` | worker → 后续组装层 | cycle_id、preview_only、变化组/成员数、获许可/等待数；预览时为预计计数，本地已提交也不等于远端已收敛 |
+| RoutingPermit 补 member 身份 | 策略发布层构造，planner 消费 | 增加 membership_id/member_revision，连同现有 source/group/priority/时限一起验证，不只凭相同 source/group/priority 复用旧许可 |
+
+`RoutingPermit::from_policy` 调整为接收当前 WorkSnapshot 和现有优先级/时限参数，只复制已核验字段；`valid_for` 追加成员身份及版本比较。旧执行器测试仅调整构造夹具，不修改原行为断言。直接逐成员 `publish_route` 收窄为测试专用，生产路径只能批次发布；C-1 的生产许可集只包含 GLM，C-3 再扩展可信火山输入。
+
+`ReconcileWorker::new(store, client, Arc<Config>) -> ControlResult<Arc<Self>>` 在构造时复用 Config::validate（只增加 crate 内可见性，不改校验语义），另核安全 priority 次序；错误转为固定 InvalidInput，不透传配置/URL 原文。配置在生命周期内不可变，原调用夹具据此更新。保留 dry_run：策略只返回 preview_only 报告，不保存组/目标、不发布许可；执行器所有远端写路径也在准备票据和发送前检查 dry_run，含创建/禁用，不能靠“没有许可”代替此检查。只读 quota/管理查询仍可用于预览。
+
+## 5 C-1 函数细化
+
+### C1 收集一致的 GLM 采集输入
+
+`CatalogStore::glm_probe_inputs() -> ControlResult<Vec<ProbeInput>>`：usable 后开只读事务，按 SourceId 有界枚举 GLM 来源；排除暂停、退休和 retire_requested。来源视图与 SourceMaterial 从同一事务读取，以现有 ProbeInput::new 校验配置/类型，数量最多 MAX_SOURCES；零来源返回空列表。解码损坏返回 Storage，不跳过损坏行伪称完整采集。读完结束事务再返回临时凭据，绝不在事务内发 HTTP。
+
+论证：单事务确保来源版本和材料同代；去重身份及有界遍历保证一源一个输入、必终止。唯一副作用是短暂持有读事务/私有内存，调用方消费后释放凭据。
+
+### C2 单飞采集并提交一轮
+
+`ReconcileWorker::refresh_glm_policy() -> ControlResult<PolicyRefreshReport>`：
+
+1. try_acquire 既有 commands 容量并 try_lock probe；占用即 QueueFull，不排无界后台任务。
+2. Core 锁内调用 C1，随后释放 Core；调用已验证的 SourceProbe::collect_cycle，按其单源超时/Unavailable/取消编号约定执行。取消不发布半轮，已有许可不延期，最终按原时限失效。
+3. 整轮完成后，dry_run 分支只在读事务调用 C3 生成状态/目标预览，获真实许可计数为 0，结束事务后返回，不调用写入或许可发布、不写 last_glm_cycle。正常分支进入 worker.publish，复核 cycle_id 严格大于 last_glm_cycle。相同/更旧轮次返回 RevisionConflict，既不落库也不续许可。全失败也是完整新轮次，按未知处理。
+4. 以当前 Core.backend、不可变 Config 和当前 UTC 毫秒调用 C3/C4 事务入口；期间没有 await。采集期间发生的暂停、成员变动或配置变动，以事务内重新读取的目录为准；旧来源 revision 的读数由原 GLM adapter 视作未知。
+5. commit 成功后仅作无失败路径的整体 permit map 替换、last_glm_cycle 和 input_epoch 更新，最后恢复偶数 publication。返回安全 Report。发生错误保留原缓存；Store poisoned 则 gate 不重新打开。
+
+不在本步新增周期任务。后续组装沿用原 poll_interval，慢轮次不堆积；当前 SourceProbe 仍串行，一轮上界为有限来源数乘原单源时限，不冒称任意来源规模都能 10 秒完成。
+
+论证：网络等待不持写者锁，管理员暂停可先提交；结果落地重新读取身份/版本，故旧读数不能绕过暂停。Core 锁和 publication fence 串行化持久提交与完整内存替换；错误路径没有已发布的新许可。
+
+### C3 当前快照计算和 Keep 适配
+
+`compute_glm_round_tx(tx, cfg, cycle, now_ms) -> ControlResult<GlmRoundDraft>`：内部私有临时结果，不接收前端传入的选择/许可。
+
+校验配置 priority 安全范围与 active>standby≥exhausted、时间安全转换、cycle 的正编号/非重复 SourceId，以及观测时间不晚于完成时间、完成时间不晚于 now_ms。来源/组/成员集合沿目录容量限制。无组是合法空结果，非法整轮拒绝。
+
+在同一事务读取当前 GLM 组、完整 WorkSnapshot 和 StoredGroupPolicy；错误类型/缺必需行是 Storage。逐组调用原 decide_glm_group，不改变其输入筛选、未知、旧 active 保留、自动 pin_release 或阈值算法。所有组共享同一 ProbeCycle，不逐组再采集。
+
+构造完整当前组映射：decision 中 Some(priority) 使用该值，None 或被原 adapter 排除的成员保持现有 desired_priority，不能填 0。自动可写集合只包含 managed 且未退休/退役的成员；未 managed 行和其 status/dirty/applied 全部保持不变，也不创建 operation_targets。它们仍保留在既有执行屏障的可能路由 peer 集中，不因不能自动编辑而假装不存在。
+
+算法可以保留未获授权/未知的旧选择作为本地结果；该结果不自动获得实际路由许可。组未 ready 时也不能据此提升/启用。返回每组新状态、完整目标映射及可信观测引用，供 C4 在同一事务消费。
+
+论证：当前目录只读一次后按组分割，身份和版本已由 catalog/adapter 校验；Keep 回填旧值使未知不引入零优先级。无管理授权不会被自动策略凭空增加。循环受组/成员/来源容量约束。
+
+### C4 同事务保存状态和必要目标
+
+`CatalogStore::commit_glm_round(cfg, cycle, backend, previous_permits, now_ms) -> ControlResult<GlmPolicyCommit>` 只由持有 Core 的 C2 调用；IMMEDIATE 事务内调用 C3、`save_group_policy_tx` 和新 `apply_policy_targets_tx`，最后一次 commit。previous_permits 只用于识别资格恢复，不作为授予新许可的依据；必须来自当前 Core，不接受外部输入。
+
+`apply_policy_targets_tx(tx, group, complete_targets, now)`：先核目标集合、同组归属、当前版本及 managed 标记；不接收稀疏列表冒充全量。对每个自动可写成员比较 priority：相同则不写目标、不清 applied、不动 revision；不同才 checked 增 member_control.revision，更新 memberships.desired_priority、清该成员 applied_revision、标 dirty/安排重试。
+
+变化成员沿用现有 SetGroupPriorities 的 GLM 状态约束：已完成/已消费的 Enabled 归 Preserve，未完成的显式 Enabled 保留；不修改 enable_epoch/enable_requested_revision/enable_consumed，不顺便解除 Disabled/退役。只将与变化成员相关且 phase 不为 succeeded/superseded 的旧操作按既有 superseded 规则处理；旧成功回执及 execution_attempts 不改。普通周期不新增 control_operations/operation_targets，也不增加 source.config_revision 或 group.revision。组策略变化仅由 B helper 增 policy_revision。
+
+所有组共用这一事务：任一 SQL/版本溢出/坏行失败，整轮回滚。由 commit helper 处理未知提交毒化。提交前完成结果集合、完整许可 map 和 Report 的构造/校验；提交后不得再作可能失败的目录查询或单成员 publish。无持久变化仍可提交只读结果并发布新的合法 lease。
+
+许可从缺失/失效变为当前有效时，在同一事务内唤醒该成员已有的 dirty、非退役、last_error_code=NotReady 待办：仅将未来 next_attempt_at 提前到 now，不清错误、不改目标版本/启用 epoch，也不重试终态错误。复用 wake_pending 的筛选原则做有界事务 helper，不在 commit 后另开事务。旧许可仍有效且目标未变时不重复 wake；保证首次恢复不会一直等到新 lease 到期才尝试，又不制造每轮调度写。
+
+论证：状态和目标处于同一 IMMEDIATE 事务，排除“新选择配旧目标”。只对变化行提升版本，保持 no-op 和旧回执；不生成新的显式启用 epoch，所以普通切换不能重开 GLM 自动禁用渠道。安全计数及循环上界沿用既有类型约束。
+
+### C5 构造并消费有界许可
+
+`build_glm_permits(cfg, cycle, backend, final_work, decisions, now_ms)` 在 C4 提交前运行，输入是最终目标版本，而非更新前快照。必须同时满足：managed/已绑定、组 ready、未暂停/退休/退役、decision.eligible 内、同轮同 source revision 的 Available quota，以及 backend.ready_at。否则不产生该成员许可；未知/耗尽不是可用。
+
+lease 只限制启用/晋升权限，不修改 GLM 纯决策或已经服务的原生状态。上限复用现有 30 秒观测预算：截止取来源 observed_at_ms 换算后的时限、backend.expires_at 与本次发布时限三者最早值；所有加法/秒毫秒转换受安全范围检查。到期或未来时间不续期，不用 completed_at 把一轮早期的旧观测伪装成刚采集。慢轮次可能只剩部分来源可获许可，应显示等待并重新采集，不补“健康”默认值。
+
+RoutingPermit 绑定最终 membership/member/source/group revision 和期望 priority；实际发送仍需旧 observation 的 revision/TTL、publication gate、unknown-write 检查及 promotion_barrier。缓存观测不整轮清空：变化成员自然因 revision 失配而要求新 GET，未变成员可复用尚有效观测，避免额外逐渠道轮询。
+
+论证：未知或过期输入没有正向授权，旧成员许可不能套到新目标；时限取交集使任一前提过期都停止新启用/晋升。禁止生产逐成员发布避免中间态；已经发出的写仍按 SGM-2 对账，不扩大保证。
+
+## 6 C-2/C-3 的后续硬边界
+
+- 管理命令需要 operation_id、规范载荷与 expected_revision；重放同一撤错不能再次提升 error_epoch。B 的内部方法不是直接挂 HTTP 的接口。命令 enum/存储约束/公开 schema 的追加迁移要在 C-2 单独确认，不修改冻结 DDL。会推进火山周期的管理动作还依赖 SGM-4 历史写接口；该依赖未实现时不得单独开放 Runtime 更新，不能因为加了幂等收据就丢弃 PeriodTransition，须与 C-3 合流启用。
+- `/models` 按来源读取一次，成功同步该来源全部成员，失败保留存量；只由添加或显式同步触发。模型更新与旧许可失效须在一个受控发布中完成。C-1 不改此路径。
+- C-3 的火山事务顺序必须为：可信事实检查点/归并 → B 的状态推进及 PeriodTransition 历史持久化 → 全部受影响组目标 → 同一 commit → 一次替换源 gate/许可。不能用 B 单独事务入口拼成多次提交，也不接受另一份统计账本。
+- SGM-4 必须给出真实终态识别、同源重试成功、换源隔离、迟到/乱序/缺页、撤错 fencing 与流式结束证据。日志原始条数或等待时间不是终态证明。本文件不推断原生错误日志能力已满足条件。
+- 火山未初始化、事实能力未验证或覆盖缺口时不得新增正向许可；“未知”不写成耗尽原因，也不等于人工暂停。已确定耗尽/暂停的安全停止和周期恢复的具体发布顺序随 C-3 合流验证。
+
+## 7 测试与实施约束
+
+事前清单见 [C-1 expectations](../../../audits/sgm-3-source-policies/batch-c-expectations.md)。按事务适配 → 单写者批次发布/许可绑定 → 共享采集/组合验收三小步实现，各步测试和独审后推进。C-1 完成不代表整个 C 或生产部署完成。
+
+允许修改范围：catalog 内部事务 helper、worker 的策略刷新/批次发布及 dry_run 发送门禁、RoutingPermit 绑定、Config::validate 的可见性、对应测试与文档。禁止改原 GLM 纯算法、B 状态机、v1–v4 DDL、配置校验语义、管理认证/HTTP 语义、运行 CLI、现行面板或生产文件。不新增依赖或服务；如实现发现需要改业务/持久格式，先回到设计确认。
+
+验证使用私有临时库、假凭据和随机回环服务，不执行 up/run/down/sync。每项 PBT 至少 128 cases，变异源码与 target 双隔离；运行全量预检期间禁止并行重编译同一 target。真实服务检查和部署须后续另行授权。
+
+## 8 完整性自检
+
+- [x] C-1 的目标、复用、类型所有权、容量和错误路径明确。
+- [x] C1–C5 的前置、分支、失败/取消、callee 责任及正确性论证明确。
+- [x] 数据库提交先于完整许可替换；未接管/no-op/旧授权/历史回执边界明确。
+- [x] C-2/C-3 未细化内容不被本次确认伪装为可编码接口。
+- [ ] 用户确认 C-1 方案后才开始实现。
+- [ ] C-1 自动验证、独立契约审核与五维度复核通过。
