@@ -11,7 +11,8 @@
 - 第三批进度：[计划器与发送门禁](../../audits/sgm-2-channel-reconcile/planner-audit.md)、[v3 持久日志](../../audits/sgm-2-channel-reconcile/execution-journal-audit.md)、[绑定/回读确认](../../audits/sgm-2-channel-reconcile/confirmation-audit.md)、[HTTP 交付与执行器](../../audits/sgm-2-channel-reconcile/worker-audit.md)完成小步审核。worker 小步时 240 项普通测试及隔离原生执行器禁用创建/绑定/回读/退役通过，8 项变异被捕获。随后[R8/R10 门禁补齐](../../audits/sgm-2-channel-reconcile/assurance-audit.md)后为 245 项普通测试通过，新增 2 项 PBT 各 128 cases，6 项变异（含 2 项编译期负 trait）被捕获；机械检查与 release 通过。真实预检 producer、完整跨模块组合验收和 CLI 接线仍未完成，不宣称整个第三批完成。
 - 最新组合验收：[执行器多组轨迹](../../audits/sgm-2-channel-reconcile/scenarios-audit.md)完成本轮独审，新增 4 项 PBT 各 128 cases；全量为 249 项通过，5 项变异被捕获，机械检查和 release 通过。组合覆盖部分失败/重开/重试、历史收据、混合提供者隔离、未知创建及一般未知写，不替代其他既有门禁；真实预检和原生/部署集成仍未完成。用户已重申本地托管为既有架构，范围已确定，不再等待选择；撤回远程管理和数据库 inode 登记扩展，按现有 boot 配置完成本地只读预检。
 - 当前本地预检：[独立审核](../../audits/sgm-2-channel-reconcile/local-preflight-audit.md)通过，真实 producer 已接到 worker 显式刷新入口；不再用手传 verified=true 作为原生预检证据。复用现有 boot 配置/PID，未增加配置/schema/身份登记。新增 11 项普通测试（含 2 项各 128 cases PBT），全量 260 项通过；原生隔离测试、6 项变异、机械门禁和 release 通过。旧范围阻塞已解除；下一实施重点为 sgm-3 来源策略，再依次推进事实用量、key 管理、三页面及发布接线。
-- 未完成：sgm-2 第三批及整体验收；sgm-3 至 sgm-7 的细化/expectations 与实现，包括调度适配、用量采集、访问 key 管理、三页面 UI、生产迁移与发布。
+- SGM-3 [第一批](subplans/sgm-3-source-policies.md)已实现共享 GLM quota 与原策略分组适配，并完成[双路径审核](../../audits/sgm-3-source-policies/audit-report.md)：新增 17 项测试，其中 4 项 PBT 各至少 128 cases，6 项变异被捕获；最终全量 277 passed、1 ignored，机械门禁与 release 通过。独审发现的过滤前唯一性校验和测试身份区分问题均已修复。此批不改 GLM 算法、不创建火山空表、不接运行服务；下一步细化火山状态与持久化，再做协调器/事实接线。
+- 未完成：sgm-2 第三批及整体验收；sgm-3 后续批次细化/expectations 与实现；sgm-4 至 sgm-7 的细化/expectations 与实现，包括用量采集、访问 key 管理、三页面 UI、生产迁移与发布。
 - 不开展：逐访问 key 上游绑定、火山临期、积分换算、硬 token 限额、修改 GLM 算法、定制 NewAPI 推理路由。
 
 ## 分步实施顺序

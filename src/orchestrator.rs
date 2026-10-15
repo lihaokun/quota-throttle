@@ -65,7 +65,7 @@ pub struct Orchestrator {
 }
 
 /// 取该 key 在所有监控窗口里的最大使用率（5h 墙和周墙谁高听谁的）。
-fn max_watch_pct(cfg: &Config, status: &QuotaStatus) -> f64 {
+pub(crate) fn max_watch_pct(cfg: &Config, status: &QuotaStatus) -> f64 {
     let mut max_pct = 0.0f64;
     for w in &cfg.watch_windows {
         if let Some(ws) = status.window(*w) {
@@ -79,13 +79,13 @@ fn max_watch_pct(cfg: &Config, status: &QuotaStatus) -> f64 {
 
 /// 周窗口的决策用快照。仅决策层使用，不进快照结构。
 #[derive(Debug, Clone, Copy)]
-struct WeeklyInfo {
+pub(crate) struct WeeklyInfo {
     /// 周窗口重置时刻（epoch **毫秒**，探针原样——注意与 now_secs 单位不同）
-    reset_ms: i64,
+    pub(crate) reset_ms: i64,
     /// 周窗口已用%（临期判定的「没用完」依据）
-    pct: f64,
+    pub(crate) pct: f64,
     /// max_watch_pct（5h 与周取大）——判定「现在能不能服务」（5h 已 100% 则不可服务）
-    max_pct: f64,
+    pub(crate) max_pct: f64,
 }
 
 /// 是否临期：周窗口即将重置、且还有真实余量、且现在还能服务。
@@ -293,7 +293,7 @@ fn eligible_set(
 /// keyrot-1 的 pin 说明：临期只影响合格集内排序，不放宽 pin 门限；正常档仍是 throttle，
 /// 降级档仍是 exhausted，与旧版一致。
 #[allow(clippy::too_many_arguments)]
-fn decide(
+pub(crate) fn decide(
     ids: &[i64],
     pct: &HashMap<i64, f64>,
     weekly: &HashMap<i64, WeeklyInfo>,
@@ -388,6 +388,25 @@ fn decide(
 
     // 4. active == None ⇒ 合格集为空（全员 ≥ exhausted 或全查询失败）⇒ 调用方保留原活动
     done(active, eligible, imminents, pin_release)
+}
+
+/// 与旧 tick 保持相同分支顺序：未知的 active 仍保留高优先级。
+pub(crate) fn glm_target_priority(
+    id: i64,
+    active: Option<i64>,
+    eligible: bool,
+    quota_known: bool,
+    cfg: &Config,
+) -> Option<i64> {
+    if Some(id) == active {
+        Some(cfg.priority_active)
+    } else if eligible {
+        Some(cfg.priority_standby)
+    } else if quota_known {
+        Some(cfg.priority_exhausted)
+    } else {
+        None
+    }
 }
 
 impl Orchestrator {
@@ -731,14 +750,14 @@ impl Orchestrator {
         //    阶梯会优先跌到还有余量的那把，而不是随机跌到一把已经死透的）。
         for k in &keys {
             let id = k.channel_id;
-            let target = if Some(id) == active {
-                self.cfg.priority_active
-            } else if d.eligible.contains(&id) {
-                self.cfg.priority_standby
-            } else if pct.contains_key(&id) {
-                self.cfg.priority_exhausted
-            } else {
-                // 本轮查询失败：状态未知，整把 key（两个渠道）都不动
+            let Some(target) = glm_target_priority(
+                id,
+                active,
+                d.eligible.contains(&id),
+                pct.contains_key(&id),
+                &self.cfg,
+            ) else {
+                // 非活动 key 本轮查询失败：状态未知，不动 priority。
                 continue;
             };
 

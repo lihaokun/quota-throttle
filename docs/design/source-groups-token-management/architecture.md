@@ -1,6 +1,6 @@
 # 来源共享 分组路由和用量面板架构
 
-日期：2026-10-15。状态：架构已确认，sgm-1 已完成，sgm-2 的执行/恢复和本地托管预检已实现并分步验证；尚未接现行服务，sgm-3 至 sgm-7 待实施。需求依据：[最新版方案](../../research/source-groups-token-management-research.md)。接口实证：[实现前审核](review.md)。架构确认不包含生产部署授权。
+日期：2026-10-15。状态：架构已确认，sgm-1 已完成，sgm-2 的执行/恢复和本地托管预检已实现并分步验证，sgm-3 第一批共享 GLM 采集与组适配已完成验证；尚未接现行服务，sgm-3 后续批次及 sgm-4 至 sgm-7 待实施。需求依据：[最新版方案](../../research/source-groups-token-management-research.md)。接口实证：[实现前审核](review.md)。架构确认不包含生产部署授权。
 
 ## 目标与边界
 
@@ -214,6 +214,20 @@ priority 是对支持该请求模型的候选表达偏好。原生单次重试�
 架构已确认；第一子计划目录库已实现并完成 §6 双路径验收，见[细化](subplans/sgm-1-catalog-store.md)和[审核报告](../../audits/sgm-1-catalog-store/audit-report.md)。其余子计划仍须独立经过细化确认、§4.4 审查与 §6 双路径验收。实施顺序与退出条件见[实施准备计划](implementation-plan.md)。
 
 本轮不修改运行服务或导入生产数据。第一批目录函数不接入 up/run/sync 或面板写接口；其本地保存成功不代表外部渠道启停成功。
+
+## 第三子计划第一批共享类型补充
+
+[SGM-3 细化](subplans/sgm-3-source-policies.md)首先实现共享 quota 与 GLM 分组适配。下列类型是进程内接口，不增加公开 JSON 或数据库 schema；第一批不接运行服务。完整字段、不变量和函数契约见该细化 §4–5。
+
+| 类型 | 所有者和消费者 | 关键约束 |
+| --- | --- | --- |
+| ProbeInput | 受信任来源组装层 → source_probe | SourceId/config_revision 与私有 quota 配置及临时凭据；不序列化 |
+| ProbeCycle / QuotaObservation | source_probe → glm_policy，后续安全面板投影 | 一轮同源一次；成功/未知明确区分；源 revision 和轮次匹配后才能用于决策 |
+| GlmGroupState | glm_policy，后续 catalog 持久化 | active/pinned 按 MembershipId，regime 复用旧定义；不与其他组共享选择状态 |
+| GlmGroupDecision | glm_policy → 后续策略发布层 | 带组 revision/轮次；成员 priority 的 None 为保持，不是 0；不代表远端已完成 |
+| GlmPinRelease | glm_policy → 后续面板投影 | membership_id、pct、limit；原整数标签转换为组内身份，不当作原生 channel_id |
+
+此批复用原 GLM 选择及 priority 分支，既有状态库、协调器和本地托管架构不变。火山运行状态和事实边界在 SGM-3 后续批次细化，真实采集仍由 SGM-4 唯一拥有，不创建第二份去重账本。
 
 ## 第一子计划共享类型补充
 

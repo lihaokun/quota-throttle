@@ -6,6 +6,7 @@ pub mod newapi;
 mod orchestrator;
 mod quota;
 pub mod reconcile;
+pub mod source_policy;
 mod status;
 
 use crate::boot::NewApiProcess;
