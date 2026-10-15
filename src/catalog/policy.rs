@@ -141,7 +141,7 @@ fn source_record(
     )?;
     Ok((source, settings, retiring == 1))
 }
-fn group_record(conn: &Connection, id: GroupId) -> ControlResult<GroupView> {
+pub(super) fn group_record(conn: &Connection, id: GroupId) -> ControlResult<GroupView> {
     Ok(conn
         .query_row(
             &format!("SELECT {GROUP_COLUMNS} FROM source_groups WHERE group_id=?1"),
@@ -417,7 +417,10 @@ fn validate_group_state(
     }
     Ok(())
 }
-fn read_group_policy(conn: &Connection, group: &GroupView) -> ControlResult<StoredGroupPolicy> {
+pub(super) fn read_group_policy(
+    conn: &Connection,
+    group: &GroupView,
+) -> ControlResult<StoredGroupPolicy> {
     let result = conn
         .query_row(
             "SELECT * FROM group_policy_state WHERE group_id=?1",

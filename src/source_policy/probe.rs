@@ -65,6 +65,20 @@ pub struct ProbeCycle {
     pub(super) observations: Vec<QuotaObservation>,
 }
 impl ProbeCycle {
+    /// 仅测试使用的原始输入，允许构造非法批次验证拒绝路径；生产仍只能由采集器产生。
+    #[cfg(test)]
+    pub(crate) fn test_input(
+        cycle_id: u64,
+        completed_at_ms: i64,
+        observations: Vec<QuotaObservation>,
+    ) -> Self {
+        Self {
+            cycle_id,
+            completed_at_ms,
+            observations,
+        }
+    }
+
     pub fn cycle_id(&self) -> u64 {
         self.cycle_id
     }

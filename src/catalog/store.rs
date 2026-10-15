@@ -510,7 +510,7 @@ impl CatalogStore {
     }
 }
 
-fn read_snapshot(conn: &Connection) -> Result<CatalogSnapshot> {
+pub(super) fn read_snapshot(conn: &Connection) -> Result<CatalogSnapshot> {
     let snapshot = CatalogSnapshot {
         schema_version: CATALOG_SNAPSHOT_VERSION,
         sources: read_rows(

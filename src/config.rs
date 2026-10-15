@@ -490,7 +490,7 @@ impl Config {
     /// 阈值必须满足 0 < restore ≤ throttle ≤ exhausted ≤ 100。
     /// 配错阈值是**静默灾难**（例如 throttle > exhausted 会让合格集恒空、永不切换），
     /// 所以启动就失败，别等到线上才发现。
-    fn validate(&self) -> anyhow::Result<()> {
+    pub(crate) fn validate(&self) -> anyhow::Result<()> {
         let (r, t, e) = (
             self.restore_threshold,
             self.throttle_threshold,

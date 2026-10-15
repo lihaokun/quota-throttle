@@ -3,6 +3,7 @@
 pub mod confirmation;
 pub mod control;
 pub mod execution;
+pub(crate) mod glm_round;
 mod legacy;
 pub(crate) mod policy;
 mod store;

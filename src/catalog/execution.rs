@@ -472,7 +472,7 @@ pub(super) fn read_ticket(
     })
 }
 
-fn group_work(conn: &Connection, group: GroupId) -> ControlResult<Vec<WorkSnapshot>> {
+pub(super) fn group_work(conn: &Connection, group: GroupId) -> ControlResult<Vec<WorkSnapshot>> {
     let exists: bool = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM source_groups WHERE group_id=?1)",
         [group.get()],

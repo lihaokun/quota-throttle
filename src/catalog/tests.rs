@@ -12,6 +12,8 @@ mod control;
 mod execution;
 #[path = "policy_tests.rs"]
 mod policy;
+#[path = "glm_round_tests.rs"]
+mod glm_round;
 
 fn setup() -> (TempDir, CatalogStore) {
     let dir = private_dir();
