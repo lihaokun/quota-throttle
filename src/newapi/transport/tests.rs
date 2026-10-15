@@ -1,6 +1,6 @@
 use super::*;
 use proptest::prelude::*;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
@@ -135,6 +135,298 @@ async fn budget_burst_rate_and_background_reservation() {
     let start = Instant::now();
     drop(second_background.await.unwrap());
     assert_eq!(Instant::now() - start, Duration::from_secs(1));
+}
+
+#[tokio::test]
+async fn healthy_session_retry_does_not_login_again() {
+    let fake = Fake::start(|call| match call.path.as_str() {
+        "/api/user/login" => Reply::json(json!({"success":true,"data":{"id":42}})),
+        "/api/channel/1" => Reply::json(json!({"success":true,"data":{}})),
+        _ => panic!("unexpected fake endpoint"),
+    })
+    .await;
+    let client = fake.transport(false);
+    client.send(read(), RequestClass::Control).await.unwrap();
+    for _ in 0..3 {
+        client.retry_authentication().await.unwrap();
+    }
+    let calls = fake.calls.lock().unwrap();
+    assert_eq!(
+        calls.iter().filter(|r| r.path == "/api/user/login").count(),
+        1
+    );
+}
+
+fn f1_login_count(fake: &Fake) -> usize {
+    fake.calls
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|r| r.path == "/api/user/login")
+        .count()
+}
+
+async fn f1_wait_for(mut predicate: impl FnMut() -> bool) {
+    tokio::time::timeout(Duration::from_secs(4), async {
+        while !predicate() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn f1_pending_and_token_retry_preserve_initialization_and_identity() {
+    for token in [false, true] {
+        let fake = Fake::start(|call| match call.path.as_str() {
+            "/api/user/login" => Reply::json(json!({"success":true,"data":{"id":42}})),
+            "/api/channel/1" => Reply::json(json!({"success":true,"data":{}})),
+            _ => panic!("unexpected fake endpoint"),
+        })
+        .await;
+        let client = fake.transport(token);
+        for _ in 0..4 {
+            client.retry_authentication().await.unwrap();
+        }
+        assert!(fake.calls.lock().unwrap().is_empty());
+        assert_eq!(client.auth.lock().unwrap().generation, 0);
+        client.send(read(), RequestClass::Control).await.unwrap();
+        assert_eq!(f1_login_count(&fake), usize::from(!token));
+        if token {
+            client.fail_generation(0);
+            assert!(client.auth.lock().unwrap().failed);
+            client.retry_authentication().await.unwrap();
+            let state = client.auth.lock().unwrap();
+            assert!(!state.failed);
+            assert!(matches!(state.auth, Auth::Token(_)));
+            assert_eq!(state.generation, 0);
+            assert_eq!(f1_login_count(&fake), 0);
+        }
+    }
+}
+
+#[tokio::test]
+async fn f1_failed_session_recovers_once_and_failed_recovery_stays_latched() {
+    let reject = Arc::new(AtomicBool::new(false));
+    let server = reject.clone();
+    let fake = Fake::start(move |call| match call.path.as_str() {
+        "/api/user/login" if server.load(Ordering::SeqCst) => Reply::json(json!({"success":false})),
+        "/api/user/login" => Reply::json(json!({"success":true,"data":{"id":42}})),
+        "/api/channel/1" => Reply::json(json!({"success":true,"data":{}})),
+        _ => panic!("unexpected fake endpoint"),
+    })
+    .await;
+    let client = fake.transport(false);
+    client.send(read(), RequestClass::Control).await.unwrap();
+    client.fail_generation(1);
+    client.retry_authentication().await.unwrap();
+    for _ in 0..3 {
+        client.retry_authentication().await.unwrap();
+    }
+    assert_eq!(f1_login_count(&fake), 2);
+    assert_eq!(client.auth.lock().unwrap().generation, 2);
+    reject.store(true, Ordering::SeqCst);
+    client.fail_generation(2);
+    assert_eq!(
+        client.retry_authentication().await.unwrap_err().kind,
+        ManagementErrorKind::AuthFailed
+    );
+    assert!(client.auth.lock().unwrap().failed);
+    let calls = fake.calls.lock().unwrap().len();
+    for _ in 0..3 {
+        assert_eq!(
+            client
+                .send(read(), RequestClass::Control)
+                .await
+                .err()
+                .unwrap()
+                .kind,
+            ManagementErrorKind::AuthFailed
+        );
+    }
+    assert_eq!(fake.calls.lock().unwrap().len(), calls);
+    assert_eq!(
+        client.retry_authentication().await.unwrap_err().kind,
+        ManagementErrorKind::AuthFailed
+    );
+    assert_eq!(fake.calls.lock().unwrap().len(), calls + 1);
+    assert!(client.auth.lock().unwrap().failed);
+}
+
+#[tokio::test]
+async fn f1_concurrent_successful_recovery_is_single_flight() {
+    let fake = Fake::start(|call| match call.path.as_str() {
+        "/api/user/login" => Reply {
+            delay: Duration::from_millis(100),
+            ..Reply::json(json!({"success":true,"data":{"id":42}}))
+        },
+        "/api/channel/1" => Reply::json(json!({"success":true,"data":{}})),
+        _ => panic!("unexpected fake endpoint"),
+    })
+    .await;
+    let client = Arc::new(fake.transport(false));
+    client.send(read(), RequestClass::Control).await.unwrap();
+    client.fail_generation(1);
+    for _ in 0..2 {
+        let mut tasks = tokio::task::JoinSet::new();
+        for _ in 0..8 {
+            let client = client.clone();
+            tasks.spawn(async move { client.retry_authentication().await });
+        }
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while let Some(result) = tasks.join_next().await {
+                result.unwrap().unwrap();
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(f1_login_count(&fake), 2);
+        assert!(!client.auth.lock().unwrap().failed);
+    }
+    assert_eq!(client.budget.requests.available_permits(), QUEUE_LIMIT);
+}
+
+#[tokio::test]
+async fn f1_old_failure_during_and_after_recovery_cannot_poison_new_session() {
+    let fake = Fake::start(|call| match call.path.as_str() {
+        "/api/user/login" => Reply {
+            delay: Duration::from_millis(200),
+            ..Reply::json(json!({"success":true,"data":{"id":42}}))
+        },
+        "/api/channel/1" => Reply::json(json!({"success":true,"data":{}})),
+        _ => panic!("unexpected fake endpoint"),
+    })
+    .await;
+    let client = Arc::new(fake.transport(false));
+    client.send(read(), RequestClass::Control).await.unwrap();
+    client.fail_generation(1);
+    let recovery = {
+        let client = client.clone();
+        tokio::spawn(async move { client.retry_authentication().await })
+    };
+    f1_wait_for(|| f1_login_count(&fake) == 2).await;
+    client.fail_generation(1); // 已发出的旧请求在登录正文返回前才失败。
+    recovery.await.unwrap().unwrap();
+    assert_eq!(client.auth.lock().unwrap().generation, 2);
+    assert!(!client.auth.lock().unwrap().failed);
+    client.fail_generation(1); // 新会话提交之后迟到的同一旧代次。
+    assert!(!client.auth.lock().unwrap().failed);
+    client.retry_authentication().await.unwrap();
+    assert_eq!(f1_login_count(&fake), 2);
+}
+
+#[tokio::test]
+async fn f1_cancelled_recovery_preserves_latch_and_releases_all_resources() {
+    for stage in 0..3 {
+        let logins = Arc::new(AtomicUsize::new(0));
+        let server = logins.clone();
+        let fake = Fake::start(move |call| match call.path.as_str() {
+            "/api/user/login" => Reply {
+                delay: if server.fetch_add(1, Ordering::SeqCst) == 0 {
+                    Duration::ZERO
+                } else {
+                    Duration::from_secs(20)
+                },
+                ..Reply::json(json!({"success":true,"data":{"id":42}}))
+            },
+            "/api/channel/1" => Reply::json(json!({"success":true,"data":{}})),
+            _ => panic!("unexpected fake endpoint"),
+        })
+        .await;
+        let client = fake.transport(false);
+        client.send(read(), RequestClass::Control).await.unwrap();
+        client.fail_generation(1);
+        let refresh = if stage == 0 {
+            Some(client.refresh.lock().await)
+        } else {
+            None
+        };
+        if stage == 1 {
+            client.budget.cool_down(Duration::from_secs(60));
+        }
+        let mut recovery = Box::pin(client.retry_authentication());
+        let deadline = if stage == 2 {
+            Duration::from_secs(2)
+        } else {
+            Duration::from_millis(30)
+        };
+        assert!(tokio::time::timeout(deadline, &mut recovery).await.is_err());
+        assert_eq!(client.budget.requests.available_permits(), QUEUE_LIMIT - 1);
+        if stage == 0 {
+            assert!(client.auth.lock().unwrap().failed);
+        } else {
+            assert!(!client.auth.lock().unwrap().failed);
+        }
+        assert_eq!(f1_login_count(&fake), if stage == 2 { 2 } else { 1 });
+        drop(recovery);
+        drop(refresh);
+        assert!(client.auth.lock().unwrap().failed);
+        assert_eq!(client.auth.lock().unwrap().generation, 1);
+        assert_eq!(client.budget.requests.available_permits(), QUEUE_LIMIT);
+        {
+            let budget = client.budget.state.lock().unwrap();
+            assert_eq!(budget.active, 0);
+            assert!(budget.queue.is_empty());
+        }
+        assert!(client.refresh.try_lock().is_ok());
+        let count = fake.calls.lock().unwrap().len();
+        assert!(client.send(read(), RequestClass::Control).await.is_err());
+        assert_eq!(fake.calls.lock().unwrap().len(), count);
+    }
+}
+
+#[tokio::test]
+async fn f1_retry_waiters_do_not_bypass_logical_queue_limit() {
+    let fake = Fake::start(|_| panic!("retry without a failure must not send HTTP")).await;
+    let client = fake.transport(false);
+    let refresh = client.refresh.lock().await;
+    let mut waiters = Vec::new();
+    for _ in 0..QUEUE_LIMIT {
+        let mut retry = Box::pin(client.retry_authentication());
+        assert!(tokio::time::timeout(Duration::from_millis(1), &mut retry)
+            .await
+            .is_err());
+        waiters.push(retry);
+    }
+    assert_eq!(
+        client.retry_authentication().await.unwrap_err().kind,
+        ManagementErrorKind::QueueFull
+    );
+    drop(waiters);
+    drop(refresh);
+    assert_eq!(client.budget.requests.available_permits(), QUEUE_LIMIT);
+    client.retry_authentication().await.unwrap();
+    assert!(fake.calls.lock().unwrap().is_empty());
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(128))]
+    #[test]
+    fn f1_pbt_healthy_retries_preserve_session_and_http_budget(n in 0usize..=64) {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            let fake = Fake::start(|call| match call.path.as_str() {
+                "/api/user/login" => Reply::json(json!({"success":true,"data":{"id":42}})),
+                "/api/channel/1" => Reply::json(json!({"success":true,"data":{}})),
+                _ => panic!("unexpected fake endpoint"),
+            }).await;
+            let client = fake.transport(false);
+            client.send(read(), RequestClass::Control).await.unwrap();
+            let generation = client.auth.lock().unwrap().generation;
+            let admissions = client.budget.state.lock().unwrap().admissions.clone();
+            for _ in 0..n { client.retry_authentication().await.unwrap(); }
+            let state = client.auth.lock().unwrap();
+            assert!(matches!(state.auth, Auth::Session(42)));
+            assert_eq!(state.generation, generation);
+            assert!(!state.failed);
+            drop(state);
+            assert_eq!(client.budget.state.lock().unwrap().admissions, admissions);
+            assert_eq!(client.budget.requests.available_permits(), QUEUE_LIMIT);
+            assert_eq!(f1_login_count(&fake), 1);
+            assert_eq!(fake.calls.lock().unwrap().len(), 2);
+        });
+    }
 }
 
 #[tokio::test(start_paused = true)]

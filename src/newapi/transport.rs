@@ -551,7 +551,17 @@ impl ManagementTransport {
     }
 
     async fn refresh_session(&self, observed_generation: u64) -> Result<()> {
-        let _refresh = self.refresh.lock().await;
+        let refresh = self.refresh.lock().await;
+        self.refresh_session_locked(observed_generation, &refresh)
+            .await
+    }
+
+    /// 调用方持有同一 refresh 锁，判断与登录之间不能重新排队。
+    async fn refresh_session_locked(
+        &self,
+        observed_generation: u64,
+        _refresh: &tokio::sync::MutexGuard<'_, ()>,
+    ) -> Result<()> {
         {
             let state = self.auth.lock().unwrap();
             if state.failed {
@@ -598,6 +608,7 @@ impl ManagementTransport {
             Ok(user_id) => {
                 state.auth = Auth::Session(user_id);
                 state.generation += 1;
+                state.failed = false;
                 Ok(())
             }
             Err(_) => {
@@ -610,18 +621,28 @@ impl ManagementTransport {
     /// 显式管理动作才可解除认证熔断；不隐式 setup，不重放旧业务命令。
     pub async fn retry_authentication(&self) -> Result<()> {
         let _request = self.budget.register_request()?;
-        {
-            let _refresh = self.refresh.lock().await;
-            self.auth.lock().unwrap().failed = false;
-        }
+        let refresh = self.refresh.lock().await;
         let generation = {
-            let state = self.auth.lock().unwrap();
+            let mut state = self.auth.lock().unwrap();
+            if !state.failed {
+                return Ok(());
+            }
             if matches!(state.auth, Auth::Token(_)) {
+                state.failed = false;
                 return Ok(());
             }
             state.generation
         };
-        self.refresh_session(generation).await
+        // 从清旗标开始覆盖取消/错误，包括尚未获得 HTTP 预算的等待阶段。
+        let mut recovery = RefreshCancellation {
+            transport: self,
+            generation,
+            completed: false,
+        };
+        self.auth.lock().unwrap().failed = false;
+        let result = self.refresh_session_locked(generation, &refresh).await;
+        recovery.completed = result.is_ok();
+        result
     }
 
     /// 仅旧 CLI 的显式 authenticate 首启引导可调用；自动 401 恢复绝不调用它。

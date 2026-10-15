@@ -365,6 +365,13 @@ async fn worker_preflight_accepts_internal_progress_but_requires_fresh_observati
     }
 }
 async fn fixture(kind: SourceKind, entries: &[(usize, usize, i64, Option<i64>)]) -> Fixture {
+    fixture_with_auth(kind, entries, true).await
+}
+async fn fixture_with_auth(
+    kind: SourceKind,
+    entries: &[(usize, usize, i64, Option<i64>)],
+    token: bool,
+) -> Fixture {
     let state = Arc::new(NativeState::default());
     let server = state.clone();
     let fake = Fake::start(move |r| server.reply(r)).await;
@@ -465,7 +472,7 @@ async fn fixture(kind: SourceKind, entries: &[(usize, usize, i64, Option<i64>)])
         .unwrap();
     let worker = ReconcileWorker::new(
         store,
-        Arc::new(NewApiClient::new(&fake.config(true)).unwrap()),
+        Arc::new(NewApiClient::new(&fake.config(token)).unwrap()),
     );
     worker
         .publish_backend(BackendReadiness::from_preflight(
@@ -1004,6 +1011,108 @@ async fn worker_background_lane_busy_is_not_a_terminal_failure() {
         .unwrap()
         .unwrap()
         .unwrap();
+}
+
+#[tokio::test]
+async fn f1_worker_session_non_auth_retry_and_success_history_do_not_login() {
+    let f = fixture_with_auth(SourceKind::Volcano, &[(0, 0, 10, Some(1))], false).await;
+    let channel = f.state.channels.lock().unwrap().remove(&1).unwrap();
+    f.worker.reconcile_once().await.unwrap();
+    assert_eq!(
+        f.worker.operation(&operation(0)).unwrap().error_code,
+        Some(ControlErrorCode::BindingDrift)
+    );
+    assert_eq!(
+        f.fake
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r.path == "/api/user/login")
+            .count(),
+        1
+    );
+    let calls = f.fake.calls.lock().unwrap().len();
+    for _ in 0..4 {
+        f.worker.retry(&operation(0)).await.unwrap();
+    }
+    assert_eq!(f.fake.calls.lock().unwrap().len(), calls);
+    f.state.channels.lock().unwrap().insert(1, channel);
+    finish(&f).await;
+    let receipt = f.worker.operation(&operation(0)).unwrap();
+    assert_eq!(receipt.phase, OperationPhase::Succeeded);
+    let cached = f.worker.core.lock().unwrap().observations.len();
+    let calls = f.fake.calls.lock().unwrap().len();
+    for _ in 0..4 {
+        assert_eq!(f.worker.retry(&operation(0)).await.unwrap(), receipt);
+    }
+    assert_eq!(f.worker.core.lock().unwrap().observations.len(), cached);
+    assert_eq!(f.fake.calls.lock().unwrap().len(), calls);
+}
+
+#[tokio::test]
+async fn f1_worker_session_unknown_retry_never_creates_twice() {
+    let f = fixture_with_auth(SourceKind::Volcano, &[(0, 0, 10, None)], false).await;
+    f.state.bad_create.store(true, Ordering::SeqCst);
+    f.worker.reconcile_once().await.unwrap();
+    assert_eq!(
+        f.worker.operation(&operation(0)).unwrap().phase,
+        OperationPhase::Unknown
+    );
+    let calls = f.fake.calls.lock().unwrap().len();
+    for _ in 0..3 {
+        f.worker.retry(&operation(0)).await.unwrap();
+        assert_eq!(
+            f.worker.work(f.ids[0]).unwrap().pending_write,
+            PendingWrite::Unknown
+        );
+    }
+    assert_eq!(f.fake.calls.lock().unwrap().len(), calls);
+    finish(&f).await;
+    let calls = f.fake.calls.lock().unwrap();
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|r| r.path == "/api/channel/" && r.method == "POST")
+            .count(),
+        1
+    );
+    assert_eq!(
+        calls.iter().filter(|r| r.path == "/api/user/login").count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn f1_worker_session_superseded_retry_does_not_replay_or_login() {
+    let f = fixture_with_auth(SourceKind::Volcano, &[(0, 0, 10, None)], false).await;
+    f.state.bad_create.store(true, Ordering::SeqCst);
+    f.worker.reconcile_once().await.unwrap();
+    let w = f.worker.work(f.ids[0]).unwrap();
+    f.worker
+        .submit(
+            operation(99),
+            ControlCommand::EnsureMember {
+                membership_id: f.ids[0],
+                expected_revision: w.target.revision,
+                status: StatusDirective::Disabled,
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        f.worker.operation(&operation(0)).unwrap().phase,
+        OperationPhase::Superseded
+    );
+    let calls = f.fake.calls.lock().unwrap().len();
+    assert_eq!(
+        f.worker.retry(&operation(0)).await.unwrap_err().code,
+        ControlErrorCode::RevisionConflict
+    );
+    assert_eq!(f.fake.calls.lock().unwrap().len(), calls);
+    assert_eq!(
+        f.worker.work(f.ids[0]).unwrap().pending_write,
+        PendingWrite::Unknown
+    );
 }
 
 #[tokio::test]
