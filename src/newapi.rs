@@ -12,6 +12,7 @@ use crate::model_catalog::{model_sets_equal, normalize_models_csv, ModelCatalogC
 use crate::status::{ChannelState, RequestLog};
 use anyhow::{bail, Context, Result};
 pub mod managed_channels;
+pub mod preflight;
 pub mod transport;
 
 use reqwest::Method;

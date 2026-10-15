@@ -336,6 +336,36 @@ impl ReconcileWorker {
             Ok(())
         })
     }
+    /// 复用本地托管预检；先撤销旧许可，网络返回后拒绝覆盖较新的发布。
+    pub async fn refresh_backend(
+        &self,
+        process: &crate::boot::NewApiProcess,
+    ) -> ControlResult<crate::newapi::preflight::BackendCheck> {
+        self.refresh_from(self.client.check_local_backend(process))
+            .await
+    }
+    async fn refresh_from(
+        &self,
+        check: impl std::future::Future<Output = crate::newapi::preflight::BackendCheck>,
+    ) -> ControlResult<crate::newapi::preflight::BackendCheck> {
+        let revoked = self.publish(|c| {
+            c.backend = crate::newapi::preflight::unavailable();
+            c.observations.clear();
+            Ok(self.publication.load(Ordering::SeqCst) + 1)
+        })?;
+        let check = check.await;
+        self.mutate(None, |c| {
+            if c.input_epoch != revoked {
+                return Err(error(ControlErrorCode::RevisionConflict));
+            }
+            c.store.wake_pending(None, false, now())?;
+            c.backend = check.readiness();
+            c.observations.clear();
+            c.input_epoch = self.publication.load(Ordering::SeqCst) + 1;
+            Ok(())
+        })?;
+        Ok(check)
+    }
     /// 策略与组注册层提供；来源停用 gate 按 SourceId 共享，不按下游协议拆分。
     pub fn publish_route(
         &self,

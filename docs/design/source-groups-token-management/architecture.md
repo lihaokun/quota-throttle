@@ -1,6 +1,6 @@
 # 来源共享 分组路由和用量面板架构
 
-日期：2026-10-15。状态：架构已确认，sgm-1 及其复审修复已完成，sgm-2 前两批及计划器小步已验证，持久执行/恢复未接线。需求依据：[最新版方案](../../research/source-groups-token-management-research.md)。接口实证：[实现前审核](review.md)。架构确认不包含生产部署授权。
+日期：2026-10-15。状态：架构已确认，sgm-1 已完成，sgm-2 的执行/恢复和本地托管预检已实现并分步验证；尚未接现行服务，sgm-3 至 sgm-7 待实施。需求依据：[最新版方案](../../research/source-groups-token-management-research.md)。接口实证：[实现前审核](review.md)。架构确认不包含生产部署授权。
 
 ## 目标与边界
 
@@ -249,6 +249,7 @@ priority 是对支持该请求模型的候选表达偏好。原生单次重试�
 | WorkTicket / WorkSnapshot | 目录实例、成员动作与 member/source/group generation、执行序号及启用授权 epoch，一致读取的目标及完整可能路由的同组状态（含退役中成员） | store/worker/planner；目录持久票据及快照供已实现的显式 worker 消费，尚未接现行 CLI；不包含公开可序列化凭据 |
 | ExecutionEffect / ExecutionOutcome | 私有白名单写效果；明确未发出、完整响应（可失败）、不确定三种结算证据 | catalog/execution；仅可信执行器生产结算证据，不接受前端 JSON；完整响应不等于目标完成 |
 | BackendReadiness | 已核实的管理能力、原生自动启用开关、实例绑定及检查时间 | 只读预检 → 协调器；冲突不静默修改现有全局配置 |
+| BackendCheck / BackendIssue | 不可序列化的检查结果与固定安全失败原因；不含进程路径、环境或服务端正文 | 本地 preflight → worker/后续运行组装层；复用既有 NewApiProcess，不引入远程登记或数据库指纹 |
 | ChannelObservation | 实际 channel 身份、路由字段、原生状态及观测时间 | NewAPI 客户端 → reconciler；原始 JSON 私有，未知不当零 |
 | OperationView | 操作身份/类型/阶段、目标 generation、确认计数、安全错误码及时间 | store 发布给面板；具体格式由 [schema](schemas/control-operation.schema.json) 约束 |
 

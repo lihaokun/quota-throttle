@@ -1,6 +1,6 @@
 # 来源共享功能实施准备计划
 
-日期：2026-10-15。状态：[架构](architecture.md)已确认，sgm-1 完成，sgm-2 已验证管理接口、意图、计划器、持久日志、绑定/回读及 HTTP 执行器；真实预检和整体验收未完成，不是授权部署清单。
+日期：2026-10-15。状态：[架构](architecture.md)已确认，sgm-1 完成，sgm-2 的管理接口、意图、计划器、持久日志、绑定/回读、HTTP 执行器及本地预检已实现并完成分步验证；后续业务模块与整体验收未完成，不是授权部署清单。
 
 ## 当前完成与未完成
 
@@ -9,7 +9,8 @@
 - 已验证：58 个既有 Rust 测试通过；11 项原生 NewAPI 契约检查通过，隔离进程退出。
 - 当前实施：[sgm-2 细化](subplans/sgm-2-channel-reconcile.md)、[操作 schema](schemas/control-operation.schema.json)、[事前 expectations](../../audits/sgm-2-channel-reconcile/expectations.md)。第一批管理传输与渠道接口完成测试和[独立审核](../../audits/sgm-2-channel-reconcile/audit-report.md)。第二批目录 v2 与本地持久意图完成[审核](../../audits/sgm-2-channel-reconcile/batch-2-audit.md)：当前全量 141 项普通测试及本批 3 项变异通过。协调执行和剩余整体验收仍待第三批。
 - 第三批进度：[计划器与发送门禁](../../audits/sgm-2-channel-reconcile/planner-audit.md)、[v3 持久日志](../../audits/sgm-2-channel-reconcile/execution-journal-audit.md)、[绑定/回读确认](../../audits/sgm-2-channel-reconcile/confirmation-audit.md)、[HTTP 交付与执行器](../../audits/sgm-2-channel-reconcile/worker-audit.md)完成小步审核。worker 小步时 240 项普通测试及隔离原生执行器禁用创建/绑定/回读/退役通过，8 项变异被捕获。随后[R8/R10 门禁补齐](../../audits/sgm-2-channel-reconcile/assurance-audit.md)后为 245 项普通测试通过，新增 2 项 PBT 各 128 cases，6 项变异（含 2 项编译期负 trait）被捕获；机械检查与 release 通过。真实预检 producer、完整跨模块组合验收和 CLI 接线仍未完成，不宣称整个第三批完成。
-- 最新组合验收：[执行器多组轨迹](../../audits/sgm-2-channel-reconcile/scenarios-audit.md)完成本轮独审，新增 4 项 PBT 各 128 cases；全量为 249 项通过，5 项变异被捕获，机械检查和 release 通过。组合覆盖部分失败/重开/重试、历史收据、混合提供者隔离、未知创建及一般未知写，不替代其他既有门禁；真实预检和原生/部署集成仍未完成。预检的本地托管/远程范围尚待用户选择，不擅自缩小目标。
+- 最新组合验收：[执行器多组轨迹](../../audits/sgm-2-channel-reconcile/scenarios-audit.md)完成本轮独审，新增 4 项 PBT 各 128 cases；全量为 249 项通过，5 项变异被捕获，机械检查和 release 通过。组合覆盖部分失败/重开/重试、历史收据、混合提供者隔离、未知创建及一般未知写，不替代其他既有门禁；真实预检和原生/部署集成仍未完成。用户已重申本地托管为既有架构，范围已确定，不再等待选择；撤回远程管理和数据库 inode 登记扩展，按现有 boot 配置完成本地只读预检。
+- 当前本地预检：[独立审核](../../audits/sgm-2-channel-reconcile/local-preflight-audit.md)通过，真实 producer 已接到 worker 显式刷新入口；不再用手传 verified=true 作为原生预检证据。复用现有 boot 配置/PID，未增加配置/schema/身份登记。新增 11 项普通测试（含 2 项各 128 cases PBT），全量 260 项通过；原生隔离测试、6 项变异、机械门禁和 release 通过。旧范围阻塞已解除；下一实施重点为 sgm-3 来源策略，再依次推进事实用量、key 管理、三页面及发布接线。
 - 未完成：sgm-2 第三批及整体验收；sgm-3 至 sgm-7 的细化/expectations 与实现，包括调度适配、用量采集、访问 key 管理、三页面 UI、生产迁移与发布。
 - 不开展：逐访问 key 上游绑定、火山临期、积分换算、硬 token 限额、修改 GLM 算法、定制 NewAPI 推理路由。
 

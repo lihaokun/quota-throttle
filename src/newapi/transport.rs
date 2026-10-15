@@ -397,7 +397,19 @@ pub struct ManagementTransport {
     password: String,
     extra_headers: header::HeaderMap,
 }
+pub(super) fn endpoint_is_loopback(url: &Url) -> bool {
+    url.host_str().is_some_and(|host| {
+        host == "localhost"
+            || host
+                .trim_matches(['[', ']'])
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|ip| ip.is_loopback())
+    })
+}
 impl ManagementTransport {
+    pub(super) fn base_url(&self) -> &str {
+        &self.base_url
+    }
     pub fn new(cfg: &NewApiConfig, budget: Arc<ManagementBudget>) -> Result<Self> {
         let url =
             Url::parse(&cfg.base_url).map_err(|_| error(ManagementErrorKind::InvalidInput))?;
@@ -430,7 +442,14 @@ impl ManagementTransport {
             value.set_sensitive(true);
             extra_headers.insert(name, value);
         }
-        let client = reqwest::Client::builder()
+        let builder = reqwest::Client::builder();
+        // 本地托管连接必须直达回环，不让环境代理改变被核对的实例。
+        let builder = if endpoint_is_loopback(&url) {
+            builder.no_proxy()
+        } else {
+            builder
+        };
+        let client = builder
             .cookie_store(true)
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(Duration::from_secs(3))

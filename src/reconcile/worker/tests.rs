@@ -266,6 +266,104 @@ struct Fixture {
 fn operation(n: usize) -> OperationId {
     OperationId::new(format!("worker-operation-{n:016}")).unwrap()
 }
+
+#[tokio::test]
+async fn worker_local_preflight_failure_revokes_old_readiness_without_management_writes() {
+    let f = fixture(SourceKind::Volcano, &[(0, 0, 10, Some(1))]).await;
+    let mut cfg: crate::config::ManageConfig = toml::from_str("").unwrap();
+    cfg.port = reqwest::Url::parse(&f.fake.url).unwrap().port().unwrap();
+    cfg.data_dir = f._dir.path().to_string_lossy().into_owned();
+    let process = crate::boot::NewApiProcess::new(&cfg, &f.fake.url).unwrap();
+    assert!(f.worker.core.lock().unwrap().backend.ready_at(now()));
+    let result = f.worker.refresh_backend(&process).await.unwrap();
+    assert_eq!(
+        result.issue(),
+        Some(crate::newapi::preflight::BackendIssue::LocalBinding)
+    );
+    assert!(!f.worker.core.lock().unwrap().backend.ready_at(now()));
+    assert!(f.fake.calls.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn worker_late_preflight_cannot_replace_newer_publication() {
+    let f = fixture(SourceKind::Volcano, &[(0, 0, 10, Some(1))]).await;
+    let mut cfg: crate::config::ManageConfig = toml::from_str("").unwrap();
+    cfg.port = reqwest::Url::parse(&f.fake.url).unwrap().port().unwrap();
+    cfg.data_dir = f._dir.path().to_string_lossy().into_owned();
+    let process = crate::boot::NewApiProcess::new(&cfg, &f.fake.url).unwrap();
+    let failed = f.worker.client.check_local_backend(&process).await;
+    let (started, waiting) = tokio::sync::oneshot::channel();
+    let (release, resume) = tokio::sync::oneshot::channel();
+    let worker = f.worker.clone();
+    let task = tokio::spawn(async move {
+        worker
+            .refresh_from(async {
+                started.send(()).unwrap();
+                resume.await.unwrap();
+                failed
+            })
+            .await
+    });
+    waiting.await.unwrap();
+    assert!(!f.worker.core.lock().unwrap().backend.ready_at(now()));
+    f.worker
+        .publish_backend(BackendReadiness::from_preflight(
+            SUPPORTED_BACKEND_VERSION,
+            NativeRecoveryCheck::Disabled,
+            true,
+            now() - 1,
+            now() + 3600,
+        ))
+        .unwrap();
+    release.send(()).unwrap();
+    assert_eq!(
+        task.await.unwrap().err().unwrap().code,
+        ControlErrorCode::RevisionConflict
+    );
+    assert!(f.worker.core.lock().unwrap().backend.ready_at(now()));
+}
+
+#[tokio::test]
+async fn worker_preflight_accepts_internal_progress_but_requires_fresh_observations() {
+    for status in [None, Some(1)] {
+        let f = fixture(SourceKind::Volcano, &[(0, 0, 10, status)]).await;
+        let ready = crate::newapi::preflight::tests::ready_fixture();
+        let (started, waiting) = tokio::sync::oneshot::channel();
+        let (release, resume) = tokio::sync::oneshot::channel();
+        let worker = f.worker.clone();
+        let task = tokio::spawn(async move {
+            worker
+                .refresh_from(async {
+                    started.send(()).unwrap();
+                    resume.await.unwrap();
+                    ready
+                })
+                .await
+        });
+        waiting.await.unwrap();
+        let revoked = f.worker.publication.load(Ordering::SeqCst);
+        f.worker.reconcile_once().await.unwrap();
+        assert!(f.worker.publication.load(Ordering::SeqCst) > revoked);
+        assert_eq!(f.worker.core.lock().unwrap().input_epoch, revoked);
+        if status.is_some() {
+            assert!(!f.worker.core.lock().unwrap().observations.is_empty());
+        }
+        release.send(()).unwrap();
+        assert_eq!(task.await.unwrap().unwrap().issue(), None);
+        let core = f.worker.core.lock().unwrap();
+        assert!(core.backend.ready_at(now()));
+        assert!(core.observations.is_empty());
+        drop(core);
+        assert!(f.worker.work(f.ids[0]).unwrap().target.next_attempt_at <= now());
+        assert!(f
+            .fake
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|r| r.method == "GET"));
+    }
+}
 async fn fixture(kind: SourceKind, entries: &[(usize, usize, i64, Option<i64>)]) -> Fixture {
     let state = Arc::new(NativeState::default());
     let server = state.clone();

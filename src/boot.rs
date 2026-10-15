@@ -37,6 +37,10 @@ pub struct NewApiProcess {
 }
 
 impl NewApiProcess {
+    pub(crate) fn configured_version(&self) -> &str {
+        &self.version
+    }
+
     pub fn new(cfg: &ManageConfig, base_url: &str) -> Result<Self> {
         let (asset, _) = asset_names(&cfg.version)?;
         let data_dir = PathBuf::from(&cfg.data_dir);

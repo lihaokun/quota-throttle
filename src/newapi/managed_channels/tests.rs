@@ -344,7 +344,7 @@ async fn native_managed_channel_contract_on_fresh_database() {
     assert!(![3000, 3001].contains(&port));
     drop(reservation);
     let database = directory.path().join("native-test.db");
-    let child = Command::new(binary)
+    let child = Command::new(&binary)
         .current_dir(directory.path())
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
@@ -509,22 +509,31 @@ async fn native_managed_channel_contract_on_fresh_database() {
         all.channels.last().unwrap().observation().unwrap().name,
         "fixture-101"
     );
-    let backend = native_persisted_confirmation(&client, &directory.path().join("catalog")).await;
-    native_worker_reconcile(client.clone(), &directory.path().join("worker"), backend).await;
+    let mut managed: crate::config::ManageConfig = toml::from_str("").unwrap();
+    managed.data_dir = directory.path().to_string_lossy().into_owned();
+    managed.port = port;
+    let mut local = crate::boot::NewApiProcess::new(&managed, &config.base_url).unwrap();
+    local.binary = std::path::PathBuf::from(&binary);
+    std::fs::write(
+        directory.path().join("new-api.pid"),
+        process.0.id().to_string(),
+    )
+    .unwrap();
+    native_persisted_confirmation(&client, &directory.path().join("catalog"), &local).await;
+    native_worker_reconcile(client.clone(), &directory.path().join("worker"), &local).await;
     drop(process); // 只终止本测试持有的 Child；临时库随后自动清理。
 }
 
 async fn native_persisted_confirmation(
     client: &crate::newapi::NewApiClient,
     directory: &std::path::Path,
+    process: &crate::boot::NewApiProcess,
 ) -> crate::reconcile::planner::BackendReadiness {
     use crate::catalog::control::{ControlCommand, OperationId, OperationPhase, StatusDirective};
     use crate::catalog::{
         CatalogStore, GroupDraft, SourceDraft, SourceSettings, UpstreamProfile, VolcanoPolicy,
     };
-    use crate::reconcile::planner::{
-        BackendReadiness, PendingWrite, PlanContext, StampedObservation, SUPPORTED_BACKEND_VERSION,
-    };
+    use crate::reconcile::planner::{PendingWrite, PlanContext, StampedObservation};
     fn now() -> i64 {
         SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
@@ -533,6 +542,31 @@ async fn native_persisted_confirmation(
     }
     let api = client.managed_channels();
     // 仅本测试持有的已验证随机端口/全新数据库：不得套用到现有服务 URL。
+    client
+        .transport
+        .send(
+            ManagementRequest::new(
+                Method::PUT,
+                "/api/option/",
+                Some(json!({"key":"AutomaticEnableChannelEnabled","value":"true"})),
+                RequestSemantics::IdempotentWrite,
+                SINGLE_BODY_LIMIT,
+            )
+            .unwrap(),
+            RequestClass::Control,
+        )
+        .await
+        .unwrap();
+    let rejected = client.check_local_backend(process).await;
+    assert_eq!(
+        rejected.issue(),
+        Some(crate::newapi::preflight::BackendIssue::RecoveryEnabled)
+    );
+    assert!(!rejected.readiness().ready_at(now()));
+    assert_eq!(
+        api.check_native_recovery().await.unwrap(),
+        NativeRecoveryCheck::Enabled
+    );
     client
         .transport
         .send(
@@ -569,15 +603,27 @@ async fn native_persisted_confirmation(
         .unwrap();
     let version = status["data"]["version"].as_str().unwrap();
     // 固定哈希构建的元数据是 rc.20/6ce7305...，但该构建运行版本字段为 v0.0.0。
-    // 本测试用启动前的构建身份核验提供 canonical version；不放宽生产预检类型。
+    // 版本兼容必须由实际本地 producer 核实运行构建，不手传 verified=true。
     assert_eq!(version, "v0.0.0");
-    let backend = BackendReadiness::from_preflight(
-        SUPPORTED_BACKEND_VERSION,
-        recovery,
-        true,
-        now(),
-        now() + 120,
+    // 检查期间 PID 文件换成另一代，不能发布成功；只修改本测试自己的临时文件。
+    let pid_file = process.data_dir.join("new-api.pid");
+    let original_pid = std::fs::read(&pid_file).unwrap();
+    let changing = pid_file.clone();
+    let change = tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        std::fs::write(changing, u32::MAX.to_string()).unwrap();
+    });
+    let stale = client.check_local_backend(process).await;
+    change.await.unwrap();
+    std::fs::write(&pid_file, original_pid).unwrap();
+    assert_eq!(
+        stale.issue(),
+        Some(crate::newapi::preflight::BackendIssue::LocalBinding)
     );
+    let checked = client.check_local_backend(process).await;
+    assert_eq!(checked.issue(), None);
+    let backend = checked.readiness();
+    assert!(backend.ready_at(now()));
     let mut store = CatalogStore::open(&directory.join("catalog.sqlite3")).unwrap();
     let source = store
         .create_source(SourceDraft {
@@ -728,7 +774,7 @@ async fn native_persisted_confirmation(
 async fn native_worker_reconcile(
     client: Arc<crate::newapi::NewApiClient>,
     directory: &std::path::Path,
-    backend: crate::reconcile::planner::BackendReadiness,
+    process: &crate::boot::NewApiProcess,
 ) {
     use crate::catalog::control::{ControlCommand, OperationId, OperationPhase};
     use crate::catalog::{
@@ -763,7 +809,7 @@ async fn native_worker_reconcile(
         .plan_membership(source.source_id, group.group_id, 10)
         .unwrap();
     let worker = ReconcileWorker::new(store, client.clone());
-    worker.publish_backend(backend).unwrap();
+    assert_eq!(worker.refresh_backend(process).await.unwrap().issue(), None);
     let pause = OperationId::new("native-worker-pause-0001".into()).unwrap();
     worker
         .submit(
