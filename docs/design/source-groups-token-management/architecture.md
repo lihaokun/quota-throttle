@@ -274,3 +274,19 @@ priority 是对支持该请求模型的候选表达偏好。原生单次重试�
 NewAPI 无远端 CAS：本地 revision 防止错记旧 ACK，不等于可以撤销已经发出的写。目标完成以匹配回读为依据；未决相反写与漂移必须显式显示，并在既定单写者假设下持续对账。不能把此执行层宣称为硬实时或严格 exactly-once 控制器。
 
 sgm-2 源码核对发现原生自动启用也可能成为并发状态写者。因此受管状态模式上线前必须确认其关闭；若现有实例开启，不自动修改、不中断旧部署，须在发布阶段另行确认处理方式。GLM 的原 auto_ban 和额度选择规则不变。此为细化新增的部署前提，不是已核实当前生产配置满足条件的声明。
+
+## 第三子计划第二批共享类型提案
+
+以下对应 [SGM-3 B 细化](subplans/sgm-3-source-policies-b.md)，待确认后实现，当前代码数据库仍为 v3。不改变模块归属或公开 JSON；v4 拟保存来源运行状态和每组选择，原始事实/历史统计仍由统一账本拥有。
+
+| 类型 | 所有者和消费者 | 约束 |
+| --- | --- | --- |
+| VolcanoRuntime / VolcanoState | source_policy 计算，catalog 持久化，C/面板消费 | 来源唯一；暂停优先、两个原因独立；状态派生；未初始化不默认可用 |
+| VolcanoEvidence / FinalOutcome | SGM-4 生产，source_policy 消费 | 绝对 token、已归并终态增量、周期/错误代次/投影游标；不能直接从原生日志条数或前端布尔值构造 |
+| EvidenceDisposition | 策略 → 内部存储入口 | Applied/Duplicate/Stale/Gap；缺口要求重建，不部分累加 |
+| SourcePolicyUpdate / SourcePolicyWrite | 内部控制/账本 → catalog → C | Tick/Evidence/ClearError/ReplacePolicy；返回安全来源/运行状态及过渡，不是前端命令或远端回执 |
+| VolcanoGroupState / GroupPolicyState | 策略和 catalog，C 消费 | 火山 preferred/稳定游标；GLM 复用既有 GlmGroupState；不按访问 key 建绑定 |
+| StoredGroupPolicy / VolcanoGroupDecision | catalog / 策略 → C | 组选择版本与输入来源版本明确；只表示本地选择，priority None 为 Keep |
+| PeriodTransition | 周期函数 → C/SGM-4 | 旧边界与当前新边界/旧规则；历史落库和运行状态须在后续组合事务中一起提交 |
+
+B 只实现有界纯函数和内部事务。原始日志去重、终态识别与缺口、历史边界账本、操作幂等回执和渠道许可的组合保证仍须 C/SGM-4 完成，不用 B 的 fixture 或本地保存成功代替上线验收。

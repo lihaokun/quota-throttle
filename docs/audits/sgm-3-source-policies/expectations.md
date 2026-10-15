@@ -2,6 +2,8 @@
 
 状态：第一批 A 事前清单已完成验证，详见[审核报告](audit-report.md)。基线 `e1a9279`。本表在编码前依据细化契约抽取；不回填实现位置，不以既有代码的缺陷作为新增需求。B/C 在各自编码前补充，当前清单不构成整个 SGM-3 验收。
 
+B 的状态、迁移和持久化使用独立的[事前清单](batch-b-expectations.md)，当前尚未实现，不把 A 的通过记录套用到 B。
+
 ## 1 契约源
 
 - [细化](../../design/source-groups-token-management/subplans/sgm-3-source-policies.md) §1–5、§7–8：A 的范围、类型、逐函数语义与测试门禁。
