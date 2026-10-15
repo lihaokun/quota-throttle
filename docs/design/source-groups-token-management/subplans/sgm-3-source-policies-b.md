@@ -1,6 +1,6 @@
 # SGM-3 第二批火山状态与策略持久化
 
-状态：细化待确认，尚未编码。基线 `2ec8b50`，属于 [SGM-3](sgm-3-source-policies.md) 的 B 批，不新开功能或改变部署架构。第一批 GLM 算法和已完成的认证修复保持不变。
+状态：用户已确认 B，纯函数小步已实现并完成独立复审；验证记录见[纯函数审核](../../../audits/sgm-3-source-policies/batch-b-pure-audit.md)。存储与迁移尚未编码。设计基线 `2ec8b50`，确认后实施基线 `7f4fe7b`，属于 [SGM-3](sgm-3-source-policies.md) 的 B 批，不新开功能或改变部署架构。第一批 GLM 算法和已完成的认证修复保持不变。
 
 ## 1 范围与交付边界
 
@@ -122,6 +122,8 @@ insert_source 在原事务追加火山未初始化行；insert_group 在原事�
 
 首批 from=None，可用 to=0 表示空投影；后续新批 to 必须严格增加。coverage 为半开扫描区间的上界，在当前周期内且不下降、不超过 min(next_reset_at,now+1)；输出 Outcome 的 completed_at 必须早于该上界，未来记录不能提前改变状态。中途任一非法结果使整批不生效；最多 1024 项，每轮消耗一项，必终止。旧批次不能重算 token 或累加失败；真实请求跨批去重仍是生产者义务，不凭消费者游标宣称原生去重已经完成。
 
+空投影 to=0 只允许空结果列表及 input/output=0。结构数值校验先于 Stale/Duplicate；只对真正要应用的新批次校验当前周期、单调用量及覆盖范围。当前 now 必须落在已推进的周期内；纯函数不会替调用方隐式重置。
+
 ### 5.4 撤错和编辑策略
 
 `clear_error(runtime, now)` 要求 now 位于已推进后的当前周期，且不早于已有 cutoff；否则报 InvalidInput。清 error_exhausted/连续计数，error_epoch 加 1、cutoff=now、evidence_cursor=None；保留 token、limit_exhausted、coverage 和手动暂停。重置投影起点用于下一批按新 cutoff 重建错误增量，绝对 token 不能重复相加。
@@ -136,9 +138,11 @@ insert_source 在原事务追加火山未初始化行；insert_group 在原事�
 
 按 (order,MembershipId) 排序。preferred 仍在可用集则保持；否则从 cursor 后的第一个可用成员选择，尾部无候选则回绕到第一个；首次无 cursor 就选第一个。全员不可用返回 preferred=None，但保留 cursor。新选中时更新 cursor；返回来源恢复不抢占仍可用首选。
 
-`VolcanoGroupDecision` 包含 group_id/group_revision、下一 state、eligible、所用来源 config/runtime 版本及成员 priority Option。输出排除已退休或退役中的成员/来源；余下成员中，明确暂停/耗尽为 exhausted，未绑定或未初始化为 None（Keep），首选为 active，其他可用为 standby。未知成员不获得启用资格。阈值与 priority 取现有合法配置，不硬编码默认值。没有临期排序、逐 token 绑定或模型改名；C 将 Keep 转成保留既有目标，并让源级 status gate 高于 priority。首选只是对支持该模型的原生候选的偏好。
+`VolcanoGroupDecision` 包含 group_id/group_revision、下一 state、eligible、所用来源 config/runtime 版本及成员 priority Option。输出排除已退休或退役中的成员/来源；source_revisions 也只包含保留成员引用的来源，按 SourceId 顺序输出，仍对被过滤输入先做身份核验。余下成员中，明确暂停/耗尽为 exhausted，未绑定或未初始化为 None（Keep），首选为 active，其他可用为 standby。未知成员不获得启用资格。阈值与 priority 取现有合法配置，不硬编码默认值。没有临期排序、逐 token 绑定或模型改名；C 将 Keep 转成保留既有目标，并让源级 status gate 高于 priority。首选只是对支持该模型的原生候选的偏好。
 
 论证：稳定有界排序后最多扫描一次，唯一选中或无选中；成员身份而非 SourceId 作为组内结果，故同源不同组互不覆盖。当前可用优先分支保证粘滞；游标保留覆盖成员移除和暂时全不可用的恢复。
+
+辅助函数契约：VolcanoRuntime::validate_shape 检查数字范围、周期/截点、cursor 有值时 coverage 非空；validate 再核当前 policy、上限原因、未锁存错误的阈值关系及 next 日格。来源选择无私有 policy 入参，依赖 catalog 已做完整校验；previous 的历史成员归组也由 catalog 读出校验，纯函数只核其 preferred/cursor 形状，允许已移除成员不在当前候选中。apply_usage 为编辑上限复用，仅先核旧状态形状，再重算新上限原因，不用新上限拒绝旧旗标；调用方最终作完整校验。state 和数值谓词为无副作用的简单分支；sum/increment 只返回安全计数或 SequenceExhausted；Outcome 校验检查有序安全时刻，不归并原生日志。
 
 ## 6 存储函数和并发责任
 
@@ -191,4 +195,4 @@ C/SGM-4 必须另行给出并实测：终态识别、同源重试最终成功、
 - [x] 循环有明确上界，错过多日不逐日循环。
 - [x] 持久化和迁移契约覆盖现有 open/insert 链，旧 DDL 不改。
 - [x] 与 C/SGM-4 的生产者和组合事务义务分开，不假称已接线。
-- [ ] 用户确认 B 细化后才能编码；C 的事实能力验证及运行接线仍须后续设计/验收。
+- [x] 用户已确认 B，按纯函数、存储、组合三步实现；C 的事实能力验证及运行接线仍须后续设计/验收。

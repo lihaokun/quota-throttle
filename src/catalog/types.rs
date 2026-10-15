@@ -201,6 +201,17 @@ impl Default for VolcanoPolicy {
         }
     }
 }
+impl VolcanoPolicy {
+    pub(crate) fn validate(&self) -> Result<()> {
+        require(
+            self.daily_token_limit.is_none_or(positive_revision)
+                && (1..=100).contains(&self.failure_threshold)
+                && (0..1440).contains(&self.reset_minute)
+                && (-720..=840).contains(&self.utc_offset_minutes),
+            ErrorKind::InvalidInput,
+        )
+    }
+}
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SourceSettings {
@@ -368,13 +379,7 @@ pub(super) fn validate_settings(settings: &mut SourceSettings) -> Result<()> {
             upstream
         }
         SourceSettings::Volcano { upstream, policy } => {
-            require(
-                policy.daily_token_limit.is_none_or(positive_revision)
-                    && (1..=100).contains(&policy.failure_threshold)
-                    && (0..1440).contains(&policy.reset_minute)
-                    && (-720..=840).contains(&policy.utc_offset_minutes),
-                ErrorKind::InvalidInput,
-            )?;
+            policy.validate()?;
             upstream
         }
     };

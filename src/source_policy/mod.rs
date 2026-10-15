@@ -1,6 +1,7 @@
-//! 来源级只读 quota 采集及纯 GLM 分组适配；尚未接入 CLI 或协调器发布。
+//! 来源级只读采集及 GLM/火山纯策略；尚未接入 CLI 或协调器发布。
 pub mod glm;
 pub mod probe;
+pub mod volcano;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PolicyError {

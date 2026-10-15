@@ -12,11 +12,11 @@
 - 最新组合验收：[执行器多组轨迹](../../audits/sgm-2-channel-reconcile/scenarios-audit.md)完成本轮独审，新增 4 项 PBT 各 128 cases；全量为 249 项通过，5 项变异被捕获，机械检查和 release 通过。组合覆盖部分失败/重开/重试、历史收据、混合提供者隔离、未知创建及一般未知写，不替代其他既有门禁；真实预检和原生/部署集成仍未完成。用户已重申本地托管为既有架构，范围已确定，不再等待选择；撤回远程管理和数据库 inode 登记扩展，按现有 boot 配置完成本地只读预检。
 - 当前本地预检：[独立审核](../../audits/sgm-2-channel-reconcile/local-preflight-audit.md)通过，真实 producer 已接到 worker 显式刷新入口；不再用手传 verified=true 作为原生预检证据。复用现有 boot 配置/PID，未增加配置/schema/身份登记。新增 11 项普通测试（含 2 项各 128 cases PBT），全量 260 项通过；原生隔离测试、6 项变异、机械门禁和 release 通过。旧范围阻塞已解除；下一实施重点为 sgm-3 来源策略，再依次推进事实用量、key 管理、三页面及发布接线。
 - SGM-3 [第一批](subplans/sgm-3-source-policies.md)已实现共享 GLM quota 与原策略分组适配，并完成[双路径审核](../../audits/sgm-3-source-policies/audit-report.md)：新增 17 项测试，其中 4 项 PBT 各至少 128 cases，6 项变异被捕获；最终全量 277 passed、1 ignored，机械门禁与 release 通过。独审发现的过滤前唯一性校验和测试身份区分问题均已修复。此批不改 GLM 算法、不创建火山空表、不接运行服务；下一步细化火山状态与持久化，再做协调器/事实接线。
-- 当前设计：[SGM-3 B 火山状态与持久化](subplans/sgm-3-source-policies-b.md)及[事前 expectations](../../audits/sgm-3-source-policies/batch-b-expectations.md)已写，待确认后编码。拟新增应用库 v4 来源/组状态，不改旧 DDL，不接运行服务；真实终态与采集覆盖继续作为 C/SGM-4 的门禁。
-- 未完成：sgm-2 第三批及整体验收；sgm-3 B 实现和 C 细化/expectations 与实现；sgm-4 至 sgm-7 的细化/expectations 与实现，包括用量采集、访问 key 管理、三页面 UI、生产迁移与发布。
+- 当前实施：[SGM-3 B 火山状态与持久化](subplans/sgm-3-source-policies-b.md)已获确认，纯函数 B1–B7 已完成[小步验收](../../audits/sgm-3-source-policies/batch-b-pure-audit.md)。新增 14 项测试，包含 4 项各 128 cases PBT；8 项隔离变异均被断言捕获，全量 302 passed/1 ignored，机械门禁、release 和独立复审通过。下一步为 v4 来源/组状态和重开/迁移组合；当前仍是 v3，不改旧 DDL、不接运行服务，真实终态与采集覆盖继续作为 C/SGM-4 门禁。
+- 未完成：sgm-2 第三批及整体验收；sgm-3 B 持久化/迁移组合和 C 细化/expectations 与实现；sgm-4 至 sgm-7 的细化/expectations 与实现，包括用量采集、访问 key 管理、三页面 UI、生产迁移与发布。
 - 不开展：逐访问 key 上游绑定、火山临期、积分换算、硬 token 限额、修改 GLM 算法、定制 NewAPI 推理路由。
 
-复审修正已完成：健康会话显式 retry 多余登录已在 `3b1bbae` 修复，[F1 记录](../../fixes/newapi-fix-healthy-auth-retry.md)包含红绿回归、11 项新增测试（含 128 cases PBT）和 4 项变异；全量 288 passed/1 ignored，release 通过。P1 已补[迁移归属及只读增量核对](../../audits/sgm-1-catalog-store/migration-scope-review.md)，保留历史审核证据。现已回到 SGM-3 B 细化确认点，不以可选代码清理扩大范围，不改运行服务。
+复审修正已完成：健康会话显式 retry 多余登录已在 `3b1bbae` 修复，[F1 记录](../../fixes/newapi-fix-healthy-auth-retry.md)包含红绿回归、11 项新增测试（含 128 cases PBT）和 4 项变异；全量 288 passed/1 ignored，release 通过。P1 已补[迁移归属及只读增量核对](../../audits/sgm-1-catalog-store/migration-scope-review.md)，保留历史审核证据。现按用户确认推进 SGM-3 B，不以可选代码清理扩大范围，不改运行服务。
 
 ## 分步实施顺序
 
