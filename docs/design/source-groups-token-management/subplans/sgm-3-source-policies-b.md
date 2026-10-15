@@ -1,6 +1,6 @@
 # SGM-3 第二批火山状态与策略持久化
 
-状态：用户已确认 B，纯函数和 v4 存储小步已实现并完成独立复审，见[纯函数审核](../../../audits/sgm-3-source-policies/batch-b-pure-audit.md)和[存储审核](../../../audits/sgm-3-source-policies/batch-b-storage-audit.md)。复杂历史迁移组合及完整 B 退出仍未完成。设计基线 `2ec8b50`，纯函数实施基线 `7f4fe7b`，存储实施基线 `0b52e50`；属于 [SGM-3](sgm-3-source-policies.md) 的 B 批，不新开功能或改变部署架构。第一批 GLM 算法和已完成的认证修复保持不变。
+状态：用户确认的 B 已于 2026-10-16 完成纯函数、v4 存储、复杂历史迁移组合及[整体退出验收](../../../audits/sgm-3-source-policies/batch-b-final-audit.md)，历史小步见[纯函数审核](../../../audits/sgm-3-source-policies/batch-b-pure-audit.md)和[存储审核](../../../audits/sgm-3-source-policies/batch-b-storage-audit.md)。设计基线 `2ec8b50`，纯函数基线 `7f4fe7b`，存储基线 `0b52e50`，组合验证基线 `e0cfb82`；属于 [SGM-3](sgm-3-source-policies.md) 的 B 批。C 接线和生产发布仍未实施，GLM 算法、认证修复和既有部署架构不变。
 
 ## 1 范围与交付边界
 

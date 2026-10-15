@@ -7,6 +7,9 @@ use crate::source_policy::volcano::*;
 
 const NOW: i64 = 20 * DAY_SECONDS + 18 * 3600;
 
+#[path = "policy_migration_tests.rs"]
+mod migration;
+
 fn err<T>(result: ControlResult<T>, code: Code) {
     match result {
         Err(e) => assert_eq!(e.code, code),
