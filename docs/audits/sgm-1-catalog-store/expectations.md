@@ -2,6 +2,8 @@
 
 子计划：sgm-1-catalog-store。日期：2026-10-14。状态：保留 Step 0 事前预期，实施后逐项核对通过。预期在基线 27a03b7 已提交，未从实现反向编造；修正和新增回归见 decisions.md。
 
+版本范围补记：以下勾选是 SGM-1 当时 v1 范围的验收，不是当前 HEAD 的整体验收。后续 SGM-2 合法旧库迁移、控制/执行侧表及恢复语义见[迁移增量核对](migration-scope-review.md)与 SGM-2 expectations；本次不重写原 Step 0 或放宽历史脚本。“不自动迁移”不应解读为后续版本永远不能按已批准的迁移契约升级应用状态库，更不构成生产迁移授权。
+
 ## 1 契约源
 
 - [主架构](../../design/source-groups-token-management/architecture.md)：G1/G2/G6、共享 Source/Group/Membership、不变量 I1/I2/I3/I6/I8、第一子计划共享类型。

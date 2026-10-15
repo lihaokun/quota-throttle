@@ -8,6 +8,8 @@
 
 事前验收清单见 [expectations](../../../audits/sgm-2-channel-reconcile/expectations.md)，操作回执格式见 [schema](../schemas/control-operation.schema.json)。本文定义完整设计，各小步实际验证范围以对应审核记录为准。
 
+外部复审修正提案：`2c65f20` 的显式 retry 会对未熔断 Session 额外登录，已确认偏离“仅显式恢复认证熔断”的意图。修正方案及待验证的健康 no-op、单飞/取消边界见[认证重试修正方案](../../../fixes/newapi-fix-healthy-auth-retry.md)；方案待确认，代码尚未修复，不能将本补记算作验证通过。目录 v2/v3 对 SGM-1 的覆盖关系另见[迁移增量核对](../../../audits/sgm-1-catalog-store/migration-scope-review.md)。
+
 仍然不代理模型请求，不维护 NewAPI fork，不实现逐访问 key 绑定。GLM 的 decide/pin/95%/降级/临期规则由 sgm-3 适配，火山耗尽判定由 sgm-3/4 实现；本模块不能根据 429 或管理错误自行判断上游额度。组注册/签发权限在 sgm-5，面板在 sgm-6，正式模式切换在 sgm-7。
 
 分三批实现并逐批测试：管理传输与渠道接口；目录 v2 与持久意图；协调执行与故障恢复。全部通过才结束本子计划，不能只做传输层就标记完成。新增模块拟为 src/reconcile/{mod.rs,types.rs,planner.rs,worker.rs}、src/newapi/{transport.rs,managed_channels.rs}、src/catalog/control.rs 及迁移 SQL/测试。newapi.rs 复用新传输，不保留第二套重登逻辑；旧 orchestrator/quota 算法与面板本步不改。

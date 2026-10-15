@@ -45,6 +45,8 @@ sgm-1 已采用 rusqlite 0.40.2（bundled、backup），版本锁入 Cargo.lock�
 
 测试和开发使用独立 state_path；正式库路径在部署时确认，不覆盖生产 one-api.db。schema_version 标识兼容性，旧版本遇到更高 schema 需拒绝写入；备份需使用一致性备份方式，不能忽略 WAL。
 
+版本承接：SGM-1 定义 v1 目录；SGM-2 负责 v1→v2 控制意图、v2→v3 执行记录及打开时的恢复。当前 open 对合法旧应用库先完整校验/备份再升级，不修补损坏库；每次升级各自事务化，不能将两个版本升级说成一次原子回滚。来源/成员与新增侧表同事务落库；当前 v3 的 open 仍可能恢复未决执行，不是纯只读 API。公开快照 wire=1 与数据库 v3 分开。历史审核边界及当前受影响路径见[迁移增量核对](../../audits/sgm-1-catalog-store/migration-scope-review.md)，不改变 SGM-7 的生产切换授权要求。
+
 ## 核心共享数据结构
 
 字段为架构级契约，序列化名称、完整 JSON schema 与函数签名在各子计划细化。

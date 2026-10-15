@@ -2,6 +2,10 @@
 
 子计划：sgm-1-catalog-store。日期：2026-10-14。状态：实现及双路径验收完成，见[审核报告](../../../audits/sgm-1-catalog-store/audit-report.md)。尚未接入运行服务。
 
+版本范围：本文保留 SGM-1 的 v1 设计与当时验收约束，不表示当前 `CatalogStore::open` 仍只支持 v1。SGM-2 已按其 §4.2/§5.4 和 v3 持久日志补充，引入合法旧库校验、私有备份、逐版本事务升级，以及打开后的执行恢复；source/member 插入也在原事务中追加控制/执行侧表。数据库当前为 v3，公开快照仍为 wire=1。具体承接和受影响路径见[迁移增量核对](../../../audits/sgm-1-catalog-store/migration-scope-review.md)。
+
+下文 P3/P4 的“不迁移高版本、不修复性补损坏表”仍成立；合法低版本的升级已由 SGM-2 明确扩展，不能把旧阶段叙述当作当前 open 无持久副作用的承诺。生产导入和部署授权边界不变。
+
 ## 1 范围
 
 实现共享 Source、Group、Membership 的本地目录及 SQLite 持久化；支持新增来源/组、建立计划成员、幂等导入旧 GLM 配置映射、安全快照和一致性备份。对应[架构](../architecture.md) G1、G6，并为 G2 保留旧渠道 ID、成员顺序和探针参数。
