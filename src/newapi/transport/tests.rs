@@ -689,32 +689,66 @@ async fn failed_login_latches_until_explicit_retry_and_does_not_setup() {
 
 #[tokio::test]
 async fn authentication_waiters_are_bounded_and_cancelled_login_opens_circuit() {
-    let fake = Fake::start(|_| Reply {
-        delay: Duration::from_secs(20),
-        ..Reply::json(json!({"success":true,"data":{"id":42}}))
+    let received = Arc::new(Notify::new());
+    let observed = received.clone();
+    let fake = Fake::start(move |call| {
+        assert_eq!(call.path, "/api/user/login");
+        observed.notify_one();
+        Reply {
+            delay: Duration::from_secs(20),
+            ..Reply::json(json!({"success":true,"data":{"id":42}}))
+        }
     })
     .await;
     let client = fake.transport(false);
+    // 确定性覆盖“已占逻辑槽、尚未发登录”，不能用短暂poll推断网络已到达。
+    let refresh_gate = client.refresh.lock().await;
     let mut pending = Vec::new();
     for _ in 0..64 {
         let mut request = Box::pin(client.send(read(), RequestClass::Control));
-        assert!(tokio::time::timeout(Duration::from_millis(1), &mut request)
-            .await
-            .is_err());
+        std::future::poll_fn(|cx| {
+            assert!(std::future::Future::poll(request.as_mut(), cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
         pending.push(request);
     }
     assert_eq!(
-        client
-            .send(read(), RequestClass::Control)
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            client.send(read(), RequestClass::Control)
+        )
+        .await
+        .expect("full authentication queue must reject without waiting")
+        .err()
+        .unwrap()
+        .kind,
+        ManagementErrorKind::QueueFull
+    );
+    assert_eq!(client.budget.requests.available_permits(), 0);
+    assert!(fake.calls.lock().unwrap().is_empty());
+    drop(refresh_gate);
+    // 持续驱动首个future，直到假服务确实读到请求；超时只是防挂死。
+    tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::select! {
+            _ = &mut pending[0] => panic!("login completed before cancellation"),
+            _ = received.notified() => {}
+        }
+    })
+    .await
+    .expect("fake server must observe the login request");
+    assert_eq!(fake.calls.lock().unwrap().len(), 1);
+    drop(pending.remove(0)); // 已发登录被取消，后续等待者不能自动再登录。
+    assert!(client.auth.lock().unwrap().failed);
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(5), pending.remove(0))
             .await
+            .expect("cancelled login must release the authentication waiter")
             .err()
             .unwrap()
             .kind,
-        ManagementErrorKind::QueueFull
+        ManagementErrorKind::AuthFailed
     );
-    assert_eq!(fake.calls.lock().unwrap().len(), 1);
-    drop(pending.remove(0)); // 已发登录被取消，后续等待者不能自动再登录。
-    assert!(pending.remove(0).await.is_err());
     assert_eq!(fake.calls.lock().unwrap().len(), 1);
     drop(pending);
     assert_eq!(client.budget.requests.available_permits(), 64);

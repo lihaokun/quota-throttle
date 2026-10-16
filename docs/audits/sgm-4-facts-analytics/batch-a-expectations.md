@@ -97,6 +97,8 @@ ID 使用已有类型/整数精确值；不以 f64 或展示名归属。归属�
 
 允许修改新 `src/ledger/`、`src/main.rs` 的单个模块声明、本批测试/文档/机械脚本。禁止修改旧 DDL、catalog/worker/GLM 逻辑、HTTP 管理认证、面板、生产配置/数据库/日志或 Cargo 依赖。
 
+退出补验的独立例外：用户确认的[认证测试同步修正](../../fixes/newapi-fix-auth-waiter-test-sync.md)只改既有 authentication_waiters 测试函数；机械脚本仍拒绝该文件函数外变化和生产 transport 变化，不放宽上述生产边界。
+
 测试使用内存假 JSON/映射，不连接 NewAPI 或供应商，不调用运行端口。普通错误输出固定枚举，无原始载荷；带秘密哨兵的未知字段必须被丢弃。A 不读取凭据，不建立实例登记，不新增服务或推理代理。
 
 ## 10 跨实现对照和退出记录
@@ -105,4 +107,4 @@ ID 使用已有类型/整数精确值；不以 f64 或展示名归属。归属�
 
 路径 A 计划：新增机械脚本检查 A1–A5、共享类型/常量、零修改文件、计时断言、测试/构建；无公开 JSON，Schema 检查为 N/A（本批无公开载荷，B/C/面板另验）。路径 B 计划：按 workflow §6 独立 subagent 从契约抽期待，对照基线 diff，主 agent 关闭 ❌ 和处置 ⚠️，保留 audit/decisions。
 
-退出还需全量 Rust 回归、clippy、release 和五维度复核。2026-10-17 更新：A 已实现，18 项普通测试、6×128 PBT、10 项变异、机械及独立静态审核通过；全量 debug 的既有认证测试竞态仍阻断完整退出，动态结果见[审核记录](audit-report.md)。本批无公开 JSON，Schema 检查为 N/A；后续公开接口仍须验 Schema。B/C、整体 SGM-4 和生产发布保持未完成。
+2026-10-17 最终退出：18 项普通测试、6×128 PBT、10 项账本变异、机械及独立静态审核通过；既有认证测试经单独修正、30 次复测及两项变异后关闭。最终默认 debug/release 各 386 passed/0 failed/6 ignored，5 项独立性能、clippy、release build 和五维度复核通过，详见[审核记录](audit-report.md)。A 本地验收完成；本批无公开 JSON，Schema 检查为 N/A，后续公开接口仍须验 Schema。B/C、整体 SGM-4 和生产发布保持未完成。

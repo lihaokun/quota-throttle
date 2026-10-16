@@ -4,12 +4,17 @@ cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.."
 base=f0b8295
 git diff --check "$base"
 git diff --exit-code "$base" -- src Cargo.toml Cargo.lock \
-  ':(exclude)src/main.rs' ':(exclude)src/ledger/'
+  ':(exclude)src/main.rs' ':(exclude)src/ledger/' ':(exclude)src/newapi/transport/tests.rs'
+# 独立修正仅允许该测试函数；不放开整份认证测试或生产transport。
+auth_test='/^async fn authentication_waiters_are_bounded_and_cancelled_login_opens_circuit() {$/,/^}$/d'
+test "$(rg -c '^async fn authentication_waiters_are_bounded_and_cancelled_login_opens_circuit\(\) \{$' src/newapi/transport/tests.rs)" -eq 1
+diff -u <(git show "$base:src/newapi/transport/tests.rs" | sed "$auth_test") \
+  <(sed "$auth_test" src/newapi/transport/tests.rs)
 test "$(rg -c '^mod ledger;$' src/main.rs)" -eq 1
 diff -u <(git show "$base:src/main.rs") <(sed '/^mod ledger;$/d' src/main.rs)
 while IFS= read -r path; do
   case "$path" in
-    src/ledger/*|scripts/contract_audit/sgm4_a.sh|docs/audits/sgm-4-facts-analytics/*|proptest-regressions/ledger/*) ;;
+    src/ledger/*|scripts/contract_audit/sgm4_a.sh|docs/audits/sgm-4-facts-analytics/*|proptest-regressions/ledger/*|docs/fixes/newapi-fix-auth-waiter-test-sync.md) ;;
     *) printf 'Unexpected untracked file: %s\n' "$path" >&2; exit 1 ;;
   esac
 done < <(git ls-files --others --exclude-standard)
