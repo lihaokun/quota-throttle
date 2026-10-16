@@ -2,6 +2,8 @@
 
 日期：2026-10-16。修复基线 `6ae9345`，实现及证据提交 `4d4c9f0`。用户已确认先修测试门禁、澄清 SGM-4 A，再进入新模块实施；本轮不改变业务实现或运行服务。性能门禁修复已实现并验证，debug全量额外暴露独立目录锁问题，因此不宣称整体CI全绿。
 
+后续闭环（2026-10-17）：该目录锁问题已按[单独方案](catalog-fix-inherited-lock-release.md)完成修复；最终本地默认debug/release各368 passed/0 failed/5 ignored，四项独立性能及构建通过。以下保留本次较早阶段的原始红绿数字；不能据此声称远端CI已运行或整个SGM功能已完成。
+
 ## 一 现象与复现
 
 外部报告 `/tmp/quota-throttle-sgm-review-20261016.md` 在默认 `cargo test --release` 下得到 359 passed/1 failed/1 ignored；最大 GLM 事务计时 62942 ms，超过 10 秒。相同测试隔离运行 1226 ms。此前本项目 360 passed 的记录使用了 `--test-threads=4`，不能据此声称默认并行命令已经通过。
@@ -76,4 +78,4 @@ debug新失败种子已保留，单独回放128 cases通过（8.98秒）并不�
 - SGM-1 细化：纠正残留“数据库当前 v3”，指向 v4 的历史迁移承接。
 - 实施计划：记录修复和本轮验证范围，不把它当作 SGM-4 实现或部署完成。
 
-上述文档已同步，历史审核数字保持原样并注明范围。[独立审核](../audits/sgm-3-source-policies/performance-gates-audit.md)与[意见处置](../audits/sgm-3-source-policies/performance-gates-decisions.md)记录静态范围，不替代动态结果。整体debug回归未通过，新目录锁问题保留为后续阻断。
+上述文档已同步，历史审核数字保持原样并注明范围。[独立审核](../audits/sgm-3-source-policies/performance-gates-audit.md)与[意见处置](../audits/sgm-3-source-policies/performance-gates-decisions.md)记录静态范围，不替代动态结果。当时整体debug回归未通过而留下的目录锁阻断，已由文首链接的后续修复关闭。

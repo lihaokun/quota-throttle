@@ -10,10 +10,10 @@ use tempfile::TempDir;
 mod control;
 #[path = "execution_tests.rs"]
 mod execution;
-#[path = "policy_tests.rs"]
-mod policy;
 #[path = "glm_round_tests.rs"]
 mod glm_round;
+#[path = "policy_tests.rs"]
+mod policy;
 
 fn setup() -> (TempDir, CatalogStore) {
     let dir = private_dir();
@@ -452,6 +452,265 @@ fn legacy_rejects_missing_ambiguous_duplicate_or_mixed_channels() {
         store.import_legacy(&build_legacy_import(&cfg, &channels).unwrap()),
         ErrorKind::ImportRequiresEmpty,
     );
+}
+
+#[test]
+fn lock_drop_releases_despite_duplicated_descriptor() {
+    let (dir, mut store) = setup();
+    store
+        .create_source(source("fake-lock-reopen", SourceKind::Glm))
+        .unwrap();
+    let before = store.snapshot().unwrap();
+    let path = dir.path().join("catalog.sqlite3");
+    // try_clone 和 fork 继承都保留同一打开文件描述；无需依赖随机调度。
+    let duplicate = store._lock.0.try_clone().unwrap();
+    drop(store);
+    let mut reopened = CatalogStore::open(&path).unwrap();
+    assert_eq!(reopened.snapshot().unwrap(), before);
+    drop(duplicate);
+    // 旧句柄的后续关闭不能解掉新 Store 的独立锁。
+    expect(CatalogStore::open(&path), ErrorKind::AlreadyOpen);
+}
+
+#[test]
+fn lock_failed_acquisition_does_not_release_the_owner() {
+    let (dir, store) = setup();
+    let path = dir.path().join(".catalog.lock");
+    let open = || {
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap()
+    };
+    for _ in 0..3 {
+        expect(CatalogLock::acquire(open()), ErrorKind::AlreadyOpen);
+        assert!(matches!(
+            open().try_lock(),
+            Err(std::fs::TryLockError::WouldBlock)
+        ));
+    }
+    drop(store);
+    let acquired = CatalogLock::acquire(open()).unwrap();
+    assert!(matches!(
+        open().try_lock(),
+        Err(std::fs::TryLockError::WouldBlock)
+    ));
+    drop(acquired);
+    assert!(CatalogLock::acquire(open()).is_ok());
+}
+
+#[test]
+fn lock_error_exit_releases_guard_with_duplicate_alive() {
+    let (dir, store) = setup();
+    drop(store);
+    let path = dir.path().join(".catalog.lock");
+    let mut duplicate = None;
+    let result: Result<()> = (|| {
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        let lock = CatalogLock::acquire(file)?;
+        duplicate = Some(lock.0.try_clone().unwrap());
+        Err(error(ErrorKind::UnsupportedSchema))
+    })();
+    expect(result, ErrorKind::UnsupportedSchema);
+    assert!(duplicate.is_some());
+    let reopened = CatalogStore::open(&dir.path().join("catalog.sqlite3")).unwrap();
+    drop(duplicate);
+    expect(
+        CatalogStore::open(&dir.path().join("catalog.sqlite3")),
+        ErrorKind::AlreadyOpen,
+    );
+    drop(reopened);
+}
+
+#[test]
+fn lock_validation_error_releases_resources_without_repair() {
+    let (dir, store) = setup();
+    let path = dir.path().join("catalog.sqlite3");
+    store.conn.pragma_update(None, "user_version", 99).unwrap();
+    let duplicate = store._lock.0.try_clone().unwrap();
+    drop(store);
+    let before = fs::read(&path).unwrap();
+    for _ in 0..3 {
+        expect(CatalogStore::open(&path), ErrorKind::UnsupportedSchema);
+        let probe = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(dir.path().join(".catalog.lock"))
+            .unwrap();
+        probe.try_lock().unwrap();
+        probe.unlock().unwrap();
+        assert_eq!(fs::read(&path).unwrap(), before);
+    }
+    drop(duplicate);
+}
+
+#[test]
+fn lock_remains_held_during_sqlite_connection_close() {
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+    struct CloseProbe {
+        file: File,
+        called: Arc<AtomicBool>,
+        held: Arc<AtomicBool>,
+    }
+    unsafe extern "C" fn value(
+        context: *mut rusqlite::ffi::sqlite3_context,
+        _argc: std::ffi::c_int,
+        _argv: *mut *mut rusqlite::ffi::sqlite3_value,
+    ) {
+        unsafe { rusqlite::ffi::sqlite3_result_null(context) };
+    }
+    unsafe extern "C" fn close_probe(data: *mut std::ffi::c_void) {
+        // 只由 sqlite3_create_function_v2 的 xDestroy 一次消费 Box；不跨 FFI panic。
+        let probe = unsafe { Box::from_raw(data.cast::<CloseProbe>()) };
+        let result = probe.file.try_lock();
+        probe.held.store(
+            matches!(result, Err(std::fs::TryLockError::WouldBlock)),
+            Ordering::SeqCst,
+        );
+        if result.is_ok() {
+            let _ = probe.file.unlock();
+        }
+        probe.called.store(true, Ordering::SeqCst);
+    }
+    let (dir, store) = setup();
+    let called = Arc::new(AtomicBool::new(false));
+    let held = Arc::new(AtomicBool::new(false));
+    let data = Box::into_raw(Box::new(CloseProbe {
+        file: OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(dir.path().join(".catalog.lock"))
+            .unwrap(),
+        called: called.clone(),
+        held: held.clone(),
+    }));
+    // 测试专用析构观测；不更改持久 schema、不增加 rusqlite feature 或生产 hook。
+    let result = unsafe {
+        rusqlite::ffi::sqlite3_create_function_v2(
+            store.conn.handle(),
+            c"lock_close_probe".as_ptr(),
+            0,
+            rusqlite::ffi::SQLITE_UTF8,
+            data.cast(),
+            Some(value),
+            None,
+            None,
+            Some(close_probe),
+        )
+    };
+    assert_eq!(result, rusqlite::ffi::SQLITE_OK);
+    assert!(!called.load(Ordering::SeqCst));
+    drop(store);
+    assert!(called.load(Ordering::SeqCst));
+    assert!(
+        held.load(Ordering::SeqCst),
+        "catalog lock was released before SQLite closed"
+    );
+    assert!(CatalogStore::open(&dir.path().join("catalog.sqlite3")).is_ok());
+}
+
+#[test]
+fn lock_child_process_probe() {
+    let Some(directory) = std::env::var_os("QT_CATALOG_LOCK_TEST_DIR") else {
+        return;
+    };
+    let directory = PathBuf::from(directory);
+    assert_eq!(directory.parent(), Some(std::env::temp_dir().as_path()));
+    assert!(directory
+        .file_name()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .starts_with("quota-throttle-lock-child-"));
+    let result = CatalogStore::open(&directory.join("catalog.sqlite3"));
+    let expected = std::env::var("QT_CATALOG_LOCK_TEST_EXPECT").unwrap();
+    match expected.as_str() {
+        "blocked" => expect(result, ErrorKind::AlreadyOpen),
+        "free" => {
+            let _store = result.unwrap();
+        }
+        _ => panic!("invalid lock test expectation"),
+    }
+    println!("\nCATALOG_LOCK_CHILD_CHECK={expected}");
+}
+
+#[tokio::test]
+async fn lock_is_exclusive_and_reopenable_across_processes() {
+    let dir = tempfile::Builder::new()
+        .prefix("quota-throttle-lock-child-")
+        .permissions(fs::Permissions::from_mode(0o700))
+        .tempdir()
+        .unwrap();
+    let store = CatalogStore::open(&dir.path().join("catalog.sqlite3")).unwrap();
+    let duplicate = store._lock.0.try_clone().unwrap();
+    async fn probe(directory: &Path, expected: &str, filter: &str) -> bool {
+        let output = tokio::time::timeout(
+            Duration::from_secs(10),
+            tokio::process::Command::new(std::env::current_exe().unwrap())
+                .args([filter, "--exact", "--nocapture"])
+                .env("QT_CATALOG_LOCK_TEST_DIR", directory)
+                .env("QT_CATALOG_LOCK_TEST_EXPECT", expected)
+                .kill_on_drop(true)
+                .output(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let marker = format!("CATALOG_LOCK_CHILD_CHECK={expected}");
+        output.status.success()
+            && String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .filter(|line| *line == marker)
+                .count()
+                == 1
+    }
+    let filter = "catalog::store::tests::lock_child_process_probe";
+    assert!(probe(dir.path(), "blocked", filter).await);
+    // exact 名称错误时 harness 会零测试成功；握手必须拒绝这种假绿。
+    assert!(!probe(dir.path(), "blocked", "missing_lock_child_probe").await);
+    drop(store);
+    assert!(probe(dir.path(), "free", filter).await);
+    drop(duplicate);
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(128))]
+    #[test]
+    fn lock_pbt_owner_and_duplicate_lifetimes(actions in prop::collection::vec(0u8..4, 1..16)) {
+        let (dir, store) = setup();
+        let path = dir.path().join("catalog.sqlite3");
+        let mut owner = Some(store);
+        let mut expected_held = true;
+        let mut duplicates = Vec::new();
+        for action in actions {
+            match action {
+                0 => {
+                    if expected_held { expect(CatalogStore::open(&path), ErrorKind::AlreadyOpen); }
+                    else { owner = Some(CatalogStore::open(&path).unwrap()); expected_held = true; }
+                }
+                1 => { drop(owner.take()); expected_held = false; }
+                2 if expected_held => duplicates.push(owner.as_ref().unwrap()._lock.0.try_clone().unwrap()),
+                _ => { drop(duplicates.pop()); }
+            }
+            let probe = OpenOptions::new().read(true).write(true).open(dir.path().join(".catalog.lock")).unwrap();
+            let result = probe.try_lock();
+            if expected_held { prop_assert!(matches!(result, Err(std::fs::TryLockError::WouldBlock))); }
+            else { prop_assert!(result.is_ok()); probe.unlock().unwrap(); }
+        }
+        drop(owner);
+        let reopened = CatalogStore::open(&path).unwrap();
+        drop(duplicates);
+        expect(CatalogStore::open(&path), ErrorKind::AlreadyOpen);
+        drop(reopened);
+    }
 }
 
 #[test]

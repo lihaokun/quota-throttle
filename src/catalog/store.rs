@@ -42,10 +42,30 @@ impl From<rusqlite::Error> for CatalogError {
     }
 }
 
-/// 字段顺序保证 SQLite 连接先于进程锁释放。连接不会对外暴露。
+/// 仅成功持锁后构造；关闭本句柄不足以释放被其他描述符继承的 flock。
+struct CatalogLock(File);
+
+impl CatalogLock {
+    fn acquire(file: File) -> Result<Self> {
+        file.try_lock().map_err(|e| match e {
+            std::fs::TryLockError::WouldBlock => error(ErrorKind::AlreadyOpen),
+            _ => error(ErrorKind::Storage),
+        })?;
+        Ok(Self(file))
+    }
+}
+
+impl Drop for CatalogLock {
+    fn drop(&mut self) {
+        // 析构不能 panic；失败时仍关闭句柄，后续重开继续按实际 OS 锁结果判断。
+        let _ = self.0.unlock();
+    }
+}
+
+/// 字段顺序保证 SQLite 连接先于进程锁释放。不要在 Store::drop 提前解锁。
 pub struct CatalogStore {
     pub(super) conn: Connection,
-    _lock: File,
+    _lock: CatalogLock,
     path: PathBuf,
     pub(super) poisoned: bool,
 }
@@ -85,10 +105,7 @@ impl CatalogStore {
             .mode(0o600)
             .open(&lock_path)
             .map_err(|_| error(ErrorKind::UnsafePath))?;
-        lock.try_lock().map_err(|e| match e {
-            std::fs::TryLockError::WouldBlock => error(ErrorKind::AlreadyOpen),
-            _ => error(ErrorKind::Storage),
-        })?;
+        let lock = CatalogLock::acquire(lock)?;
         let new_file = match OpenOptions::new()
             .read(true)
             .write(true)

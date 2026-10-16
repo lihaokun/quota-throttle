@@ -31,7 +31,7 @@
 
 外部契约：rusqlite 事务提供提交/回滚、busy_timeout 可显式限定等待；使用 backup 功能保证含 WAL 的一致性备份。[Connection 文档](https://docs.rs/rusqlite/0.40.2/rusqlite/struct.Connection.html)
 
-进程锁随打开的 File 句柄持有，不依靠可能遗留的 PID 文件；try_lock 失败立即返回，不无限等待。[File 文档](https://doc.rust-lang.org/std/fs/struct.File.html#method.try_lock)
+进程锁由成功持锁的内部 CatalogLock 持有，不依靠可能遗留的 PID 文件；try_lock 失败立即返回，不无限等待。连接关闭后显式unlock再关闭File，避免无关继承/重复描述符拖延重开。[File 文档](https://doc.rust-lang.org/std/fs/struct.File.html#method.try_lock)
 
 本仓库未包含 workflow 所述 templates/contract-audit 目录；按 workflow §6.3 原有十节结构创建 expectations，不为此安装或替换项目工作流。
 
@@ -120,7 +120,7 @@ Store 持有唯一 SQLite Connection 和私有锁文件句柄，写方法要求 
 
 被调契约统一编号，下面每个函数均引用：
 
-- C1 std 文件系统：create_new 原子拒绝已存在路径；元数据检查不写内容；try_lock 非阻塞，文件句柄释放锁。路径所在父目录可信、同 UID 无恶意并发替换是前提；不防御本机同用户攻击者。
+- C1 std 文件系统：create_new 原子拒绝已存在路径；元数据检查不写内容；try_lock非阻塞。仅关闭单个File不保证继承/重复句柄对应的锁释放，因此持锁对象Drop显式unlock。路径所在父目录可信、同 UID 无恶意并发替换是前提；不防御本机同用户攻击者。
 - C2 rusqlite：BEGIN IMMEDIATE 成功取得写事务；唯一/外键/CHECK 错误不能当成功；提交前退出回滚；提交失败按 §3 处理，不能一概声明未提交。
 - C3 serde：严格类型序列化/反序列化，未知枚举/字段报错；SecretString 无 Serialize，不被普通输出间接序列化。
 - C4 validate_source / validate_group：按下文纯校验，成功给出规范数据；失败不修改输入或存储。
@@ -155,7 +155,7 @@ Store 持有唯一 SQLite Connection 和私有锁文件句柄，写方法要求 
 
 正确性论证：C1 的排他锁排除第二个受管写者；P3 在任何持久 pragma 之前拒绝外库，避免把 NewAPI 数据库当状态库初始化。C2 保证新 schema 原子出现；P5 未通过则没有可用 Store 句柄。副作用仅限显式私有目录及其中本应用的 DB/锁/WAL/SHM；拒绝已有外库时最多留下本应用锁文件，不修改外库内容。
 
-句柄 Drop 关闭连接后释放锁，不删除锁文件。重开依赖 OS 锁释放，不用 PID 判断进程是否存活。所有错误出口依靠 RAII 释放新持有资源。
+句柄Drop依字段声明顺序先关闭连接，再销毁CatalogLock显式unlock，不删除锁文件，也不在CatalogStore::drop提前解锁。只有try_lock成功才构造持锁对象；构造前/后的错误退出均保持数据库资源先于锁释放。解锁失败时析构不panic，File仍关闭，后续open仍按OS结果判断。没有PID存活登记、延时重试或放宽AlreadyOpen。详见[锁生命周期修复](../../../fixes/catalog-fix-inherited-lock-release.md)。
 
 ### 5.4 create_source 和 create_group
 
