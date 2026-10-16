@@ -79,3 +79,15 @@ GIN 格式直接包含路径等自由文本，本轮插入测试进一步说明�
 另一个可能的采集选项是对本地托管 SQLite 做只读 ID 游标查询，它可帮助取得稳定读取快照，但不能补出不存在的结束事件。当前架构选定管理 API；改成直读原生数据库属于架构调整，必须先确认，本轮没有实施，也没有新增数据库身份登记。
 
 下一次进入编码前，按 workflow 补齐所选小步的函数级设计、十节 expectations、PBT 不变量、机械门禁及独审范围。当前仅新增可复现探针与调研记录，没有改 Rust、DDL、运行入口或路由许可。
+
+## 2026-10-17 B 方案的源码复核补记
+
+本轮只复核同一固定提交的公开源码，未重新运行原生探针或访问运行实例；不把源码推导写成新的实测结果。
+
+- 管理日志使用 `p/page_size`，页大小上限为 100；offset 为 `(page−1)×page_size`，返回 page/page_size/total/items。[分页实现](https://github.com/QuantumNous/new-api/blob/6ce7305cd36f16506fb6a2c3c524a5a318539ba7/common/page_info.go)
+- 所选 handler 接收时间、类型等筛选，未读取 ID 游标或快照参数；不能给它添加 since_id 后假定有效。[handler](https://github.com/QuantumNous/new-api/blob/6ce7305cd36f16506fb6a2c3c524a5a318539ba7/controller/log.go#L11)
+- 时间两端包含，0 表示不启用相应过滤；Count 与 Find 分开。SQLite 管理列表保留原生 ID，但用户/key 视图和 ClickHouse 分支会分配展示 ID。type=0 不按类型过滤，适合一次全局采集再由 A 筛选。[日志查询与展示处理](https://github.com/QuantumNous/new-api/blob/6ce7305cd36f16506fb6a2c3c524a5a318539ba7/model/log.go#L103)
+
+由这些实现推导：固定时间窗和持久去重可以处理重复，但 offset 变化、同计数替换或较晚写入仍不能凭“扫到末页/重复两遍相同”证明完整。catalog_instance_id 也不是原生日志数据库身份凭证；不一致换库/回滚须保持为明确的恢复边界，不能靠另造本地 UUID 宣称解决。
+
+下一小步形成 [B 总体方案与 B1 事务细化](../design/source-groups-token-management/subplans/sgm-4-facts-analytics-b.md)。B1 待确认，B2 原生多页/时间边界及可控变化场景仍需补验证；没有据此改变已确认的火山规则或切到直读 NewAPI 数据库。
