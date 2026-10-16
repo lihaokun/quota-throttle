@@ -1,6 +1,6 @@
 # 来源共享 分组路由和用量面板架构
 
-日期：2026-10-15，进度更新：2026-10-16。状态：架构已确认，sgm-1 已完成，sgm-2 的执行/恢复和本地托管预检已实现并分步验证，sgm-3 A/B 和 C-1 的共享 GLM 采集/原子发布已完成验收。尚未接现行服务，C-2/C-3 及 sgm-4 至 sgm-7 待实施。需求依据：[最新版方案](../../research/source-groups-token-management-research.md)。接口实证：[实现前审核](review.md)。架构确认不包含生产部署授权。
+日期：2026-10-15，进度更新：2026-10-17。状态：架构已确认，sgm-1 已完成，sgm-2 的执行/恢复和本地托管预检已实现并分步验证，sgm-3 A/B 和 C-1 已完成验收；sgm-4 A 和 B1 的 v5 事务账本已完成本地验收。尚未接现行服务，C-2/C-3、sgm-4 后续及 sgm-5 至 sgm-7 未完成。需求依据：[最新版方案](../../research/source-groups-token-management-research.md)。接口实证：[实现前审核](review.md)。架构确认不包含生产部署授权。
 
 ## 目标与边界
 
@@ -45,7 +45,7 @@ sgm-1 已采用 rusqlite 0.40.2（bundled、backup），版本锁入 Cargo.lock�
 
 测试和开发使用独立 state_path；正式库路径在部署时确认，不覆盖生产 one-api.db。schema_version 标识兼容性，旧版本遇到更高 schema 需拒绝写入；备份需使用一致性备份方式，不能忽略 WAL。
 
-版本承接：SGM-1 定义 v1 目录；SGM-2 负责 v1→v2 控制意图、v2→v3 执行记录及打开时的恢复；SGM-3 B 追加 v4 来源/组策略状态。open 对合法旧应用库先完整校验/备份再逐版本升级，不修补损坏库，也不承诺整链原子回滚。来源/组/成员与各自必需侧表同事务落库；v4 的 open 保留未决执行恢复，但不按墙钟清火山额度。公开快照 wire=1 与数据库 v4 分开。历史审核边界及当前受影响路径见[迁移增量核对](../../audits/sgm-1-catalog-store/migration-scope-review.md)，不改变 SGM-7 的生产切换授权要求。
+版本承接：SGM-1 定义 v1 目录；SGM-2 负责 v1→v2 控制意图、v2→v3 执行记录及打开时的恢复；SGM-3 B 追加 v4 来源/组策略状态；SGM-4 B1 追加 v5 事实、分钟联合用量、账本状态与采集检查点。open 对合法旧应用库先完整校验/备份再逐版本升级，不修补损坏库，也不承诺整链原子回滚。来源/组/成员与各自必需侧表同事务落库；v5 保留未决执行恢复，但不按墙钟清火山额度或自动启动采集。公开快照 wire=1 与数据库 v5 分开。历史审核边界及当前受影响路径见[迁移增量核对](../../audits/sgm-1-catalog-store/migration-scope-review.md)，不改变 SGM-7 的生产切换授权要求。
 
 ## 核心共享数据结构
 
@@ -303,3 +303,16 @@ B 只实现有界纯函数和内部事务。原始日志去重、终态识别与
 | 配置/采集器所有权 | worker | 原 Config 生命周期只读、dry_run 双写门禁、SourceProbe 单飞和单 commands 槽；Core/目录事务不跨网络 await，取消不发布半轮 |
 
 C-1 不对未 managed 的目录成员写自动目标，不通过周期操作增加接管授权；稳定 no-op 不新建操作/提升版本，资格恢复只唤醒已有 NotReady 待办。公开管理动作和真实火山事实的完整组合分别留待 C-2/C-3 细化与 SGM-4 合流，生产接管/部署仍属 SGM-7。
+
+## 第四子计划 B1 共享接口与版本边界
+
+[B1 存储细化](subplans/sgm-4-facts-analytics-b.md)把 A 规范事实持久化到同一个 catalog，不增加数据库服务或写者。以下均为进程内接口，不新增前端 JSON；当前验证见[B1 审核](../../audits/sgm-4-facts-analytics/batch-b1-audit.md)。
+
+| 类型/责任 | 所有者和消费者 | 约束 |
+| --- | --- | --- |
+| LedgerState / ScanProgress | catalog/ledger → 后续统一采集器、查询投影 | 未初始化/Scanning/Scanned/Stalled 明确；Scanned 只是本次遍历结束，不是完整遥测或路由就绪 |
+| ScanTicket | catalog 生成，后续采集器带回 | 绑定本地名称空间、lane、generation、window、page；不反序列化；不证明原生日志库未被替换 |
+| LedgerCommit | catalog 事务 → 后续采集器 | 只报告本地插入/重复数、统计 revision 和进度；事实/投影/检查点成组提交 |
+| LedgerError | catalog/ledger → 内部调用方 | 固定错误；输入非法与持久损坏分开；未知提交沿既有 poisoned 停写 |
+
+事实以单个 catalog 名称空间内的 native_log_id 去重，已知 channel 身份永久保留，未知归属可等待后续显式修正。原生库不一致替换/回滚仍受 SGM-7 恢复前提约束，不能把 catalog UUID 当作自动识别原生数据库的证明。B1 不生成 FinalOutcome/VolcanoEvidence 或渠道许可；B2 采集、B3 查询/补归属及 C 的可信终态仍有各自门禁。

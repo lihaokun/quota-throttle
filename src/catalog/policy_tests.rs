@@ -84,6 +84,7 @@ fn materials(conn: &Connection) -> Vec<(i64, String, String, String)> {
 }
 fn as_v3(store: &mut CatalogStore) {
     let tx = store.conn.transaction().unwrap();
+    tx.execute_batch(DROP_LEDGER_V5).unwrap();
     let instance: String = tx
         .query_row("SELECT catalog_instance_id FROM catalog_meta", [], |r| {
             r.get(0)
@@ -167,7 +168,7 @@ fn policy_defaults_are_private_uninitialized_and_shared() {
             .conn
             .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        4
+        DATABASE_SCHEMA_VERSION
     );
 }
 

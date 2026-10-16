@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 常规测试保留功能/容量断言；此入口串行执行原有六预算及ledger批次预算。
+# 常规测试保留功能/容量断言；此入口完整、串行执行各批性能预算。
 set -euo pipefail
 if (( $# != 0 )); then
   printf 'Usage: bash scripts/tests/performance-gates.sh\n' >&2
@@ -9,6 +9,9 @@ cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.."
 
 expected="$(printf '%s\n' \
   catalog::store::tests::glm_round::performance_gate_glm_maximum_catalog \
+  catalog::store::tests::ledger::performance_gate_ledger_ingestion \
+  catalog::store::tests::ledger::performance_gate_ledger_reopen_100k \
+  catalog::store::tests::policy::migration::ledger::performance_gate_ledger_v4_migration \
   catalog::store::tests::policy::performance_gate_policy_v3_migration \
   catalog::store::tests::policy::migration::performance_gate_complex_history_migration \
   ledger::tests::performance_gate_ledger_maximum_batch \

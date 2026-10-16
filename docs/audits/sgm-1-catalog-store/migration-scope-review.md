@@ -46,3 +46,16 @@ SGM-2 的独立审核分别覆盖新增迁移和执行恢复；SGM-3 A 最终记
 | insert_membership | 无 v4 来源运行行复制 | 同源多组共享一份 Runtime，独立保存组首选 |
 
 v1/v2 历史测试 helper 仅追加删除 v4 表，使其继续构造真实旧库；冻结 DDL、旧字段与旧断言不变。存储小步验证基础迁移、重开与故障回滚；当时留待下一步的复杂历史随机组合 PBT B5 已于 2026-10-16 完成，见 [B 整体验收](../sgm-3-source-policies/batch-b-final-audit.md)。新证据覆盖旧业务表逐字段保真、prepared 恢复边界、原始备份、策略状态重开、损坏不修补及 v1/v2 最后一步失败的合法 v3/原备份保留；不改写 SGM-1/2 历史验收结论。
+
+## SGM-4 B1 的 v5 增量登记
+
+2026-10-17，实施基线 `9595837`。v5 由 SGM-4 B1 引入，追加 ledger_state、ledger_checkpoints、ledger_facts、ledger_minute_usage，CatalogSnapshot/OperationView wire 仍为 1。契约与实际验证分别见 [B1 细化](../../design/source-groups-token-management/subplans/sgm-4-facts-analytics-b.md)和[B1 审核](../sgm-4-facts-analytics/batch-b1-audit.md)，不重写此前各版本历史通过数字。
+
+| 路径 | v5 增量 | 保留边界 |
+| --- | --- | --- |
+| open / migrate_v4 | 原始 v4 完整只读核验和一致备份后，单事务新增账本及三个状态初值，保留实例 ID | 新库/旧 v1–v3 沿原链升级，保留原版本备份；不承诺整链原子回滚 |
+| verify_schema / verify_ledger | 核全部旧业务 DDL及新表；现有 v5 在只读事务全事实流式验证、联合索引双流对照 | 缺表/行、坏 codec 或投影不符拒绝，不初始化修补；不自动补归属、清额度或启动采集 |
+| open 发布与恢复 | ledger 由只读探测或迁移事务验证后，在同一独占 guard 下保持不变 | 原 prepared→uncertain 恢复链继续，不把旧未决写清空 |
+| 来源/组/成员插入 | 不额外生成账本事实或复制来源计数 | 原 v4 控制/策略侧表责任不变；消费仅由显式入账事务写入 |
+
+旧 v1/v2/v3 fixture 只先删除新增 v5 四表，再执行原降版步骤；两处成功 open 后的“当前版本”断言改用 DATABASE_SCHEMA_VERSION，备份及失败分支仍核原版本。新增 PB6 复用既有非空 B5 历史，对材料、成员、成功收据、未决执行和 v4 策略逐字段对照；恢复变化使用原独立期望，不只比较行数。应用库升级仍不等于生产迁移，服务切换授权归 SGM-7。

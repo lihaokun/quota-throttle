@@ -5,6 +5,7 @@ pub mod control;
 pub mod execution;
 pub(crate) mod glm_publication;
 pub(crate) mod glm_round;
+pub(crate) mod ledger;
 mod legacy;
 pub(crate) mod policy;
 mod store;

@@ -13,7 +13,7 @@ fn number(value: &Value, min: i64, max: i64) -> Result<i64> {
 pub(super) fn valid_text(text: &str, limit: usize) -> bool {
     text.len() <= limit && !text.chars().any(char::is_control)
 }
-pub(super) fn valid_label(text: &str) -> bool {
+pub(crate) fn valid_label(text: &str) -> bool {
     !text.is_empty() && valid_text(text, MAX_LABEL_BYTES)
 }
 fn valid_request_id(text: &str) -> bool {
@@ -148,7 +148,7 @@ pub(crate) fn decode_native_row(row: &Value) -> Result<Option<NativeFact>> {
     Ok(Some(fact))
 }
 
-pub(super) fn validate_fact(f: &NativeFact) -> Result<()> {
+pub(crate) fn validate_fact(f: &NativeFact) -> Result<()> {
     ensure(
         f.log_id > 0
             && (0..=JSON_SAFE).contains(&f.occurred_at)
@@ -168,7 +168,11 @@ pub(super) fn validate_fact(f: &NativeFact) -> Result<()> {
             && f.request_id.as_deref().is_none_or(valid_request_id),
         FactError::InvalidShape,
     )?;
-    if let RelayMetadataState::Parsed(m) = &f.metadata {
+    validate_metadata(&f.metadata)
+}
+
+pub(crate) fn validate_metadata(metadata: &RelayMetadataState) -> Result<()> {
+    if let RelayMetadataState::Parsed(m) = metadata {
         ensure(
             m.status_code.is_none_or(|n| (100..=599).contains(&n))
                 && [&m.error_type, &m.error_code]

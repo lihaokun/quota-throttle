@@ -1,10 +1,12 @@
 //! 统一事实解析及消费投影纯函数；尚未接采集、持久化或调度。
 #![allow(dead_code)] // B/C 接线之前，不用假生产调用消除未使用警告。
 mod decode;
+pub(crate) mod storage_codec;
 mod types;
 
 use crate::catalog::{ChannelId, JSON_SAFE};
 pub(crate) use decode::decode_native_row;
+pub(crate) use decode::valid_label;
 use std::collections::{BTreeMap, BTreeSet};
 pub(crate) use types::*;
 
@@ -85,7 +87,7 @@ pub(crate) fn attribute_batch(
     Ok(attributed)
 }
 
-fn validate_attribution(f: &AttributedFact) -> Result<()> {
+pub(crate) fn validate_attribution(f: &AttributedFact) -> Result<()> {
     decode::validate_fact(&f.native)?;
     let valid = match f.issue {
         AttributionIssue::None => {

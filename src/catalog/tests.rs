@@ -12,8 +12,12 @@ mod control;
 mod execution;
 #[path = "glm_round_tests.rs"]
 mod glm_round;
+#[path = "ledger_tests.rs"]
+mod ledger;
 #[path = "policy_tests.rs"]
 mod policy;
+
+const DROP_LEDGER_V5: &str = "DROP TABLE ledger_minute_usage; DROP TABLE ledger_facts; DROP TABLE ledger_checkpoints; DROP TABLE ledger_state;";
 
 fn setup() -> (TempDir, CatalogStore) {
     let dir = private_dir();

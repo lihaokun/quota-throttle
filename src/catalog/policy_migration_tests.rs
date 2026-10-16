@@ -5,6 +5,9 @@ use crate::catalog::execution::ExecutionEffect;
 use rusqlite::types::Value;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+#[path = "ledger_migration_tests.rs"]
+mod ledger;
+
 const CORE: &[&str] = &[
     "source_secrets",
     "sources",
@@ -511,7 +514,7 @@ fn migration_case(
     assert_recovery(&before, &migrated, low, high);
     assert_eq!(store.snapshot().unwrap(), old_snapshot);
     assert_eq!(instance(&store.conn), identity);
-    verify_schema(&store.conn, 4).unwrap();
+    verify_schema(&store.conn, DATABASE_SCHEMA_VERSION).unwrap();
     let files = backups_v3(&dir);
     assert_eq!(files.len(), 1);
     assert_eq!(

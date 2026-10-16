@@ -1,6 +1,6 @@
 # SGM-4 B 持久账本与统一采集方案
 
-日期：2026-10-17。基线 `4929e7c`。状态：待用户确认；本轮只形成方案和 B1 事前清单，没有修改 Rust、DDL、运行配置或服务。B1 已细化到存储函数；B2/B3 的接口方向和硬约束已列出，仍须各自完成函数细化及审核后编码，不以本文件宣称整个 B 已可实现或已验收。
+日期：2026-10-17。方案基线 `4929e7c`，实施基线 `9595837`。B1 已实现并完成本地退出验收，见[B1 审核记录](../../../audits/sgm-4-facts-analytics/batch-b1-audit.md)；不接运行服务。B2/B3 的接口方向和硬约束已列出，仍须各自完成函数细化及审核后编码，不以本文件宣称整个 B 已可实现或已验收。
 
 依据：[已确认架构](../architecture.md)、[已验收 A](sgm-4-facts-analytics.md)、[需求中的图表口径](../../../research/source-groups-token-management-research.md)、[固定版本能力核验](../../../research/source-groups-facts-capability-research.md)。本批不改变 GLM 策略，不把消费记录当作请求成功，不生成 VolcanoEvidence、FinalOutcome 或 RoutingPermit。
 
@@ -8,7 +8,7 @@
 
 | 小步 | 交付 | 不包含 |
 | --- | --- | --- |
-| B1 事务入账 | 应用库 v5、跨批去重、历史归属、分钟联合投影、采集检查点同事务、迁移和重开 | 网络采集、自动定时、图表 HTTP、策略写入 |
+| B1 事务入账 已验收 | 应用库 v5、跨批去重、历史归属、分钟联合投影、采集检查点同事务、迁移和重开 | 网络采集、自动定时、图表 HTTP、策略写入 |
 | B2 统一采集 | 管理日志分页、近期重扫与历史补采、单飞/共享预算、取消及重启恢复、采集状态 | 页面直接查 NewAPI、逐来源/逐 key 轮询、可信失败终态 |
 | B3 查询与补归属 | 整体/来源/组/key 的分模型时序、边界秒补算、历史未知归属修正、一致读及容量门禁 | 三页面 UI 和正式发布接线 |
 
@@ -56,7 +56,7 @@ B 提供“已观测用量”和采集状态；正常展示已记录的模型分
 | ScanTicket | 本地 catalog_instance_id、lane、scan_generation、window、next_page；由持久状态读取构造，不反序列化；重开后重新读取 |
 | PageEnd | More / ReachedEnd；只表示调用方解析的这一次分页结果，不命名为 Complete/Verified |
 | ScanProgress | lane、generation、window、next_page、Idle/Scanning/Scanned/Stalled、last_observed_at、固定可空 fault；Scanned 仅为该次遍历结束 |
-| LedgerState | revision≥1、可空 initial_requested_from；未初始化不得伪装为已有覆盖；revision 只用于统计快照版本，不是策略结果游标 |
+| LedgerState | revision≥1、可空 initial_requested_from、按 Recent/History 固定顺序读取的两个 ScanProgress；未初始化不得伪装为已有覆盖；revision 只用于统计快照版本，不是策略结果游标 |
 | LedgerCommit | inserted、duplicates、changed_cells、ledger_revision、ScanProgress；计数有界，不携带原生日志正文 |
 | LedgerError | Catalog(CatalogError)、Fact(FactError)、RevisionConflict、InvalidCheckpoint、NotInitialized；均不含自由文本或原始载荷 |
 
@@ -101,9 +101,9 @@ SQLite 的唯一索引把不同 NULL 视为不同值；表达式索引与查询�
 
 `migrate_v4(&mut self) -> CatalogResult<()>`：open 先用旧 v4 规则只读验证，再按原路径规则制作一致性备份；IMMEDIATE 事务新增 v5 表/索引和三条状态初值，保留 catalog_instance_id，更新 catalog_meta/user_version，验证后用原 commit 提交。新库和 v1–v3 沿既有链到 v4 再升级；不承诺整条历史迁移链原子回滚。原 recover_executions 行为保留，不借迁移清掉未决写或火山耗尽。
 
-`verify_ledger(conn) -> CatalogResult<()>`：验证 singleton、两个 lane、枚举/组合约束、事实 codec 和归属、分钟非空及安全计数。未初始化时必须没有事实/投影且两个 lane 都为 Idle。事实按主键分块最多 1024 行核验，不全量载入 Vec；完整投影一致性通过联合键索引上的事实与分钟行双流合并核对，使用 A5 精确加算，不使用浮点 SUM，不构建全历史内存 map。核验须位于同一只读事务；实施时验证索引确实被使用，不能因库大而只验证首批。未知 codec、坏行、缺状态行或投影不符均拒绝，不自动修复为零。
+`verify_ledger(conn) -> CatalogResult<()>`：验证 singleton、两个 lane、枚举/组合约束、事实 codec 和归属、分钟非空及安全计数。未初始化时必须没有事实/投影且两个 lane 都为 Idle。实现选用主键游标逐行流式核验，比事前最多 1024 行缓冲更小，不全量载入 Vec；完整投影一致性通过联合键索引上的事实与分钟行双流合并核对，使用 A5 精确加算，不使用浮点 SUM，不构建全历史内存 map。核验须位于同一只读事务；实施时验证索引确实被使用，不能因库大而只验证首批。未知 codec、坏行、缺状态行或投影不符均拒绝，不自动修复为零。
 
-正确性：旧库验证/备份先于写；v5 标记和新表在同一事务，失败不发布部分 v5。分页核验游标严格增加，有限持久行数保证终止；双方有序流逐单元比较发现缺失、多余和数值差异，最多持有一个事实块和当前单元。迁移性能门槛见 §8；不能以迁移成功代表在线已接管。
+正确性：旧库验证/备份先于写；v5 标记和新表在同一事务，失败不发布部分 v5。核验游标严格增加，有限持久行数保证终止；双方有序流逐单元比较发现缺失、多余和数值差异，最多持有当前事实行和当前单元。现有 v5 在 open 的只读探测事务完成全量核验，迁移后的空账本在迁移事务核验；同一独占 guard 下后续不再重复全扫。迁移性能门槛见 §8；不能以迁移成功代表在线已接管。
 
 ### B1.2 initialize_ledger 与 load_ledger_state
 
@@ -158,6 +158,8 @@ SQLite 的唯一索引把不同 NULL 视为不同值；表达式索引与查询�
 | decode/check_checkpoint | 枚举和 NULL 组合、代次/页数/时间完整验证；预期票据逐字段匹配，不只检查页码；固定步骤无 IO |
 | ledger_error / commit 包装 | 输入错误与已存数据损坏分开；复用 CatalogError/FactError；commit 未知时使 Store unusable，错误不带敏感自由文本 |
 
+实现名称对应：progress/state/initialized 完成上述状态解码和初始化门禁，查询固定状态行及 EXISTS，不读全历史；matched 逐字段核票据与本地 instance。safe/increment/valid_window/check 为固定次数数值检查；save_progress/bump 要求恰好修改一行，调用方同事务回滚其失败。rows::key 只复制有界维度并按非负秒取分钟；cell_row 复用标签校验和 A5 校验计数，compare_cell 比较双流当前完整单元。codec 的 stream_name/value 只输出封闭枚举/字段和至多 128 个尝试；A 原 metadata 校验抽成同一 helper，原 decode 行为不变，写入和读回都复用它。
+
 ## 6 B2 统一采集方向和编码前门槛
 
 拟采用一个后台任务、一个单飞入口和共享 commands/管理预算。每轮最多 4 个日志 GET，近期与补采交错，默认轮询间隔 10 秒；上一轮未结束不叠加任务。管理 401/429/超时沿既有 transport，不额外重试登录或无限立即重跑。页面刷新只读应用库，不触发采集。
@@ -196,13 +198,13 @@ B3 细化还需明确：只读一致快照与取消如何不阻塞控制写、�
 
 性能在独立串行 release 门禁执行：1024 事实/10000 历史映射单次入账≤5 秒；含 10 万事实和联合投影的重开核验≤10 秒；迁移保留既有复杂历史≤5 秒。普通测试保留容量/内容断言，不夹默认并发墙钟阈值；如果固定夹具不能满足预算，先优化/讨论，不放宽断言。另记录更大历史的资源趋势，不把 10 万条当产品总量上限。
 
-机械检查须核 v1–v4 DDL 冻结、GLM/认证/CLI/面板零改动、Step B1.1–B1.6、共享类型、私有序列化、函数外迁移改动清单及默认全量回归。按 workflow §6 进行实现后的独立契约审，再做五维度复核；本轮尚未进行实现审核或测试。
+机械检查须核 v1–v4 DDL 冻结、GLM/认证/CLI/面板零改动、Step B1.1–B1.6、共享类型、私有序列化、函数外迁移改动清单及默认全量回归。按 workflow §6 进行实现后的独立契约审，再做五维度复核；实际执行与审核结果见[B1 审核记录](../../../audits/sgm-4-facts-analytics/batch-b1-audit.md)，不把方案本身当作验证证据。
 
 ## 9 方案自检与确认点
 
-- B1 状态迁移、错误/未知提交、helper 调用、容量与循环、事务原子性和迁移影响已列出，可供确认后实施前审核。
+- B1 状态迁移、错误/未知提交、helper 调用、容量与循环、事务原子性和迁移影响已列出；实现与测试/独审完成，本地退出通过。
 - B2/B3 明确尚未完成函数细化；不会拿这个总体方案直接一次性实现所有模块。
-- 推荐确认：先实施 B1；默认初始补采 31 天、10 秒/最多 4 页只是 B2 的建议默认值；本阶段不自动删除历史，也不承诺静默替换自动识别或严格完整覆盖。
+- B1 已获确认；默认初始补采 31 天、10 秒/最多 4 页仍只是 B2 的建议默认值；本阶段不自动删除历史，也不承诺静默替换自动识别或严格完整覆盖。
 - 若以后要求原生快照/严格采集水位，或原地换库并自动合并历史，需另行确认能力/架构范围；本方案不偷偷改为直读 NewAPI 数据库。
 
-本轮无服务访问、生产配置/数据库读取、Rust/DDL 修改、重启、部署、推送或合并。
+方案阶段只有文档；B1 实施阶段按本范围新增本地 Rust/v5 DDL 及测试，但没有服务访问、生产配置/数据库读取、重启、部署、推送或合并。
