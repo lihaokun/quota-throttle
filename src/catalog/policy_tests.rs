@@ -679,6 +679,18 @@ fn policy_tx_helpers_compose_and_unknown_commit_does_not_publish() {
 
 #[test]
 fn policy_v3_migration_preserves_material_and_private_backup() {
+    policy_v3_migration_case();
+}
+
+#[test]
+#[ignore = "独立串行性能门禁：bash scripts/tests/performance-gates.sh"]
+fn performance_gate_policy_v3_migration() {
+    let elapsed = policy_v3_migration_case();
+    println!("POLICY_V3_MIGRATION_MS={}", elapsed.as_millis());
+    assert!(elapsed < Duration::from_secs(5));
+}
+
+fn policy_v3_migration_case() -> Duration {
     let (dir, mut store, s, g, _) = fixture();
     store
         .create_source(source("fake-migration-glm", SourceKind::Glm))
@@ -698,7 +710,7 @@ fn policy_v3_migration_preserves_material_and_private_backup() {
     drop(store);
     let started = std::time::Instant::now();
     let mut store = CatalogStore::open(&dir.path().join("catalog.sqlite3")).unwrap();
-    assert!(started.elapsed() < Duration::from_secs(5));
+    let elapsed = started.elapsed();
     assert_eq!(store.snapshot().unwrap(), old);
     assert_eq!(materials(&store.conn), private);
     assert_eq!(
@@ -728,6 +740,7 @@ fn policy_v3_migration_preserves_material_and_private_backup() {
     let _store = CatalogStore::open(&dir.path().join("catalog.sqlite3")).unwrap();
     assert_eq!(backups_v3(&dir), files);
     assert_eq!(fs::read(&files[0]).unwrap(), bytes);
+    elapsed
 }
 
 #[test]

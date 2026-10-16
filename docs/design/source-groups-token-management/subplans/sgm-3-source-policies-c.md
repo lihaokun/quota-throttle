@@ -131,6 +131,8 @@ RoutingPermit 绑定最终 membership/member/source/group revision 和期望 pri
 
 ## 7 测试与实施约束
 
+2026-10-16 测试门禁修订：最大目录组装5秒、事务10秒、恢复10秒仍为独立性能预算，由串行release性能入口及CI显式检查；普通并行测试保留全部正确性/容量断言。历史小步受限并行验证不代表默认并行墙钟门槛稳健，见[修复说明](../../../fixes/sgm-fix-parallel-performance-gates.md)。
+
 事务第一小步限定 C3 和 C4 的本地状态/目标部分，新增 `catalog/glm_round`，不提前建立 GlmPolicyCommit/真实许可。`GlmRoundDraft` 持有每个当前 GLM 组的 GroupView、StoredGroupPolicy、原 adapter 决策、完整 WorkSnapshot 和 PolicyTarget 列表；PolicyTarget 为 membership_id、expected_revision、已解析 Keep 的 priority。只在 catalog 内共享，不实现 Debug/前端反序列化或公开序列化。
 
 `apply_glm_round_tx(tx,cfg,cycle,now_ms)` 内部先 compute，再调用组状态保存和目标应用，返回 `AppliedGlmTargets`（更新后的 draft、变化组/成员 ID）。返回不代表 commit 或发布；caller 必须先核 Store usable、持 IMMEDIATE 事务，任何 Err 回滚，成功后仍须 commit。本步仅测试包装提交；后续正式 commit_glm_round 要把许可构造/资格恢复唤醒放入同一事务，不能把此结果提前发布。

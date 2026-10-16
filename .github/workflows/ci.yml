@@ -17,5 +17,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Test
         run: cargo test --locked
+      - name: Performance runner regressions
+        run: bash scripts/tests/performance-gates-regression.sh
+      - name: Serial performance gates
+        run: bash scripts/tests/performance-gates.sh
       - name: Release build
         run: cargo build --release --locked

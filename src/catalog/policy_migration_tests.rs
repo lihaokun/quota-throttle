@@ -479,7 +479,14 @@ fn calendar(now: i64, p: &VolcanoPolicy) -> (i64, i64) {
     )
 }
 
-fn migration_case(n: usize, nv: usize, salt: i64, offset: i64, prepared: bool, corrupt: u8) {
+fn migration_case(
+    n: usize,
+    nv: usize,
+    salt: i64,
+    offset: i64,
+    prepared: bool,
+    corrupt: u8,
+) -> Duration {
     let History {
         dir,
         mut store,
@@ -498,7 +505,7 @@ fn migration_case(n: usize, nv: usize, salt: i64, offset: i64, prepared: bool, c
     let low = epoch();
     let started = Instant::now();
     store = CatalogStore::open(&dir.path().join("catalog.sqlite3")).unwrap();
-    assert!(started.elapsed() < Duration::from_secs(5));
+    let elapsed = started.elapsed();
     let high = epoch();
     let migrated = history_image(&store.conn);
     assert_recovery(&before, &migrated, low, high);
@@ -724,6 +731,15 @@ fn migration_case(n: usize, nv: usize, salt: i64, offset: i64, prepared: bool, c
     .unwrap();
     assert_eq!(image_of(&conn, &tables), corrupted);
     assert_eq!(backups_v3(&dir), files);
+    elapsed
+}
+
+#[test]
+#[ignore = "独立串行性能门禁：bash scripts/tests/performance-gates.sh"]
+fn performance_gate_complex_history_migration() {
+    let elapsed = migration_case(6, 5, 77, 480, true, 2);
+    println!("COMPLEX_HISTORY_MIGRATION_MS={}", elapsed.as_millis());
+    assert!(elapsed < Duration::from_secs(5));
 }
 
 proptest! {

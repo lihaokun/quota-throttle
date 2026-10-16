@@ -443,6 +443,18 @@ fn stable_rotation_and_unknown_members_do_not_steal_preferred() {
 
 #[test]
 fn group_validation_precedes_filtering_and_capacity_is_bounded() {
+    maximum_selection_case();
+}
+
+#[test]
+#[ignore = "独立串行性能门禁：bash scripts/tests/performance-gates.sh"]
+fn performance_gate_volcano_maximum_selection() {
+    let elapsed = maximum_selection_case();
+    println!("VOLCANO_MAXIMUM_SELECTION_MS={}", elapsed.as_millis());
+    assert!(elapsed < Duration::from_secs(5));
+}
+
+fn maximum_selection_case() -> Duration {
     let g = group(1);
     let shared = states(2);
     for mode in 0..6 {
@@ -516,12 +528,13 @@ fn group_validation_precedes_filtering_and_capacity_is_bounded() {
             .len(),
         MAX_SOURCES
     );
-    assert!(start.elapsed() < Duration::from_secs(5));
+    let elapsed = start.elapsed();
     many.push(member(1, &g));
     assert_eq!(
         select_volcano_group(&cfg(), &g, &many, &all, &VolcanoGroupState::default()),
         Err(PolicyError::Capacity)
     );
+    elapsed
 }
 
 #[test]

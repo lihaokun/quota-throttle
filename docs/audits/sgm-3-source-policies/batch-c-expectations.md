@@ -82,6 +82,8 @@
 
 来源/组/成员容量沿用既有常量；一轮网络来源数不超过活动 GLM Source 数，不按组/成员重复。所有 SQL 在一轮有限集合上运行，no-op 不写逐行状态，也不清空所有观测制造额外 GET。Core 锁内没有 await 或管理 HTTP；最大目录组装/提交单列宽松性能预算和耗时，不能用小 fixture 隐藏规模问题。
 
+2026-10-16 修订执行环境：组装5秒、事务10秒、恢复10秒预算保留在独立串行release性能测试，强制入口为 `bash scripts/tests/performance-gates.sh`，CI显式运行。普通最大目录用例仍运行全部字段/数量/no-op/容量断言；此前受限并行通过的记录不代表默认并行计时可靠。见[修复说明](../../fixes/sgm-fix-parallel-performance-gates.md)。
+
 不新增轮询周期、补采队列或无限重试；commands 保持 64 上限、probe 单飞，忙时返回 QueueFull。保留当前串行 SourceProbe 的有限最坏时限；过期观察不因慢轮次补成新 lease。
 
 ## 9 安全与副作用

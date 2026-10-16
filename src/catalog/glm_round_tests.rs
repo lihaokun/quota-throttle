@@ -762,14 +762,25 @@ fn maximum_fixture() -> (TempDir, CatalogStore, Vec<SourceId>) {
 
 #[test]
 fn round_maximum_catalog_is_bounded_and_extra_observations_are_rejected() {
+    maximum_catalog_case();
+}
+
+#[test]
+#[ignore = "独立串行性能门禁：bash scripts/tests/performance-gates.sh"]
+fn performance_gate_glm_maximum_catalog() {
+    let [probe, round, recovery] = maximum_catalog_case();
+    assert!(probe < Duration::from_secs(5));
+    assert!(round < Duration::from_secs(10));
+    assert!(recovery < Duration::from_secs(10));
+}
+
+// 普通回归和独立计时共用全部功能断言；计时只覆盖原来的被测片段。
+fn maximum_catalog_case() -> [Duration; 3] {
     let (_dir, mut store, sources) = maximum_fixture();
     let probe_start = Instant::now();
     assert_eq!(store.glm_probe_inputs().unwrap().len(), MAX_SOURCES);
-    println!(
-        "GLM_PROBE_INPUTS_MAXIMUM_MS={}",
-        probe_start.elapsed().as_millis()
-    );
-    assert!(probe_start.elapsed() < Duration::from_secs(5));
+    let probe_elapsed = probe_start.elapsed();
+    println!("GLM_PROBE_INPUTS_MAXIMUM_MS={}", probe_elapsed.as_millis());
     store
         .conn
         .execute("UPDATE source_groups SET ready=1", [])
@@ -786,12 +797,11 @@ fn round_maximum_catalog_is_bounded_and_extra_observations_are_rejected() {
     let out = store
         .commit_glm_round(&cfg(), &b, backend, &HashMap::new(), NOW_MS)
         .unwrap();
-    let elapsed = start.elapsed();
+    let round_elapsed = start.elapsed();
     assert_eq!(out.changed_members.len(), MAX_MEMBERSHIPS);
     assert_eq!(out.changed_groups.len(), MAX_GROUPS);
     assert_eq!(out.permits.len(), MAX_MEMBERSHIPS);
-    println!("GLM_ROUND_MAXIMUM_MS={}", elapsed.as_millis());
-    assert!(elapsed < Duration::from_secs(10));
+    println!("GLM_ROUND_MAXIMUM_MS={}", round_elapsed.as_millis());
     let count = store.conn.total_changes();
     let out = store
         .commit_glm_round(&cfg(), &b, backend, &out.permits, NOW_MS)
@@ -811,12 +821,11 @@ fn round_maximum_catalog_is_bounded_and_extra_observations_are_rejected() {
     let recovered = store
         .commit_glm_round(&cfg(), &b, backend, &HashMap::new(), NOW_MS)
         .unwrap();
-    let elapsed = start.elapsed();
+    let recovery_elapsed = start.elapsed();
     println!(
         "GLM_PUBLICATION_RECOVERY_MAXIMUM_MS={}",
-        elapsed.as_millis()
+        recovery_elapsed.as_millis()
     );
-    assert!(elapsed < Duration::from_secs(10));
     assert!(recovered.changed_members.is_empty());
     assert_eq!(store.conn.total_changes() - count, MAX_MEMBERSHIPS as u64);
     assert_eq!(
@@ -865,6 +874,7 @@ fn round_maximum_catalog_is_bounded_and_extra_observations_are_rejected() {
     let before = image(&store.conn);
     err(store.glm_probe_inputs(), Code::Storage);
     assert_eq!(image(&store.conn), before);
+    [probe_elapsed, round_elapsed, recovery_elapsed]
 }
 
 #[test]

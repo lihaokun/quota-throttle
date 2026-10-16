@@ -2,6 +2,8 @@
 
 第三小步基线 `8fa37e1`，2026-10-16 完成采集小步及 C-1 整体验收。C1 来源输入与 C2 单飞网络链路复用前两小步的事务和许可发布。验收限于协调器显式刷新，不包括运行 CLI、火山事实、管理新命令、页面或生产部署。
 
+后续复审补记：以下360 passed来自明确记录的受限并行命令。独立报告及本轮复现表明默认并行下固定墙钟断言会失败；该测试门禁缺陷不能被本历史结论覆盖。修复与新验证见[默认并行与性能门禁分离](../../fixes/sgm-fix-parallel-performance-gates.md)，原数字和代码审核范围保留。
+
 ## 实现与独立审核
 
 依据 [C-1 细化](../../design/source-groups-token-management/subplans/sgm-3-source-policies-c.md)、[事前清单](batch-c-expectations.md)。审核者 `sgm3_c1_acquisition_audit` 先从契约独立抽取要求，再读取本步 diff 和必要依赖差异；没有读取主代理测试结论、执行测试、写文件或访问生产。

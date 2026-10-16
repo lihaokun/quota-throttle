@@ -186,6 +186,8 @@ C/SGM-4 必须另行给出并实测：终态识别、同源重试最终成功、
 
 ## 9 实施与验收
 
+2026-10-16 测试门禁修订：最大选择/迁移的5秒预算与普通功能/PBT分离，使用独立串行release性能入口及CI检查；原容量/材料保真/回滚断言不减，见[修复说明](../../../fixes/sgm-fix-parallel-performance-gates.md)。
+
 按纯函数 → v4/存储 → 重开/迁移组合三步实施。每步完成测试、自审与 workflow 要求的独立契约审核；只有 B 的退出项全部通过才进入 C，不以状态机 fixture 冒充实际流量验收。
 
 事前测试见 [B 批 expectations](../../../audits/sgm-3-source-policies/batch-b-expectations.md)。PBT 覆盖独立原因、时钟/改规则、证据幂等、轮转及持久化保真，至少 128 cases/项；旧 GLM golden 继续运行。变异必须源码/target 双隔离。
