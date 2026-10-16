@@ -18,8 +18,19 @@ fn r10_worker_private_snapshots_have_no_debug_or_serialize() {
     assert_not_impl!(ReconcileWorker, serde::Serialize);
 }
 
+#[path = "policy_tests.rs"]
+mod policy_tests;
 #[path = "scenarios.rs"]
 mod scenarios;
+
+fn policy_config() -> Arc<Config> {
+    Arc::new(
+        toml::from_str(
+            "poll_interval_secs=10\nkeys=[]\n[zhipu]\n[new_api]\nbase_url='http://unused.invalid'",
+        )
+        .unwrap(),
+    )
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum WriteFault {
@@ -372,6 +383,14 @@ async fn fixture_with_auth(
     entries: &[(usize, usize, i64, Option<i64>)],
     token: bool,
 ) -> Fixture {
+    fixture_with_options(kind, entries, token, policy_config()).await
+}
+async fn fixture_with_options(
+    kind: SourceKind,
+    entries: &[(usize, usize, i64, Option<i64>)],
+    token: bool,
+    config: Arc<Config>,
+) -> Fixture {
     let state = Arc::new(NativeState::default());
     let server = state.clone();
     let fake = Fake::start(move |r| server.reply(r)).await;
@@ -473,7 +492,9 @@ async fn fixture_with_auth(
     let worker = ReconcileWorker::new(
         store,
         Arc::new(NewApiClient::new(&fake.config(token)).unwrap()),
-    );
+        config,
+    )
+    .unwrap();
     worker
         .publish_backend(BackendReadiness::from_preflight(
             SUPPORTED_BACKEND_VERSION,
@@ -498,8 +519,7 @@ fn publish(worker: &ReconcileWorker, id: MembershipId, disabled: bool) {
     let w = worker.work(id).unwrap();
     let permit = (!disabled).then(|| {
         RoutingPermit::from_policy(
-            &w.source,
-            &w.group,
+            &w,
             w.target.desired_priority,
             10,
             true,

@@ -59,6 +59,8 @@ impl BackendReadiness {
 /// 只能由可信策略层产生；没有 Deserialize，不能用面板布尔值代替策略判定。
 #[derive(Clone, Copy)]
 pub struct RoutingPermit {
+    membership_id: MembershipId,
+    member_revision: i64,
     source_id: SourceId,
     source_revision: i64,
     group_id: GroupId,
@@ -71,8 +73,7 @@ pub struct RoutingPermit {
 }
 impl RoutingPermit {
     pub fn from_policy(
-        source: &SourceView,
-        group: &GroupView,
+        work: &WorkSnapshot,
         priority: i64,
         standby_priority: i64,
         allowed: bool,
@@ -80,10 +81,12 @@ impl RoutingPermit {
         expires_at: i64,
     ) -> Self {
         Self {
-            source_id: source.source_id,
-            source_revision: source.config_revision,
-            group_id: group.group_id,
-            group_revision: group.revision,
+            membership_id: work.member.membership_id,
+            member_revision: work.target.revision,
+            source_id: work.source.source_id,
+            source_revision: work.source.config_revision,
+            group_id: work.group.group_id,
+            group_revision: work.group.revision,
             priority,
             standby_priority,
             allowed,
@@ -94,6 +97,8 @@ impl RoutingPermit {
     pub(crate) fn valid_for(self, snapshot: &WorkSnapshot, now: i64) -> bool {
         self.allowed
             && valid_window(self.issued_at, self.expires_at, now)
+            && self.membership_id == snapshot.member.membership_id
+            && self.member_revision == snapshot.target.revision
             && self.source_id == snapshot.source.source_id
             && self.source_revision == snapshot.source.config_revision
             && self.group_id == snapshot.group.group_id

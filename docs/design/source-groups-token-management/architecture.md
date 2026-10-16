@@ -1,6 +1,6 @@
 # 来源共享 分组路由和用量面板架构
 
-日期：2026-10-15，进度更新：2026-10-16。状态：架构已确认，sgm-1 已完成，sgm-2 的执行/恢复和本地托管预检已实现并分步验证，sgm-3 A/B 已完成验收；C-1 已确认，事务适配已实现，调度器/许可/采集接线仍待后续。尚未接现行服务，C 后续及 sgm-4 至 sgm-7 待实施。需求依据：[最新版方案](../../research/source-groups-token-management-research.md)。接口实证：[实现前审核](review.md)。架构确认不包含生产部署授权。
+日期：2026-10-15，进度更新：2026-10-16。状态：架构已确认，sgm-1 已完成，sgm-2 的执行/恢复和本地托管预检已实现并分步验证，sgm-3 A/B 已完成验收；C-1 的事务适配和批次发布/成员许可已实现，共享采集与组合验收仍待后续。尚未接现行服务，C 后续及 sgm-4 至 sgm-7 待实施。需求依据：[最新版方案](../../research/source-groups-token-management-research.md)。接口实证：[实现前审核](review.md)。架构确认不包含生产部署授权。
 
 ## 目标与边界
 
@@ -293,13 +293,13 @@ B 只实现有界纯函数和内部事务。原始日志去重、终态识别与
 
 ## 第三子计划 C-1 共享类型与实施边界
 
-对应已确认的 [C 接线方案](subplans/sgm-3-source-policies-c.md)。当前仅实现 catalog 内部事务适配，见[小步审核](../../audits/sgm-3-source-policies/c1-tx-audit.md)；下表的提交结果、许可和 worker 接线仍未实现。保留现有模块边界与 SQLite v4；C-1 的完整目标为共享 GLM 采集和原子发布，不改变火山状态/目标或授予火山许可。
+对应已确认的 [C 接线方案](subplans/sgm-3-source-policies-c.md)。当前已实现 [catalog 事务适配](../../audits/sgm-3-source-policies/c1-tx-audit.md)及[批次发布/成员许可](../../audits/sgm-3-source-policies/c1-publication-audit.md)；共享采集输入及网络半段未接入。保留现有模块边界与 SQLite v4；C-1 的完整目标为共享 GLM 采集和原子发布，不改变火山状态/目标或授予火山许可。
 
-| 类型/责任 | 共享方 | 已确认的后续约束 |
+| 类型/责任 | 共享方 | 约束与状态 |
 | --- | --- | --- |
 | GlmPolicyCommit | catalog 事务 → worker | 组状态/必要目标同事务，提交前构造完整许可 map，提交后一次替换，不逐成员发布 |
-| PolicyRefreshReport | worker → 后续组装层 | 区分 preview_only 和本地提交；不包含私有材料或远端成功声明 |
+| PolicyRefreshReport | catalog 提交前构造 → worker → 后续组装层 | 区分 preview_only 和本地提交；不包含私有材料或远端成功声明 |
 | RoutingPermit 的成员绑定 | policy → planner/worker | 在原 source/group/priority/time 外补 membership_id/member_revision，防止旧目标许可复用 |
-| 配置/采集器所有权 | worker | 原 Config 生命周期只读、一个 SourceProbe 单飞；Core 锁不跨网络 await；保留 dry_run |
+| 配置/采集器所有权 | worker | 原 Config 生命周期只读及 dry_run 双写门禁已接入；SourceProbe 单飞/Core 不跨网络 await 留采集小步 |
 
 C-1 不对未 managed 的目录成员写自动目标，不通过周期操作增加接管授权；稳定 no-op 不新建操作/提升版本，资格恢复只唤醒已有 NotReady 待办。公开管理动作和真实火山事实的完整组合分别留待 C-2/C-3 细化与 SGM-4 合流，生产接管/部署仍属 SGM-7。

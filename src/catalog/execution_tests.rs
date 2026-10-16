@@ -87,8 +87,7 @@ fn context<'a>(
             200,
         ),
         permit: Some(RoutingPermit::from_policy(
-            &work.source,
-            &work.group,
+            work,
             work.target.desired_priority,
             10,
             true,

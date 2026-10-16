@@ -1,4 +1,4 @@
-//! 单写通道执行器。状态发布先失效 fence，网络等待不持目录锁；不签发策略许可。
+//! 单写通道执行器。状态发布先失效 fence，网络等待不持目录锁；策略整批提交后发布。
 use super::planner::*;
 use crate::catalog::control::{
     ControlCommand, ControlError, ControlErrorCode, ControlResult, OperationId, OperationPhase,
@@ -6,6 +6,7 @@ use crate::catalog::control::{
 };
 use crate::catalog::execution::{ExecutionEffect, ExecutionOutcome, WorkTicket};
 use crate::catalog::*;
+use crate::config::Config;
 use crate::newapi::managed_channels::{ChannelPatch, DisabledChannelSpec, NativeRecoveryCheck};
 use crate::newapi::transport::{DeliveryEvidence, ManagementError, ManagementErrorKind};
 use crate::newapi::NewApiClient;
@@ -15,12 +16,15 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 use tokio::sync::{watch, Mutex as AsyncMutex, Notify, Semaphore};
 
+mod policy;
+
 struct Core {
     input_epoch: u64,
     store: CatalogStore,
     backend: BackendReadiness,
     source_disabled: HashMap<SourceId, bool>,
     permits: HashMap<MembershipId, RoutingPermit>,
+    last_glm_cycle: Option<u64>,
     observations: HashMap<MembershipId, CachedObservation>,
 }
 enum CachedObservation {
@@ -62,6 +66,7 @@ pub struct ReconcileWorker {
     commands: Semaphore,
     changed: Notify,
     client: Arc<NewApiClient>,
+    policy_config: Arc<Config>,
 }
 #[derive(Debug, Default, Clone, Copy)]
 pub struct RoundReport {
@@ -176,8 +181,13 @@ fn can_route(plan: &Plan) -> bool {
 }
 
 impl ReconcileWorker {
-    pub fn new(store: CatalogStore, client: Arc<NewApiClient>) -> Arc<Self> {
-        Arc::new(Self {
+    pub fn new(
+        store: CatalogStore,
+        client: Arc<NewApiClient>,
+        policy_config: Arc<Config>,
+    ) -> ControlResult<Arc<Self>> {
+        crate::catalog::glm_round::validate_config(&policy_config)?;
+        Ok(Arc::new(Self {
             core: Mutex::new(Core {
                 input_epoch: 0,
                 store,
@@ -190,6 +200,7 @@ impl ReconcileWorker {
                 ),
                 source_disabled: HashMap::new(),
                 permits: HashMap::new(),
+                last_glm_cycle: None,
                 observations: HashMap::new(),
             }),
             publication: AtomicU64::new(0),
@@ -197,7 +208,8 @@ impl ReconcileWorker {
             commands: Semaphore::new(64),
             changed: Notify::new(),
             client,
-        })
+            policy_config,
+        }))
     }
     fn mutate<T>(
         &self,
@@ -367,6 +379,7 @@ impl ReconcileWorker {
         Ok(check)
     }
     /// 策略与组注册层提供；来源停用 gate 按 SourceId 共享，不按下游协议拆分。
+    #[cfg(test)]
     pub fn publish_route(
         &self,
         id: MembershipId,
@@ -679,7 +692,7 @@ impl ReconcileWorker {
         credential: Option<&SecretString>,
     ) -> std::result::Result<bool, ManagementError> {
         let deadline = plan.deadline(true);
-        let guard = || self.gate(epoch, plan.now, deadline, stop);
+        let guard = || !self.policy_config.dry_run && self.gate(epoch, plan.now, deadline, stop);
         let api = self.client.managed_channels();
         let api = api.fenced(&guard);
         match ticket.effect() {
@@ -740,6 +753,9 @@ impl ReconcileWorker {
         }
     }
     async fn write(&self, plan: &Plan, stop: &AtomicBool) -> ControlResult<()> {
+        if self.policy_config.dry_run {
+            return Err(error(ControlErrorCode::NotReady));
+        }
         let (ticket, credential) = self.mutate(Some(plan.epoch), |c| {
             let credential = if plan.step() == PlanStep::CreateDisabled {
                 Some(

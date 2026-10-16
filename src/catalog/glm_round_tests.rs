@@ -11,6 +11,9 @@ use crate::source_policy::probe::{ProbeCycle, QuotaObservation, QuotaReading};
 use rusqlite::types::Value;
 use std::time::{Duration, Instant};
 
+#[path = "glm_publication_tests.rs"]
+mod publication;
+
 const NOW_MS: i64 = 1_800_000_000_000;
 fn cfg() -> Config {
     toml::from_str(
@@ -686,9 +689,8 @@ fn round_pin_degraded_unknown_and_retired_history_keep_glm_semantics() {
     }
 }
 
-#[test]
-fn round_maximum_catalog_is_bounded_and_extra_observations_are_rejected() {
-    let (_dir, mut store) = setup();
+fn maximum_fixture() -> (TempDir, CatalogStore, Vec<SourceId>) {
+    let (dir, mut store) = setup();
     let tx = store
         .conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -731,18 +733,80 @@ fn round_maximum_catalog_is_bounded_and_extra_observations_are_rejected() {
         }
     }
     commit(tx, &mut store.poisoned).unwrap();
+    (dir, store, sources)
+}
+
+#[test]
+fn round_maximum_catalog_is_bounded_and_extra_observations_are_rejected() {
+    let (_dir, mut store, sources) = maximum_fixture();
+    store
+        .conn
+        .execute("UPDATE source_groups SET ready=1", [])
+        .unwrap();
+    let backend = crate::reconcile::planner::BackendReadiness::from_preflight(
+        "v1.0.0-rc.20",
+        crate::newapi::managed_channels::NativeRecoveryCheck::Disabled,
+        true,
+        0,
+        NOW_MS / 1000 + 100,
+    );
     let b = cycle(&sources, &vec![Some(10); MAX_SOURCES]);
     let start = Instant::now();
-    let out = apply(&mut store, &cfg(), &b).unwrap();
+    let out = store
+        .commit_glm_round(&cfg(), &b, backend, &HashMap::new(), NOW_MS)
+        .unwrap();
     let elapsed = start.elapsed();
     assert_eq!(out.changed_members.len(), MAX_MEMBERSHIPS);
     assert_eq!(out.changed_groups.len(), MAX_GROUPS);
+    assert_eq!(out.permits.len(), MAX_MEMBERSHIPS);
     println!("GLM_ROUND_MAXIMUM_MS={}", elapsed.as_millis());
     assert!(elapsed < Duration::from_secs(10));
     let count = store.conn.total_changes();
-    let out = apply(&mut store, &cfg(), &b).unwrap();
+    let out = store
+        .commit_glm_round(&cfg(), &b, backend, &out.permits, NOW_MS)
+        .unwrap();
     assert!(out.changed_groups.is_empty() && out.changed_members.is_empty());
     assert_eq!(store.conn.total_changes(), count);
+    store
+        .conn
+        .execute(
+            "UPDATE member_control SET dirty=1,last_error_code='not_ready',next_attempt_at=?1",
+            [NOW_MS / 1000 + 500],
+        )
+        .unwrap();
+    let waiting = image(&store.conn);
+    let count = store.conn.total_changes();
+    let start = Instant::now();
+    let recovered = store
+        .commit_glm_round(&cfg(), &b, backend, &HashMap::new(), NOW_MS)
+        .unwrap();
+    let elapsed = start.elapsed();
+    println!(
+        "GLM_PUBLICATION_RECOVERY_MAXIMUM_MS={}",
+        elapsed.as_millis()
+    );
+    assert!(elapsed < Duration::from_secs(10));
+    assert!(recovered.changed_members.is_empty());
+    assert_eq!(store.conn.total_changes() - count, MAX_MEMBERSHIPS as u64);
+    assert_eq!(
+        store
+            .conn
+            .query_row(
+                "SELECT count(*) FROM member_control WHERE next_attempt_at=?1",
+                [NOW_MS / 1000],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        MAX_MEMBERSHIPS as i64
+    );
+    store
+        .conn
+        .execute(
+            "UPDATE member_control SET next_attempt_at=?1",
+            [NOW_MS / 1000 + 500],
+        )
+        .unwrap();
+    assert_eq!(image(&store.conn), waiting);
     let mut rows = b.observations().to_vec();
     let mut extra = rows[0].clone();
     extra.source_id = SourceId::new(900_000).unwrap();

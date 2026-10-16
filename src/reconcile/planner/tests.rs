@@ -140,8 +140,7 @@ fn context<'a>(
             150,
         ),
         permit: Some(RoutingPermit::from_policy(
-            &snapshot.source,
-            &snapshot.group,
+            snapshot,
             snapshot.target.desired_priority,
             10,
             true,

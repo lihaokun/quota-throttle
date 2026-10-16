@@ -808,7 +808,11 @@ async fn native_worker_reconcile(
     let member = store
         .plan_membership(source.source_id, group.group_id, 10)
         .unwrap();
-    let worker = ReconcileWorker::new(store, client.clone());
+    let config = toml::from_str(
+        "poll_interval_secs=10\nkeys=[]\n[zhipu]\n[new_api]\nbase_url='http://unused.invalid'",
+    )
+    .unwrap();
+    let worker = ReconcileWorker::new(store, client.clone(), Arc::new(config)).unwrap();
     assert_eq!(worker.refresh_backend(process).await.unwrap().issue(), None);
     let pause = OperationId::new("native-worker-pause-0001".into()).unwrap();
     worker

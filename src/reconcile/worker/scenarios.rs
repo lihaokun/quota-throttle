@@ -66,9 +66,10 @@ fn reopen(f: Fixture) -> Fixture {
         "must settle owned rounds before reopening"
     );
     let client = worker.client.clone();
+    let config = worker.policy_config.clone();
     drop(worker);
     let store = CatalogStore::open(&_dir.path().join("catalog.sqlite3")).unwrap();
-    let worker = ReconcileWorker::new(store, client);
+    let worker = ReconcileWorker::new(store, client, config).unwrap();
     backend(&worker);
     let f = Fixture {
         _dir,

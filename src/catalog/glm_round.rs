@@ -47,22 +47,28 @@ fn input_error(e: PolicyError) -> super::control::ControlError {
         PolicyError::SequenceExhausted => Code::Storage,
     })
 }
-fn validate_round(cfg: &Config, cycle: &ProbeCycle, now_ms: i64) -> ControlResult<()> {
+pub(crate) fn validate_config(cfg: &Config) -> ControlResult<()> {
     cfg.validate().map_err(|_| failure(Code::InvalidInput))?;
+    ensure(
+        [
+            cfg.priority_active,
+            cfg.priority_standby,
+            cfg.priority_exhausted,
+        ]
+        .into_iter()
+        .all(safe_number)
+            && cfg.priority_active > cfg.priority_standby
+            && cfg.priority_standby >= cfg.priority_exhausted,
+        Code::InvalidInput,
+    )
+}
+fn validate_round(cfg: &Config, cycle: &ProbeCycle, now_ms: i64) -> ControlResult<()> {
+    validate_config(cfg)?;
     ensure(
         (0..=JSON_SAFE).contains(&now_ms)
             && (0..=now_ms).contains(&cycle.completed_at_ms())
             && cycle.cycle_id() > 0
-            && cycle.observations().len() <= MAX_SOURCES
-            && [
-                cfg.priority_active,
-                cfg.priority_standby,
-                cfg.priority_exhausted,
-            ]
-            .into_iter()
-            .all(safe_number)
-            && cfg.priority_active > cfg.priority_standby
-            && cfg.priority_standby >= cfg.priority_exhausted,
+            && cycle.observations().len() <= MAX_SOURCES,
         Code::InvalidInput,
     )?;
     let mut ids = HashSet::new();
@@ -77,7 +83,7 @@ fn validate_round(cfg: &Config, cycle: &ProbeCycle, now_ms: i64) -> ControlResul
     }
     Ok(())
 }
-fn editable(w: &WorkSnapshot) -> bool {
+pub(super) fn editable(w: &WorkSnapshot) -> bool {
     w.managed
         && w.member.channel_id.is_some()
         && !w.source.manual_paused
