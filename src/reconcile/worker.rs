@@ -10,6 +10,7 @@ use crate::config::Config;
 use crate::newapi::managed_channels::{ChannelPatch, DisabledChannelSpec, NativeRecoveryCheck};
 use crate::newapi::transport::{DeliveryEvidence, ManagementError, ManagementErrorKind};
 use crate::newapi::NewApiClient;
+use crate::source_policy::probe::SourceProbe;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -67,6 +68,7 @@ pub struct ReconcileWorker {
     changed: Notify,
     client: Arc<NewApiClient>,
     policy_config: Arc<Config>,
+    probe: AsyncMutex<SourceProbe>,
 }
 #[derive(Debug, Default, Clone, Copy)]
 pub struct RoundReport {
@@ -209,6 +211,7 @@ impl ReconcileWorker {
             changed: Notify::new(),
             client,
             policy_config,
+            probe: AsyncMutex::new(SourceProbe::default()),
         }))
     }
     fn mutate<T>(

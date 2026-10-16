@@ -1,4 +1,4 @@
-//! 来源级只读采集及 GLM/火山纯策略；尚未接入 CLI 或协调器发布。
+//! 来源级只读采集及 GLM/火山纯策略；GLM 已接协调器显式刷新，尚未接入运行 CLI。
 pub mod glm;
 pub mod probe;
 pub mod volcano;

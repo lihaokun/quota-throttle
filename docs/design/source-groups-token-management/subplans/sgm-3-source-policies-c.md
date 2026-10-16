@@ -1,6 +1,6 @@
 # SGM-3 C 策略发布接线方案
 
-日期：2026-10-16。状态：用户已确认 C-1，事务适配第一小步（基线 `fce5187`）和批次发布/成员许可第二小步（基线 `791bc56`）均已完成测试与独审；共享采集及组合验收待后续。方案源码基线 `8113696`，A/B 已验收。C-2/C-3 仍须补各自函数级设计；C-1 的确认不替代后续事实能力和部署验收，不授权改动运行服务。
+日期：2026-10-16。状态：用户已确认 C-1，事务适配（基线 `fce5187`）、批次发布/成员许可（基线 `791bc56`）、共享采集（基线 `8fa37e1`）均已完成测试与独审，C-1 组合验收通过。方案源码基线 `8113696`，A/B 已验收。C-2/C-3 仍须补各自函数级设计；C-1 完成不替代后续事实能力和部署验收，不授权改动运行服务。
 
 ## 1 范围与实施顺序
 
@@ -8,7 +8,7 @@
 
 | 小步 | 交付 | 前置/退出边界 |
 | --- | --- | --- |
-| C-1 已确认，分步实施 | 共享 GLM 采集 → 当前目录/组状态计算 → 同事务保存选择与必要 priority 变化 → 一次发布许可 | 不改 GLM 算法；不新增表/公开命令；通过原子性、取消、过期、接管边界测试 |
+| C-1 已完成验收 | 共享 GLM 采集 → 当前目录/组状态计算 → 同事务保存选择与必要 priority 变化 → 一次发布许可 | 不改 GLM 算法；不新增表/公开命令；原子性、取消、过期、接管边界及组合测试通过 |
 | C-2 后续细化 | 组 pin、火山撤错/编辑、来源模型发现等管理动作与幂等收据接线 | 补命令/schema/收据语义；模型按来源、添加/显式同步触发，不进周期轮询 |
 | C-3 与 SGM-4 合流 | 火山事实、周期历史、来源 gate、各组目标和许可原子提交/发布 | 真实生产者证明终态/去重/覆盖；不得以原生 error log 条数或外部布尔值签发许可 |
 
@@ -135,7 +135,9 @@ RoutingPermit 绑定最终 membership/member/source/group revision 和期望 pri
 
 `apply_glm_round_tx(tx,cfg,cycle,now_ms)` 内部先 compute，再调用组状态保存和目标应用，返回 `AppliedGlmTargets`（更新后的 draft、变化组/成员 ID）。返回不代表 commit 或发布；caller 必须先核 Store usable、持 IMMEDIATE 事务，任何 Err 回滚，成功后仍须 commit。本步仅测试包装提交；后续正式 commit_glm_round 要把许可构造/资格恢复唤醒放入同一事务，不能把此结果提前发布。
 
-辅助契约：validate_round 复用原 Config 校验并核 priority、时刻/容量/来源唯一性；旧但正的 source revision/轮次观测交原 adapter 当未知。editable 同时要求 managed、已绑定、未暂停/退休/退役；其余目标必须 Keep。complete_targets 消费完整 decision 映射并补旧值，重复/陌生 ID 拒绝。apply_policy_targets_tx 独立调用时读取当前组并检查完整集合；整轮路径在同一 IMMEDIATE 事务复用 compute 已读取的本组快照，交模块私有 apply_current_targets_tx 执行同一份集合、revision、priority、Keep 校验和安全版本预计算。两路径都在目标写前完整核验，不把私有快照 helper 暴露成外部入口。其间只写独立组策略表/其他组成员及旧操作 phase，不改变本组输入成员、来源或启用消费状态；所有 operation_targets 保留，故 managed 身份也不改变。应用后仍重新读本事务最终 WorkSnapshot/版本返回，未来许可不能拿更新前版本。
+辅助契约：validate_round 复用原 Config 校验并核 priority、时刻/容量/来源唯一性；旧但正的 source revision/轮次观测交原 adapter 当未知。editable 同时要求 managed、已绑定、未暂停/退休/退役；其余目标必须 Keep。complete_targets 消费完整 decision 映射并补旧值，重复/陌生 ID 拒绝。apply_policy_targets_tx 独立调用时读取当前组并检查完整集合；整轮路径在同一 IMMEDIATE 事务复用 compute 已读取的本组快照，交模块私有 apply_current_targets_tx 执行同一份集合、revision、priority、Keep 校验和安全版本预计算。两路径都在目标写前完整核验，不把私有快照 helper 暴露成外部入口。其间只写独立组策略表/其他组成员及旧操作 phase，不改变本组输入成员、来源或启用消费状态；所有 operation_targets 保留，故 managed 身份也不改变。应用后回读实际变化成员的 memberships/member_control，取得最终字段和版本；不变的来源、组、模型、管理身份、执行状态复用同一事务输入。未来许可不能拿更新前成员版本。
+
+采集整体验收时发现重复完整回读在全量负载下超出原 10 秒预算，因此收窄为 refresh_target_views_tx：只接收本组已核验快照及本模块实际变更 ID；按原 decoder/member_target 回读两张变化表，缺行为 Storage，任何错误仍整轮回滚。来源/组/配置、operation_targets、member_execution、execution_attempts 未被本轮改写；pending_writes 仅依赖执行记录及 channel_id/create_state（本轮亦不改），故其派生值可复用。返回完整 WorkSnapshot 与直接 load_work 逐字段交叉验证。没有新增跨事务缓存或镜像表，不放宽预算。
 
 事务第一小步不做 C1/C2/C5、轮次重放门禁、NotReady 唤醒或远端 dry_run 门禁。只读 compute 支持 dry_run；低层写 helper 若 cfg.dry_run=true 直接 InvalidInput，供后续预览路径防误调用。ProbeCycle 只增加 cfg(test) 原始输入工厂，生产构造和算法不改。既有目录/组读取 helper 仅扩大 catalog 内可见性，Config::validate 仅扩大 crate 内可见性。
 
@@ -146,6 +148,10 @@ RoutingPermit 绑定最终 membership/member/source/group revision 和期望 pri
 本步同时接入不可变 Config 并复用 priority 校验；dry_run 在执行票据准备前和发送 guard 两处拒绝所有远端写，保留读取。来源采集输入、SourceProbe 单飞/取消和 refresh_glm_policy 的网络半段留第三小步；不新增假生产者、周期任务或运行 CLI 接线。许可时限使用秒级窗口，向下取整来源观测毫秒后加既有 30 秒预算，与 backend 到期和发布预算取最小；到期边界不含，不能靠完成时间续旧观测。计数、许可和待唤醒成员在 commit 前完成，提交后不再查询目录。
 
 允许修改范围：catalog 内部事务 helper、worker 的策略刷新/批次发布及 dry_run 发送门禁、RoutingPermit 绑定、Config::validate 的可见性、对应测试与文档。禁止改原 GLM 纯算法、B 状态机、v1–v4 DDL、配置校验语义、管理认证/HTTP 语义、运行 CLI、现行面板或生产文件。不新增依赖或服务；如实现发现需要改业务/持久格式，先回到设计确认。
+
+第三小步以 `8fa37e1` 为基线，完成 C1/C2 并组合验收 C-1。来源读取复用 store 的 decode_source_view/read_material，仅开放后者 catalog 内可见性；同一只读事务至多扫描 MAX_SOURCES+1 行，容量/必需控制行/材料损坏为 Storage，按 SourceId 返回可采集 GLM 来源，不依成员数量重复。读事务和 Core 均在请求开始前释放；MAX_SOURCES 输入组装预算 5 秒，不将其解释为整轮网络预算。
+
+refresh_glm_policy 一次只占一个 commands 槽，并持 probe 单飞锁覆盖采集与发布；发布内部 helper 不二次占槽，原手工批次入口收窄为测试包装。采集中取消直接丢弃 Future，既有 SourceProbe 已消耗的轮次不复用，锁/槽由 RAII 释放；不 spawn 隐藏的后台采集任务。UTC 毫秒取值及 PolicyError 转换只产生固定安全错误码。网络完成后走同一发布 helper，以最新目录核验，不另建提交链路。
 
 验证使用私有临时库、假凭据和随机回环服务，不执行 up/run/down/sync。每项 PBT 至少 128 cases，变异源码与 target 双隔离；运行全量预检期间禁止并行重编译同一 target。真实服务检查和部署须后续另行授权。
 
@@ -158,4 +164,5 @@ RoutingPermit 绑定最终 membership/member/source/group revision 和期望 pri
 - [x] 用户已确认 C-1，按事务适配、发布/许可、采集/组合三小步实施。
 - [x] 事务适配小步完成[自动验证、独立契约审和五维度复核](../../../audits/sgm-3-source-policies/c1-tx-audit.md)：新增 15 项测试（2 项各 128 cases PBT），8 项变异被捕获，全量 336 passed/1 ignored；未接运行服务。
 - [x] 发布/许可小步完成[自动验证、独立契约审和五维度复核](../../../audits/sgm-3-source-policies/c1-publication-audit.md)：新增 13 项测试（2 项各 128 cases PBT），12 项变异被捕获，全量 349 passed/1 ignored；未接运行服务。
-- [ ] C-1 自动验证、独立契约审核与五维度复核通过。
+- [x] 采集与组合小步完成[验收](../../../audits/sgm-3-source-policies/c1-acquisition-audit.md)：新增 11 项测试（2 项各 128 cases PBT），最终 10 项变异被捕获，全量 360 passed/1 ignored。
+- [x] C-1 自动验证、独立契约审核与五维度复核通过；C-2/C-3 和运行 CLI/生产部署仍待后续。

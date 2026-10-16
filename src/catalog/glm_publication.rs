@@ -2,11 +2,11 @@
 #![cfg_attr(not(test), allow(dead_code))]
 use super::control::{ensure, failure, ControlErrorCode as Code, ControlResult};
 use super::glm_round::{apply_glm_round_tx, compute_glm_round_tx, editable, GlmRoundDraft};
-use super::store::commit;
+use super::store::{commit, decode_source_view, read_material, SOURCE_COLUMNS};
 use super::*;
 use crate::config::Config;
 use crate::reconcile::planner::{BackendReadiness, RoutingPermit, OBSERVATION_MAX_AGE_SECS};
-use crate::source_policy::probe::{ProbeCycle, QuotaReading};
+use crate::source_policy::probe::{ProbeCycle, ProbeInput, QuotaReading};
 use rusqlite::{params, Transaction, TransactionBehavior};
 use std::collections::{HashMap, HashSet};
 
@@ -115,6 +115,37 @@ fn wake_recovered_tx(
 }
 
 impl CatalogStore {
+    pub(crate) fn glm_probe_inputs(&mut self) -> ControlResult<Vec<ProbeInput>> {
+        // Step C1: 同一有界只读快照中取得来源、控制状态和材料，网络前释放事务。
+        self.usable()?;
+        let tx = self.conn.transaction()?;
+        let mut inputs = Vec::new();
+        {
+            let mut query=tx.prepare(&format!("SELECT {SOURCE_COLUMNS},(SELECT retire_requested FROM source_control c WHERE c.source_id=sources.source_id) FROM sources ORDER BY source_id LIMIT ?1"))?;
+            let mut rows = query.query([(MAX_SOURCES + 1) as i64])?;
+            let mut count = 0;
+            while let Some(row) = rows.next()? {
+                count += 1;
+                ensure(count <= MAX_SOURCES, Code::Storage)?;
+                let source = decode_source_view(row)?;
+                let retiring: i64 = row.get(7)?;
+                ensure(matches!(retiring, 0 | 1), Code::Storage)?;
+                if source.kind != SourceKind::Glm
+                    || source.manual_paused
+                    || source.retired_at.is_some()
+                    || retiring == 1
+                {
+                    continue;
+                }
+                let material = read_material(&tx, source.source_id, false)?;
+                inputs
+                    .push(ProbeInput::new(&source, material).map_err(|_| failure(Code::Storage))?);
+            }
+        }
+        tx.rollback()?;
+        Ok(inputs)
+    }
+
     pub(crate) fn preview_glm_round(
         &mut self,
         cfg: &Config,

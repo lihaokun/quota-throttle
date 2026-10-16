@@ -1,13 +1,13 @@
 //! C-1 事务适配：当前目录计算、Keep 与最小目标写。尚无许可/worker/网络接线。
 #![cfg_attr(not(test), allow(dead_code))]
 use super::control::{
-    bump, ensure, failure, ControlErrorCode as Code, ControlResult, StatusDirective,
+    bump, ensure, failure, member_target, ControlErrorCode as Code, ControlResult, StatusDirective,
 };
 use super::execution::group_work as load_group_work;
 use super::policy::{
     group_record, read_group_policy, save_group_policy_tx, GroupPolicyState, StoredGroupPolicy,
 };
-use super::store::read_snapshot;
+use super::store::{decode_membership_view, read_snapshot, MEMBER_COLUMNS};
 use super::types::*;
 use crate::config::Config;
 use crate::reconcile::planner::WorkSnapshot;
@@ -250,6 +250,36 @@ fn apply_current_targets_tx(
     Ok(changed)
 }
 
+/// 同一事务只改了成员/目标字段；其余输入及 pending-write 的依赖均未改写。
+fn refresh_target_views_tx(
+    tx: &Transaction<'_>,
+    work: &mut [WorkSnapshot],
+    changed: &[MembershipId],
+) -> ControlResult<()> {
+    if changed.is_empty() {
+        return Ok(());
+    }
+    let mut remaining: HashSet<_> = changed.iter().copied().collect();
+    let mut query = tx.prepare(&format!(
+        "SELECT {MEMBER_COLUMNS} FROM memberships WHERE membership_id=?1"
+    ))?;
+    for w in work {
+        let id = w.member.membership_id;
+        if !remaining.remove(&id) {
+            continue;
+        }
+        w.member = query.query_row([id.get()], |row| Ok(decode_membership_view(row)))??;
+        w.target = member_target(tx, id).map_err(|e| {
+            if e.code == Code::NotFound {
+                failure(Code::Storage)
+            } else {
+                e
+            }
+        })?;
+    }
+    ensure(remaining.is_empty(), Code::Storage)
+}
+
 /// caller 持 IMMEDIATE 事务；任何 Err 必须回滚整个事务，成功仍须调用 commit。
 pub(super) fn apply_glm_round_tx(
     tx: &Transaction<'_>,
@@ -273,14 +303,10 @@ pub(super) fn apply_glm_round_tx(
         if saved.policy_revision != g.policy.policy_revision {
             changed_groups.push(g.group.group_id);
         }
-        changed_members.extend(apply_current_targets_tx(
-            tx,
-            &g.work,
-            &g.targets,
-            now_ms / 1000,
-        )?);
+        let changed = apply_current_targets_tx(tx, &g.work, &g.targets, now_ms / 1000)?;
         g.policy = saved;
-        g.work = required_group_work(tx, g.group.group_id)?;
+        refresh_target_views_tx(tx, &mut g.work, &changed)?;
+        changed_members.extend(changed);
         g.targets = complete_targets(&g.work, &g.decision)?;
     }
     Ok(AppliedGlmTargets {

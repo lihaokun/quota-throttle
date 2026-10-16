@@ -4,6 +4,9 @@ use crate::source_policy::probe::{ProbeCycle, QuotaObservation, QuotaReading};
 use rusqlite::{types::Value as SqlValue, Connection};
 use std::collections::BTreeMap;
 
+#[path = "acquisition_tests.rs"]
+mod acquisition;
+
 fn db(f: &Fixture) -> Connection {
     Connection::open(f._dir.path().join("catalog.sqlite3")).unwrap()
 }

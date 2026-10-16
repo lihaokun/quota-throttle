@@ -200,6 +200,30 @@ fn unmanage(store: &mut CatalogStore, id: MembershipId) {
     .unwrap();
     tx.commit().unwrap();
 }
+
+fn assert_round_views(store: &mut CatalogStore, round: &GlmRoundDraft) {
+    for w in round.groups.iter().flat_map(|g| &g.work) {
+        let actual = store.load_work(w.member.membership_id, false).unwrap();
+        assert_eq!(w.source, actual.source);
+        assert_eq!(w.group, actual.group);
+        assert_eq!(w.member, actual.member);
+        assert_eq!(w.target, actual.target);
+        assert_eq!(w.identity.channel_type, actual.identity.channel_type);
+        assert_eq!(w.identity.group, actual.identity.group);
+        assert_eq!(w.identity.base_url, actual.identity.base_url);
+        assert_eq!(w.models, actual.models);
+        assert_eq!(w.managed, actual.managed);
+        assert_eq!(w.source_retire_requested, actual.source_retire_requested);
+        assert_eq!(w.policy_disabled, actual.policy_disabled);
+        assert_eq!(w.pending_write, actual.pending_write);
+        assert_eq!(w.execution_revision, actual.execution_revision);
+        assert_eq!(w.enable_consumed, actual.enable_consumed);
+        assert_eq!(
+            w.enable_requested_revision,
+            actual.enable_requested_revision
+        );
+    }
+}
 fn unbind(store: &mut CatalogStore, id: MembershipId) {
     store
         .conn
@@ -739,6 +763,13 @@ fn maximum_fixture() -> (TempDir, CatalogStore, Vec<SourceId>) {
 #[test]
 fn round_maximum_catalog_is_bounded_and_extra_observations_are_rejected() {
     let (_dir, mut store, sources) = maximum_fixture();
+    let probe_start = Instant::now();
+    assert_eq!(store.glm_probe_inputs().unwrap().len(), MAX_SOURCES);
+    println!(
+        "GLM_PROBE_INPUTS_MAXIMUM_MS={}",
+        probe_start.elapsed().as_millis()
+    );
+    assert!(probe_start.elapsed() < Duration::from_secs(5));
     store
         .conn
         .execute("UPDATE source_groups SET ready=1", [])
@@ -815,6 +846,25 @@ fn round_maximum_catalog_is_bounded_and_extra_observations_are_rejected() {
         apply(&mut store, &cfg(), &ProbeCycle::test_input(1, NOW_MS, rows)),
         Code::InvalidInput,
     );
+    let tx = store.conn.transaction().unwrap();
+    // 测试专用 SQL 绕开正常创建的容量门禁，构造第 1001 条合法材料。
+    let extra = validate_source(source("fake-probe-overflow", SourceKind::Glm)).unwrap();
+    tx.execute(
+        "INSERT INTO source_secrets(raw_key) VALUES(?1)",
+        [extra.draft.credential.expose()],
+    )
+    .unwrap();
+    let secret = tx.last_insert_rowid();
+    tx.execute("INSERT INTO sources(kind,name,note,secret_id,credential_fingerprint,settings_json,config_revision,manual_paused) VALUES('glm',?1,'',?2,?3,?4,1,0)",params![extra.draft.name,secret,extra.fingerprint,encode_settings(&extra.draft.settings).unwrap()]).unwrap();
+    tx.execute(
+        "INSERT INTO source_control VALUES(?1,0)",
+        [tx.last_insert_rowid()],
+    )
+    .unwrap();
+    commit(tx, &mut store.poisoned).unwrap();
+    let before = image(&store.conn);
+    err(store.glm_probe_inputs(), Code::Storage);
+    assert_eq!(image(&store.conn), before);
 }
 
 #[test]
@@ -918,6 +968,7 @@ fn round_nonempty_unknown_execution_history_survives_target_change_and_reopen() 
     )
     .unwrap();
     assert!(out.changed_members.contains(&id));
+    assert_round_views(&mut f.store, &out.round);
     assert_eq!(
         out.round.groups[0].work[0].pending_write,
         PendingWrite::Unknown
@@ -993,7 +1044,7 @@ proptest! {
             }
         }
         let b=cycle(&f.sources,&rows.iter().map(|r|r.0).collect::<Vec<_>>());let before=image(&f.store.conn);
-        let result=apply(&mut f.store,&c,&b).unwrap();let after_first=image(&f.store.conn);let mut expected_changed=Vec::new();let mut expected_groups=Vec::new();
+        let result=apply(&mut f.store,&c,&b).unwrap();assert_round_views(&mut f.store,&result.round);let after_first=image(&f.store.conn);let mut expected_changed=Vec::new();let mut expected_groups=Vec::new();
         for g in 0..groups {
             let included:Vec<_>=(0..n).filter(|i|!(rows[*i].3 || rows[*i].4 && g%2==0) && (rows[*i].2 || g%2==1)).collect();
             let known:Vec<_>=included.iter().copied().filter(|i|rows[*i].0.is_some()).collect();

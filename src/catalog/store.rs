@@ -535,7 +535,11 @@ pub(super) fn read_snapshot(conn: &Connection) -> Result<CatalogSnapshot> {
     verify_snapshot(&snapshot)?;
     Ok(snapshot)
 }
-fn read_material(conn: &Connection, id: SourceId, allow_retired: bool) -> Result<SourceMaterial> {
+pub(super) fn read_material(
+    conn: &Connection,
+    id: SourceId,
+    allow_retired: bool,
+) -> Result<SourceMaterial> {
     let row: Option<(String, String, String, String, Option<i64>)> = conn.query_row(
             "SELECT s.kind,s.settings_json,k.raw_key,s.credential_fingerprint,s.retired_at FROM sources s JOIN source_secrets k ON s.secret_id=k.secret_id WHERE s.source_id=?1",
             [id.get()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional()?;

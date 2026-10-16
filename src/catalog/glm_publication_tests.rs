@@ -13,6 +13,100 @@ fn ready(f: &mut Fixture) {
         .execute("UPDATE source_groups SET ready=1", [])
         .unwrap();
 }
+
+#[test]
+fn probe_inputs_are_source_scoped_filtered_and_readonly() {
+    let mut f = fixture(4, 3);
+    f.store
+        .conn
+        .execute(
+            "UPDATE sources SET manual_paused=1 WHERE source_id=?1",
+            [f.sources[1].get()],
+        )
+        .unwrap();
+    f.store
+        .conn
+        .execute(
+            "UPDATE sources SET retired_at=1 WHERE source_id=?1",
+            [f.sources[2].get()],
+        )
+        .unwrap();
+    f.store
+        .conn
+        .execute(
+            "UPDATE source_control SET retire_requested=1 WHERE source_id=?1",
+            [f.sources[3].get()],
+        )
+        .unwrap();
+    let before = image(&f.store.conn);
+    let changes = f.store.conn.total_changes();
+    let inputs = f.store.glm_probe_inputs().unwrap();
+    assert_eq!(inputs.len(), 1);
+    assert!(f.store.conn.is_autocommit());
+    assert_eq!(f.store.conn.total_changes(), changes);
+    assert_eq!(image(&f.store.conn), before);
+    assert!(!format!("{inputs:?}").contains("fake-round"));
+    let (_dir, mut empty) = setup();
+    assert!(empty.glm_probe_inputs().unwrap().is_empty());
+}
+
+#[test]
+fn probe_inputs_reject_corrupt_required_rows_and_material_without_partial_output() {
+    for mode in 0..5 {
+        let mut f = fixture(2, 1);
+        let id = f.sources[1].get();
+        match mode {
+            0 => {
+                f.store
+                    .conn
+                    .execute("DELETE FROM source_control WHERE source_id=?1", [id])
+                    .unwrap();
+            }
+            1 => {
+                f.store
+                    .conn
+                    .execute(
+                        "UPDATE sources SET settings_json='{}' WHERE source_id=?1",
+                        [id],
+                    )
+                    .unwrap();
+            }
+            2 => {
+                f.store
+                    .conn
+                    .execute(
+                        "UPDATE sources SET credential_fingerprint=?1 WHERE source_id=?2",
+                        params!["a".repeat(64), id],
+                    )
+                    .unwrap();
+            }
+            3 => {
+                f.store
+                    .conn
+                    .pragma_update(None, "foreign_keys", false)
+                    .unwrap();
+                f.store.conn.execute("DELETE FROM source_secrets WHERE secret_id=(SELECT secret_id FROM sources WHERE source_id=?1)",[id]).unwrap();
+            }
+            _ => {
+                f.store
+                    .conn
+                    .pragma_update(None, "ignore_check_constraints", true)
+                    .unwrap();
+                f.store
+                    .conn
+                    .execute(
+                        "UPDATE source_control SET retire_requested=5 WHERE source_id=?1",
+                        [id],
+                    )
+                    .unwrap();
+            }
+        }
+        let before = image(&f.store.conn);
+        err(f.store.glm_probe_inputs(), Code::Storage);
+        assert!(f.store.conn.is_autocommit());
+        assert_eq!(image(&f.store.conn), before);
+    }
+}
 fn publish(
     f: &mut Fixture,
     b: &ProbeCycle,
