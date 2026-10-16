@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 常规测试保留功能/容量断言；此入口完整、串行执行六个原有耗时预算。
+# 常规测试保留功能/容量断言；此入口串行执行原有六预算及ledger批次预算。
 set -euo pipefail
 if (( $# != 0 )); then
   printf 'Usage: bash scripts/tests/performance-gates.sh\n' >&2
@@ -11,6 +11,7 @@ expected="$(printf '%s\n' \
   catalog::store::tests::glm_round::performance_gate_glm_maximum_catalog \
   catalog::store::tests::policy::performance_gate_policy_v3_migration \
   catalog::store::tests::policy::migration::performance_gate_complex_history_migration \
+  ledger::tests::performance_gate_ledger_maximum_batch \
   source_policy::volcano::tests::performance_gate_volcano_maximum_selection | LC_ALL=C sort)"
 listing="$(cargo test --release --locked --bin quota-throttle performance_gate_ -- --ignored --list)"
 actual="$(printf '%s\n' "$listing" | sed -n 's/: test$//p' | LC_ALL=C sort)"

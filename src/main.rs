@@ -1,6 +1,7 @@
 mod boot;
 pub mod catalog;
 mod config;
+mod ledger;
 mod model_catalog;
 pub mod newapi;
 mod orchestrator;

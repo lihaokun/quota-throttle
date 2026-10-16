@@ -8,6 +8,7 @@ cargo() {
     catalog::store::tests::glm_round::performance_gate_glm_maximum_catalog
     catalog::store::tests::policy::performance_gate_policy_v3_migration
     catalog::store::tests::policy::migration::performance_gate_complex_history_migration
+    ledger::tests::performance_gate_ledger_maximum_batch
     source_policy::volcano::tests::performance_gate_volcano_maximum_selection
   )
   if [[ "$*" == 'test --release --locked --bin quota-throttle performance_gate_ -- --ignored --list' ]]; then
