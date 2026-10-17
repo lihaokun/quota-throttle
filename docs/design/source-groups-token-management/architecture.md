@@ -1,5 +1,7 @@
 # 来源共享 分组路由和用量面板架构
 
+2026-10-17 最新决定：用户接受[观测型熔断](subplans/sgm-4-observed-breaker.md)，成功且有 token 活动的有效观测清零同源连续失败计数，包括已锁存时的计数，但不自动解除耗尽。无需修改 NewAPI；下文旧的“最终结果/可信终态”前提由该新细化的去重观测语义替代，不再阻塞独立的 key 管理/三页面开发。
+
 日期：2026-10-15，进度更新：2026-10-17。状态：架构已确认，sgm-1 已完成，sgm-2 的执行/恢复和本地托管预检已实现并分步验证，sgm-3 A/B 和 C-1 已完成验收；sgm-4 A、B1 的 v5 事务账本和 B2 统一采集已完成本地验收。尚未接现行服务，C-2/C-3、sgm-4 后续及 sgm-5 至 sgm-7 未完成。需求依据：[最新版方案](../../research/source-groups-token-management-research.md)。接口实证：[实现前审核](review.md)。架构确认不包含生产部署授权。
 
 ## 目标与边界
@@ -147,9 +149,9 @@ priority 是对支持该请求模型的候选表达偏好。原生单次重试�
 
 ### 火山错误 上限与重置
 
-判据作用于 SourceId，不按成员副本独立计数。默认 3 个独立请求的不可用结果，成功清失败计数；已锁存错误判定只由人工撤销或日重置解除。已观测 token 达上限触发另一原因，两者可并存。
+判据作用于 SourceId，不按成员副本独立计数。默认 3 个不同请求的上游不可用观测，同源成功 token 活动清失败计数；已锁存错误判定只由人工撤销或日重置解除。已观测 token 达上限触发另一原因，两者可并存。
 
-错误日志是异步观测，不承诺第三次失败的请求返回前已经停用全源。相同 request/source 的多个错误需去重；若存在同请求同源的最终成功，应按最终结果归并。终止结果识别、迟到处理、采集窗关闭与人工撤销 fencing 需要在 sgm-3 细化并故障测试，不能仅以收到三条日志实现。未就绪/缺口在面板显式呈现。
+错误日志是异步观测，不承诺第三次失败请求返回前已经停用全源。相同 request/source 的错误只计一次；后到的同源成功 token 观测清零计数，重复成功不再次清除后续新失败。先熔断后观测到成功时只清计数，不自动解锁；这是已接受的观测型误判风险。迟到/重放、采集缺口与人工撤销 fencing 仍须故障测试，不能把三条重试日志当三次请求。未就绪/缺口在面板显式呈现。
 
 每天按源时区边界推进周期；manual_paused 保留，旧周期原因/计数重置。先推进周期再执行同刻管理操作，使用 expected_revision 防止重复覆盖。修改上限即时重评，修改时刻只调整下一个未来边界，不重记历史。
 
@@ -282,7 +284,7 @@ sgm-2 源码核对发现原生自动启用也可能成为并发状态写者。�
 | 类型 | 所有者和消费者 | 约束 |
 | --- | --- | --- |
 | VolcanoRuntime / VolcanoState | source_policy 计算，catalog 持久化，C/面板消费 | 来源唯一；暂停优先、两个原因独立；状态派生；未初始化不默认可用 |
-| VolcanoEvidence / FinalOutcome | SGM-4 生产，source_policy 消费 | 绝对 token、已归并终态增量、周期/错误代次/投影游标；不能直接从原生日志条数或前端布尔值构造 |
+| VolcanoEvidence / OutcomeObservation | SGM-4 生产，source_policy 消费 | 绝对 token、去重观测转移、周期/错误代次/投影游标；不能直接从重试日志条数或前端布尔值构造；同源正 token 活动清失败计数 |
 | EvidenceDisposition | 策略 → 内部存储入口 | Applied/Duplicate/Stale/Gap；缺口要求重建，不部分累加 |
 | SourcePolicyUpdate / SourcePolicyWrite | 内部控制/账本 → catalog → C | Tick/Evidence/ClearError/ReplacePolicy；返回安全来源/运行状态及过渡，不是前端命令或远端回执 |
 | VolcanoGroupState / GroupPolicyState | 策略和 catalog，C 消费 | 火山 preferred/稳定游标；GLM 复用既有 GlmGroupState；不按访问 key 建绑定 |

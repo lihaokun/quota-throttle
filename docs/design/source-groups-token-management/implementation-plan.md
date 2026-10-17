@@ -4,7 +4,7 @@
 
 ## 当前完成与未完成
 
-2026-10-17 最新授权：用户要求连续完成剩余开发，不再逐小步等待确认；仍按 workflow 逐步实现、测试和独立审核，且不接管/重启/部署现有服务。本轮已完成 B3 后两步及整批本地验收。火山规则 1 的可靠请求结束证据仍有单独范围决策：已向用户询问是否允许 NewAPI 最小结构化结束事件补丁，答复前不改后端或放宽已确认规则；该扩展不从“继续开发”自动推定授权。
+2026-10-17 最新授权：用户要求连续完成剩余开发，不再逐小步等待确认；仍按 workflow 逐步实现、测试和独立审核，且不接管/重启/部署现有服务。B3 已验收。用户随后明确接受[观测型熔断](subplans/sgm-4-observed-breaker.md)，并要求成功有 token 流时清零计数：不改 NewAPI，不再以可靠最终结果补丁阻塞开发。统一 ledger 的观测归并核心 O1–O3 已验收，持久事务接线和其他剩余模块仍须各自验收。
 
 - 已有：[需求方案](../../research/source-groups-token-management-research.md)、[实现前审核](review.md)、已确认架构、可复现的隔离 NewAPI 契约探针。
 - 已完成：[sgm-1](subplans/sgm-1-catalog-store.md) 的独立目录库及导入函数、[schema](schemas/catalog-snapshot.schema.json)、[审核与复审记录](../../audits/sgm-1-catalog-store/audit-report.md)。复审后的局部修复为 85 项测试及 release 构建通过，四种定向变异被 PBT 检出；不接管 CLI/运行服务。
@@ -33,6 +33,8 @@
 
 - 2026-10-17 B3.3–B3.7 及整个 B3 [本地验收](../../audits/sgm-4-facts-analytics/batch-b3-completion-audit.md)完成：新增 37 普通/2 性能/1 趋势入口，5 组各 128 cases PBT，16 种变异和独审通过；debug/release 各 496 passed/0 failed/15 ignored，13 项独立性能通过。100k 总体/token 查询为 120/4 ms，256 行/10000 映射补正 28 ms；200k/1m 一致快照查询含控制写 248/1143 ms，读结束后 WAL 回收验证通过。B3 合计 51 普通入口、9 组 PBT 和 26 种变异；无 DDL/依赖/GLM/火山策略变更，不接现行 CLI/面板。源码分三笔本地提交，未推送/合并/部署；后续可靠终态所需后端补丁范围仍待用户决定，访问 key 和三页面并未实现。
 
+- 随后用户改选观测型熔断，撤销上一项的后端补丁范围前提。O1–O3 [核心验收](../../audits/sgm-4-facts-analytics/observed-breaker-audit.md)通过：按 source/request 去重，成功正 token 活动清零（含已锁存时的计数，但不解锁耗尽），其他源/重复成功不误清。11 项普通含 3 组各 128 cases PBT、9 种变异、独审通过；debug/release 各 507 passed/0 failed/16 ignored，14 项独立性能通过，新分类/合并十万次 41 ms。不改 NewAPI/GLM/旧状态机算法/DDL；源码本地提交 `88b1b36`、`64876c5`。O4 持久去重、组目标/许可事务接线、key 管理及三页面仍未完成，不是在线自动熔断已生效。
+
 复审修正已完成：健康会话显式 retry 多余登录已在 `3b1bbae` 修复，[F1 记录](../../fixes/newapi-fix-healthy-auth-retry.md)包含红绿回归、11 项新增测试（含 128 cases PBT）和 4 项变异；全量 288 passed/1 ignored，release 通过。P1 已补[迁移归属及只读增量核对](../../audits/sgm-1-catalog-store/migration-scope-review.md)，保留历史审核证据。SGM-3 B 已按用户确认完成；下一批仍先细化再确认，不以可选代码清理扩大范围，不改运行服务。
 
 ## 分步实施顺序
@@ -43,7 +45,7 @@
 | --- | --- | --- |
 | sgm-1-catalog-store | 共享类型、来源/组/成员目录、状态库、幂等旧配置导入 | 类型/唯一性约束、迁移重复执行无重复来源、历史映射不复用、数据库权限/备份策略明确 |
 | sgm-2-channel-reconcile | 原生 API 封装、全局流控、持久操作、禁用建渠道、源全局启停 | 跨组 priority 独立；暂停竞态/部分失败/未知 POST 对账；不使用裸 CopyChannel；批量状态回读 |
-| sgm-3-source-policies | 共享 quota 采集、GLM 分组适配、火山组首选与双判据/重置 | GLM golden 等价；同源跨组仅一份计数；规则 1 去重/最终结果归并与遥测前提；人工撤销与重置 fencing |
+| sgm-3-source-policies | 共享 quota 采集、GLM 分组适配、火山组首选与双判据/重置 | GLM golden 等价；同源跨组仅一份计数；规则 1 去重观测归并、成功 token 活动清计数与遥测前提；人工撤销与重置 fencing |
 | sgm-4-facts-analytics | 完整元数据采集、分页/补采/去重、时间×模型×token 投影 | 多页/迟到/重启/缺口测试；共享来源与整体不重复；图表分项合计一致；采集不饿死控制 |
 | sgm-5-token-management | 普通签发身份、组注册权限、token CRUD/复制/操作对账 | 新 token 单组隔离并关闭跨组重试；旧 token 保持可用；组删除引用保护；创建结果关联唯一；默认快照和日志无凭据 |
 | sgm-6-three-page-panel | 来源页、组与 Key 页、数据页、分模型堆叠柱 | 类型专属展示正确；GLM pin/临期保留、火山无临期；写操作显示 pending/failed；整体/per-key 同口径 |

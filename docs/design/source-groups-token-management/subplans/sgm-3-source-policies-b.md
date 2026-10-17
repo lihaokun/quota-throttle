@@ -1,5 +1,7 @@
 # SGM-3 第二批火山状态与策略持久化
 
+2026-10-17 输入契约更新：用户确认[观测型熔断](sgm-4-observed-breaker.md)，旧 FinalOutcome/completed_at 内部名称改为 OutcomeObservation/observed_at；同请求同源可以先输出一次失败观测，再输出一次成功 token 观测，重复事件不输出。下文旧“一请求一次确认终态”生产者义务由该新细化替代；B 的成功清计数、错误锁存、代次/周期/游标和事务算法保持。
+
 状态：用户确认的 B 已于 2026-10-16 完成纯函数、v4 存储、复杂历史迁移组合及[整体退出验收](../../../audits/sgm-3-source-policies/batch-b-final-audit.md)，历史小步见[纯函数审核](../../../audits/sgm-3-source-policies/batch-b-pure-audit.md)和[存储审核](../../../audits/sgm-3-source-policies/batch-b-storage-audit.md)。设计基线 `2ec8b50`，纯函数基线 `7f4fe7b`，存储基线 `0b52e50`，组合验证基线 `e0cfb82`；属于 [SGM-3](sgm-3-source-policies.md) 的 B 批。C 接线和生产发布仍未实施，GLM 算法、认证修复和既有部署架构不变。
 
 ## 1 范围与交付边界

@@ -2,6 +2,8 @@
 
 日期：2026-10-16。承接 SGM-3 C-1，供 C-3 与 SGM-4 细化使用；本轮是隔离调研，不是事实模块或火山自动调度的验收。
 
+2026-10-17 规则更新：用户接受[观测型熔断](../design/source-groups-token-management/subplans/sgm-4-observed-breaker.md)，成功 token 活动清零失败计数，不再要求证明纯失败请求最终结束。下文实测事实继续有效，但“需补终态证据才能继续”的旧方案前提已被替代；不修改 NewAPI。原探针 normal/same_source_fail_then_success 的消费、openai_error/unavailable/503 错误，以及流式 Done/Eof/ClientGone 形状作为新分类的已观测输入。
+
 现有 NewAPI 消费日志能提供按模型、来源、访问 key 和组统计的基础字段。但已核验的消费及错误日志，不能完整证明每个失败请求何时结束。必须把“记录了消耗”与“来源最终成功或失败”分开，不能直接把三条错误日志变成三次失败，也不能用等待时长补出终态。
 
 ## 核验范围

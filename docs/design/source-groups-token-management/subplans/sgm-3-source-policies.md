@@ -1,5 +1,7 @@
 # SGM-3 来源采集与分组策略细化
 
+2026-10-17 规则更新：后续火山输入按用户确认的[观测型熔断](sgm-4-observed-breaker.md)处理，同源有 token 的成功观测清计数。旧严格终态前提不再要求 NewAPI 补丁；GLM 行为和已验收的状态机/事务隔离不变。
+
 状态：用户确认的 A、B 已完成分步实现与双路径验证，见 [A 审核](../../../audits/sgm-3-source-policies/audit-report.md)和 [B 整体验收](../../../audits/sgm-3-source-policies/batch-b-final-audit.md)。A 基线 `e1a9279`；B 详见其细化与审核。本子计划承接[架构](../architecture.md)的 G2、G3，C 接线仍未完成；后续事实采集、访问 key、三页面和生产发布不被本轮验收替代。
 
 ## 1 范围和实施顺序
