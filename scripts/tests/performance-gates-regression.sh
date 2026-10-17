@@ -13,6 +13,7 @@ cargo() {
     catalog::store::tests::policy::migration::ledger::performance_gate_ledger_v4_migration
     catalog::store::tests::policy::performance_gate_policy_v3_migration
     catalog::store::tests::policy::migration::performance_gate_complex_history_migration
+    ledger::analytics::tests::performance_gate_analytics_maximum_output
     ledger::tests::performance_gate_ledger_maximum_batch
     source_policy::volcano::tests::performance_gate_volcano_maximum_selection
   )

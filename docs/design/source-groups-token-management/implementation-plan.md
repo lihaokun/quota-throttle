@@ -27,6 +27,8 @@
 
 - 2026-10-17 B3 [查询与补归属细化](subplans/sgm-4-facts-analytics-b3.md)和[事前十节](../../audits/sgm-4-facts-analytics/batch-b3-expectations.md)已形成待确认方案：同应用库 WAL 一致读、秒级边缘补算、完整有界模型/token/时间分项、查询取消与目录 guard 生命周期、小批原子补归属及重扫恢复。仅文档，未改 Rust/DDL/依赖或运行服务；确认后按查询语义、只读组合、补归属三个小步实施，不将设计审查视为实现验收。
 
+- 2026-10-17 用户确认后，B3 第一小步（B3.1–B3.2）[查询计算验收](../../audits/sgm-4-facts-analytics/batch-b3-query-audit.md)完成：14 项普通测试、4 组各 128 cases PBT、10 项变异/独审通过；debug/release 各 459 passed/0 failed/12 ignored，11 项独立性能通过，新最大输出 118 ms。只新增 ledger/analytics 与测试/门禁，没有改 catalog、worker、DDL、依赖或现行服务。下一步是 B3.3–B3.4 同库只读快照与取消，补归属、页面和发布仍待后续。
+
 复审修正已完成：健康会话显式 retry 多余登录已在 `3b1bbae` 修复，[F1 记录](../../fixes/newapi-fix-healthy-auth-retry.md)包含红绿回归、11 项新增测试（含 128 cases PBT）和 4 项变异；全量 288 passed/1 ignored，release 通过。P1 已补[迁移归属及只读增量核对](../../audits/sgm-1-catalog-store/migration-scope-review.md)，保留历史审核证据。SGM-3 B 已按用户确认完成；下一批仍先细化再确认，不以可选代码清理扩大范围，不改运行服务。
 
 ## 分步实施顺序

@@ -83,7 +83,7 @@ sgm-1 只产生 planned/imported；其余生命周期为 schema 约束及历史�
 
 2026-10-17锁生命周期修正：成功持锁对象在SQLite连接关闭后显式unlock；单个File关闭不作为继承/重复句柄全部消失的证明。未持锁失败路径不得解锁，仍保留活跃Store排他及拒绝外库/损坏库条件。新增确定性副本存活重开、真实关闭顺序、错误退出、跨进程排他与128-case随机句柄生命周期检查，见[修复记录](../../fixes/catalog-fix-inherited-lock-release.md)。原历史勾选不替代本轮完整验证。
 
-2026-10-17 B3 设计增量（待确认、未验收）：独立只读查询拟共享同一 Arc guard，最后一个真实数据库使用者退出才解锁；Store 关闭而查询/target 活着时必须拒绝重开。原裸 File 副本、失败获取/验证退出、真实连接关闭顺序和跨进程排他回归全部保留；新取消路径不能提前释放 guard。具体见 [B3 expectations](../sgm-4-facts-analytics/batch-b3-expectations.md)，不将旧勾选视为新生命周期已经通过。
+2026-10-17 B3 设计增量（已确认、尚未实施验收）：独立只读查询拟共享同一 Arc guard，最后一个真实数据库使用者退出才解锁；Store 关闭而查询/target 活着时必须拒绝重开。原裸 File 副本、失败获取/验证退出、真实连接关闭顺序和跨进程排他回归全部保留；新取消路径不能提前释放 guard。具体见 [B3 expectations](../sgm-4-facts-analytics/batch-b3-expectations.md)，不将旧勾选视为新生命周期已经通过。
 
 ## 7 不变量和属性测试
 

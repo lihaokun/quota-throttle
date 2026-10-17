@@ -332,7 +332,7 @@ C-1 不对未 managed 的目录成员写自动目标，不通过周期操作增�
 
 ## 第四子计划 B3 查询与补归属方案
 
-[B3 细化](subplans/sgm-4-facts-analytics-b3.md)已形成待确认方案，尚未实现。继续复用同一应用库的 v5 事实与分钟联合投影；不增加表、写者、采集器或公开 HTTP 接口。字段与值域见 B3 §3–4，事前验收见 [B3 expectations](../../audits/sgm-4-facts-analytics/batch-b3-expectations.md)。
+[B3 细化](subplans/sgm-4-facts-analytics-b3.md)已确认，第一小步内存查询计算已完成[本地验收](../../audits/sgm-4-facts-analytics/batch-b3-query-audit.md)；只读数据库组合和补归属仍未实现。继续复用同一应用库的 v5 事实与分钟联合投影；不增加表、写者、采集器或公开 HTTP 接口。字段与值域见 B3 §3–4，事前验收见 [B3 expectations](../../audits/sgm-4-facts-analytics/batch-b3-expectations.md)。
 
 | 共享类型/责任 | 所有者和消费者 | 约束 |
 | --- | --- | --- |
