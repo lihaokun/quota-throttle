@@ -359,6 +359,8 @@ async fn collection_background_sleep_stop_restart_and_multiple_runners_preserve_
     for cancel in [false, true] {
         let (dir, worker) = setup(false);
         let io = ModelIo::new((1..=250).map(|id| row(id, 800)).collect());
+        // 首次取页时新增一行：后续页的 total 变化真实触发告警。
+        io.moves.lock().unwrap().push_back((0, row(251, 800)));
         let (tx, rx) = watch::channel(false);
         let mut run = Box::pin(worker.run_collection_with(&io, rx));
         std::future::poll_fn(|cx| {
@@ -371,11 +373,15 @@ async fn collection_background_sleep_stop_restart_and_multiple_runners_preserve_
             .scans
             .iter()
             .all(|p| p.next_page == 3 && p.phase == ScanPhase::Scanning));
+        let report = worker.collect_with(&io).await.unwrap();
+        assert_eq!(report.attempted, 0);
+        assert!(report.pagination_changed); // 同一生命周期的间隔内读报告仍保留告警。
         let (_tx2, rx2) = watch::channel(false);
         assert_eq!(
             worker.run_collection_with(&io, rx2).await.err(),
             Some(CollectionError::Busy)
         );
+        assert!(worker.collector.lock().await.pagination_changed); // 被拒绝的启动不能清告警。
         if cancel {
             drop(run);
         } else {
@@ -393,6 +399,7 @@ async fn collection_background_sleep_stop_restart_and_multiple_runners_preserve_
         })
         .await;
         assert_eq!(io.calls.lock().unwrap().len(), calls);
+        assert!(!worker.collector.lock().await.pagination_changed);
         tokio::time::advance(ROUND_INTERVAL).await;
         io.now.store(1100, Ordering::SeqCst);
         std::future::poll_fn(|cx| {
@@ -414,6 +421,7 @@ async fn collection_background_sleep_stop_restart_and_multiple_runners_preserve_
             vec![1, 1, 2, 2]
         );
         assert_eq!(persisted(&dir).len(), 200);
+        assert!(!worker.collect_with(&io).await.unwrap().pagination_changed);
         tx.send(true).unwrap();
         run.await.unwrap();
     }

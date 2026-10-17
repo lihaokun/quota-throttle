@@ -15,3 +15,15 @@
 | 已存窗口无法编码时整轮提前返回 | `[0,1)` 红例先复现；query 构造失败经同一诊断路径标该 lane InvalidPage，重读时钟后写入，不动原窗/事实，同轮继续另一方向。旧代码并非永久饿死另一方向，准确影响为反复增代次/缺人工重试状态 |
 
 CollectionError 显式复用安全 ManagementError，保留设计已要求的 kind/status/retry_after/delivery；不是新增自由文本错误载荷。测试使用私有 LogIo seam 控制等待和故障，生产适配没有测试布尔证据或后端注册机制。运行入口、业务策略、DDL 和生产认证均不改。
+
+## 2026-10-18 新生命周期告警清理
+
+基线 efd2eee。旧实现重启同一个 worker 的采集后台时只清两 lane 状态，遗漏 pagination_changed，因此旧告警一直保留。按 workflow §7 的局部遗漏修复路径，在成功取得单后台标记及采集锁后增加一行清零；普通轮次继续 OR 累积，Busy和启动前shutdown不清当前告警。它不参与覆盖、去重或路由，修复不清事实、持久检查点或 next_due。
+
+在原停止/重启测试中由 ModelIo 首次取页插入一条日志，真实制造跨页total变化；验证间隔内报告和被拒绝的重复启动保留告警，新后台及之后稳定扫描不带旧告警。正常停止和取消两条轨迹都保留原事实数200、窗口不变、新代次从第一页重扫、间隔内无新增请求的断言。旧代码红例在新后台启动后的清零断言失败；修复后同一测试通过（0.56秒）。
+
+同批将 migrate_v5 读取 catalog_meta 的查询补上 WHERE singleton=1；单例约束已保证等价，未改迁移顺序、DDL、实例身份或备份。A 的两维边际补测见[A增量记录](decisions.md)。
+
+相关模块默认并发回归：A 18 passed/1性能ignored（0.38秒），采集20 passed（121.87秒），迁移17 passed/3性能ignored（80.54秒）；合计55项普通测试通过，包含原PBT和假HTTP组合。clippy all-targets通过（15.21秒），仅6项既有警告。生产差异复核仅告警赋值和等价SQL条件；B1、解析器、策略、DDL、NewAPI和运行入口均未变更。
+
+日志：`/tmp/quota-throttle-smallfix-{red,green,a,b2,migration,clippy}.log`。本轮是局部修复的相关模块验收，不冒充重新执行全仓库release/性能或独立子计划审核。未读取运行配置/数据库/密钥，未重启、部署或推送。

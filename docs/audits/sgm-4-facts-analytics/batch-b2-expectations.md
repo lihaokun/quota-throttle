@@ -62,6 +62,7 @@ restart_scan 只改变当前 checkpoint 的 generation/page/phase/observed/fault
 
 - begin_scan 重放不改原语义；restart_scan 只接受完整匹配 Scanning ticket，生成新代次。Stalled 仍同窗 begin_scan。
 - 进程/采集器重开及取消丢弃在途页后从第一页重扫；跨普通轮次可按已接纳代次续页。已经入账的页保留。
+- 同 worker 启动新后台生命周期时清 pagination_changed，同生命周期内保留累积告警；Busy/启动前shutdown不清告警。仅诊断变化，不修改持久数据、覆盖判断、路由或 next_due。
 - 两条方向交错，next_lane 在尝试前改变，慢/失败方向不总占首位；每 lane 每轮至多开一个新窗口。
 - 单飞/commands→短 Core 的锁序，所有 await 无 Core/协调 lane；写桥接保留精确 LedgerError，poisoned 不重新打开发送 gate。
 - 每页单独事务，轮次可以部分成功；ACK 丢失、旧票据和未知提交不能通过重复加算修复。

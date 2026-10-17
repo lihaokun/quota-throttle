@@ -355,10 +355,11 @@ impl CatalogStore {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let instance: String =
-            tx.query_row("SELECT catalog_instance_id FROM catalog_meta", [], |r| {
-                r.get(0)
-            })?;
+        let instance: String = tx.query_row(
+            "SELECT catalog_instance_id FROM catalog_meta WHERE singleton=1",
+            [],
+            |r| r.get(0),
+        )?;
         tx.execute("DROP TABLE catalog_meta", [])?;
         tx.execute_batch(SCHEMA_V6)?;
         tx.execute("INSERT INTO catalog_meta VALUES(1,6,?1)", [instance])?;

@@ -192,6 +192,8 @@ proptest! {
         prop_assert_eq!(marginal(&actual,|k|k.source_id),expected.total);
         prop_assert_eq!(marginal(&actual,|k|k.group_id),expected.total);
         prop_assert_eq!(marginal(&actual,|k|k.token_id),expected.total);
+        prop_assert_eq!(marginal(&actual,|k|k.channel_id),expected.total);
+        prop_assert_eq!(marginal(&actual,|k|k.native_group.clone()),expected.total);
     }
     #[test]
     fn p5_disjoint_batches_merge_without_losing_dimensions(input in specs(), chunk in 1usize..16) {

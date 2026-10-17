@@ -164,6 +164,8 @@ B2 实现一个全局日志采集器，将 NewAPI 管理日志经 A 校验、B1 
 
 实现使用一个 worker 内 `collection_running` 原子标记及 RAII guard 保证后台生命周期唯一，第二个后台入口立即 Busy；显式单轮仍走原采集锁/间隔。新后台生命周期先使两 lane 的内存 accepted/previous 失效并要求重新预检，保留持久窗口、已提交事实和 next_due。这同时覆盖“在两轮之间休眠时停止，再用同一 worker 启动”的情况。dry_run/no-op 的后台也必须等待至少 10 秒，不能因旧 next_due 已过而空转。
 
+新后台成功取得单后台标记及采集锁后，同时清 `pagination_changed`；同一生命周期仍以 OR 累积，普通轮次或间隔内报告不清。重复启动返回 Busy 或启动前已 shutdown 时不改变当前告警。这里只重置非持久诊断，不清事实、检查点或 next_due；false 仅表示新生命周期尚未观察到变化，不表示上游分页稳定。
+
 内部 LogIo 只为控制故障点分离异步读取，生产唯一适配始终使用同一个 NewApiClient 和生命周期内固定的 NewApiProcess；不提供公开 backend 注册或动态改接数据集。测试替身不作为真实能力证据，原生隔离测试另走真正 producer→页请求→worker→B1。小型 helper 沿既有契约拆分：report/ledger_state 只短读，log_lease 只缓存当前进程短期证据，failed_page 保持明确错误与独立诊断事务；它们均不改业务状态。
 
 正确性：轮次不 spawn 脱离生命周期的采集任务；shutdown 丢弃当前 future 后由其 guard 释放资源，重启只读持久状态。60 秒 timeout_at 覆盖轮次全部 await（含页前后检查），但不冒充同步提交硬中断；next_due 与单飞共同防重叠和补 tick 风暴。

@@ -544,6 +544,7 @@ impl ReconcileWorker {
                 .map_err(|_| CollectionError::Busy)?;
             session.lanes = Default::default();
             session.force_probe = true;
+            session.pagination_changed = false;
         }
         loop {
             if *shutdown.borrow() {
