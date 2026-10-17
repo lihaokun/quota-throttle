@@ -4,6 +4,8 @@
 
 ## 当前完成与未完成
 
+2026-10-17 最新授权：用户要求连续完成剩余开发，不再逐小步等待确认；仍按 workflow 逐步实现、测试和独立审核，且不接管/重启/部署现有服务。本轮已完成 B3 后两步及整批本地验收。火山规则 1 的可靠请求结束证据仍有单独范围决策：已向用户询问是否允许 NewAPI 最小结构化结束事件补丁，答复前不改后端或放宽已确认规则；该扩展不从“继续开发”自动推定授权。
+
 - 已有：[需求方案](../../research/source-groups-token-management-research.md)、[实现前审核](review.md)、已确认架构、可复现的隔离 NewAPI 契约探针。
 - 已完成：[sgm-1](subplans/sgm-1-catalog-store.md) 的独立目录库及导入函数、[schema](schemas/catalog-snapshot.schema.json)、[审核与复审记录](../../audits/sgm-1-catalog-store/audit-report.md)。复审后的局部修复为 85 项测试及 release 构建通过，四种定向变异被 PBT 检出；不接管 CLI/运行服务。
 - 已验证：58 个既有 Rust 测试通过；11 项原生 NewAPI 契约检查通过，隔离进程退出。
@@ -19,7 +21,7 @@
 - 2026-10-16 [性能门禁修复](../../fixes/sgm-fix-parallel-performance-gates.md)的历史记录：保留原功能/PBT，六个原预算转为四个串行release入口并由CI显式执行。修改前复现359/1/1，修改后release为360/0/5，独立性能4项、入口回归8项及负向门禁通过，静态独审通过；debug为359/1/5，额外暴露导入后重开AlreadyOpen。失败种子保留，当时只验证锁继承机制并准备[目录锁修正方案](../../fixes/catalog-fix-inherited-lock-release.md)，尚未改锁实现，因此当时不能称整体CI全绿。
 - 2026-10-17 已按用户确认关闭上述[目录锁问题](../../fixes/catalog-fix-inherited-lock-release.md)：仅成功持锁后构造内部guard，在SQLite连接关闭后显式unlock；不改DDL/API/调度。新增8个测试入口，含128-case所有权PBT、实际子进程及关闭顺序回调；旧实现红例和两个错误变异都被捕获。最终本地默认debug/release各368 passed/0 failed/5 ignored，独立性能4项、入口回归8项、clippy/release build和独审通过；旧失败记录保留，远端CI未触发。来源共享功能仍未部署，下一步是已明确边界的SGM-4 A实现。
 - 2026-10-17 SGM-4 A 本地验收完成：A1–A5 白名单解析、批内去重、历史归属、UTC 分钟联合用量和安全加算通过 18 项普通测试（6 项各 128 cases PBT）、10 项变异、机械检查及独立静态审核，3 项审核反馈已关闭。初次 debug 的 385 passed/1 failed/6 ignored 保留在[审核记录](../../audits/sgm-4-facts-analytics/audit-report.md)；用户确认后[单独修正旧认证测试同步](../../fixes/newapi-fix-auth-waiter-test-sync.md)，30 次复测和两项变异通过，未改生产认证。最终默认 debug/release 各 386 passed/0 failed/6 ignored，独立性能 5 项通过（账本最大批次 39 ms），clippy/release build 通过。A 没有接采集或运行服务；下一步是 B 持久化账本与统一采集的细化，确认后才实施。
-- 未完成：sgm-2 第三批及整体验收；sgm-3 C-2/C-3 细化与实现；sgm-4 B3/C 细化与实现；sgm-5 至 sgm-7 的细化/expectations 与实现，包括采集/调度运行接线、访问 key 管理、三页面 UI、生产迁移与发布。
+- 未完成：sgm-2 第三批整体验收与运行接线；sgm-3 C-2/C-3 细化与实现；sgm-4 C 细化与实现；sgm-5 至 sgm-7 的细化/expectations 与实现，包括采集/调度运行接线、访问 key 管理、三页面 UI、生产迁移与发布。
 - 2026-10-17 B1 本地验收完成，基于 `9595837` 实现应用库 v5 的事务入账；[B 总体细化](subplans/sgm-4-facts-analytics-b.md)、[事前清单](../../audits/sgm-4-facts-analytics/batch-b1-expectations.md)和[B1 审核](../../audits/sgm-4-facts-analytics/batch-b1-audit.md)分别保存契约及证据。新增 24 项入口（21 普通/3 性能），6 项各 128 cases PBT、8 项变异、机械及独审通过；默认 debug/release 各 407 passed/0 failed/9 ignored，8 项串行性能、clippy/release build 通过。复用一个应用库/单写者，规范事实、联合投影和检查点同事务；不增加数据库身份登记或自动跨库合并。下一步 B2 统一采集及 B3 查询/补归属仍须分别细化，未接运行服务。
 - 2026-10-17 B2 设计阶段记录（后续实现进度见下一项）：[统一采集细化](subplans/sgm-4-facts-analytics-b2.md)及[事前十节清单](../../audits/sgm-4-facts-analytics/batch-b2-expectations.md)形成待确认稿，保留 v5/两条检查点，显式同窗重扫、近期回看与全历史循环补采、共享预算/单飞/恢复均有函数契约。固定源码复核发现本地启动仍需确认日志 SQLite 分支，拟用显式 local 启动值作保守只读证据，不新增身份登记。当时尚待确认并执行 B2.0 隔离分页/启动条件探针，未实现采集器或修改任何运行配置。
 - 2026-10-17 B2 已完成 [统一采集细化](subplans/sgm-4-facts-analytics-b2.md)范围内实现和[本地验收](../../audits/sgm-4-facts-analytics/batch-b2-audit.md)：40 项新增入口（38 普通/2 性能）、6 组各 128 cases PBT、15 种变异、机械与三步独审通过；默认 debug/release 各 445 passed/0 failed/11 ignored，10 项独立性能、真实原生组合、clippy/release build 通过。保留 v5/一个写者/共享管理预算，无新增任务表、数据库登记或生产配置修改。下一步是 B3 查询与补归属细化；B2 未接 CLI/面板，不能视为来源分组功能已部署。
@@ -28,6 +30,8 @@
 - 2026-10-17 B3 [查询与补归属细化](subplans/sgm-4-facts-analytics-b3.md)和[事前十节](../../audits/sgm-4-facts-analytics/batch-b3-expectations.md)已形成待确认方案：同应用库 WAL 一致读、秒级边缘补算、完整有界模型/token/时间分项、查询取消与目录 guard 生命周期、小批原子补归属及重扫恢复。仅文档，未改 Rust/DDL/依赖或运行服务；确认后按查询语义、只读组合、补归属三个小步实施，不将设计审查视为实现验收。
 
 - 2026-10-17 用户确认后，B3 第一小步（B3.1–B3.2）[查询计算验收](../../audits/sgm-4-facts-analytics/batch-b3-query-audit.md)完成：14 项普通测试、4 组各 128 cases PBT、10 项变异/独审通过；debug/release 各 459 passed/0 failed/12 ignored，11 项独立性能通过，新最大输出 118 ms。只新增 ledger/analytics 与测试/门禁，没有改 catalog、worker、DDL、依赖或现行服务。下一步是 B3.3–B3.4 同库只读快照与取消，补归属、页面和发布仍待后续。
+
+- 2026-10-17 B3.3–B3.7 及整个 B3 [本地验收](../../audits/sgm-4-facts-analytics/batch-b3-completion-audit.md)完成：新增 37 普通/2 性能/1 趋势入口，5 组各 128 cases PBT，16 种变异和独审通过；debug/release 各 496 passed/0 failed/15 ignored，13 项独立性能通过。100k 总体/token 查询为 120/4 ms，256 行/10000 映射补正 28 ms；200k/1m 一致快照查询含控制写 248/1143 ms，读结束后 WAL 回收验证通过。B3 合计 51 普通入口、9 组 PBT 和 26 种变异；无 DDL/依赖/GLM/火山策略变更，不接现行 CLI/面板。源码分三笔本地提交，未推送/合并/部署；后续可靠终态所需后端补丁范围仍待用户决定，访问 key 和三页面并未实现。
 
 复审修正已完成：健康会话显式 retry 多余登录已在 `3b1bbae` 修复，[F1 记录](../../fixes/newapi-fix-healthy-auth-retry.md)包含红绿回归、11 项新增测试（含 128 cases PBT）和 4 项变异；全量 288 passed/1 ignored，release 通过。P1 已补[迁移归属及只读增量核对](../../audits/sgm-1-catalog-store/migration-scope-review.md)，保留历史审核证据。SGM-3 B 已按用户确认完成；下一批仍先细化再确认，不以可选代码清理扩大范围，不改运行服务。
 
