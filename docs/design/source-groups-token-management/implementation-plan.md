@@ -25,6 +25,8 @@
 - 2026-10-17 B2 已完成 [统一采集细化](subplans/sgm-4-facts-analytics-b2.md)范围内实现和[本地验收](../../audits/sgm-4-facts-analytics/batch-b2-audit.md)：40 项新增入口（38 普通/2 性能）、6 组各 128 cases PBT、15 种变异、机械与三步独审通过；默认 debug/release 各 445 passed/0 failed/11 ignored，10 项独立性能、真实原生组合、clippy/release build 通过。保留 v5/一个写者/共享管理预算，无新增任务表、数据库登记或生产配置修改。下一步是 B3 查询与补归属细化；B2 未接 CLI/面板，不能视为来源分组功能已部署。
 - 不开展：逐访问 key 上游绑定、火山临期、积分换算、硬 token 限额、修改 GLM 算法、定制 NewAPI 推理路由。
 
+- 2026-10-17 B3 [查询与补归属细化](subplans/sgm-4-facts-analytics-b3.md)和[事前十节](../../audits/sgm-4-facts-analytics/batch-b3-expectations.md)已形成待确认方案：同应用库 WAL 一致读、秒级边缘补算、完整有界模型/token/时间分项、查询取消与目录 guard 生命周期、小批原子补归属及重扫恢复。仅文档，未改 Rust/DDL/依赖或运行服务；确认后按查询语义、只读组合、补归属三个小步实施，不将设计审查视为实现验收。
+
 复审修正已完成：健康会话显式 retry 多余登录已在 `3b1bbae` 修复，[F1 记录](../../fixes/newapi-fix-healthy-auth-retry.md)包含红绿回归、11 项新增测试（含 128 cases PBT）和 4 项变异；全量 288 passed/1 ignored，release 通过。P1 已补[迁移归属及只读增量核对](../../audits/sgm-1-catalog-store/migration-scope-review.md)，保留历史审核证据。SGM-3 B 已按用户确认完成；下一批仍先细化再确认，不以可选代码清理扩大范围，不改运行服务。
 
 ## 分步实施顺序

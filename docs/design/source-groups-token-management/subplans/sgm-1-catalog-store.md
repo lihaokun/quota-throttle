@@ -157,6 +157,8 @@ Store 持有唯一 SQLite Connection 和私有锁文件句柄，写方法要求 
 
 句柄Drop依字段声明顺序先关闭连接，再销毁CatalogLock显式unlock，不删除锁文件，也不在CatalogStore::drop提前解锁。只有try_lock成功才构造持锁对象；构造前/后的错误退出均保持数据库资源先于锁释放。解锁失败时析构不panic，File仍关闭，后续open仍按OS结果判断。没有PID存活登记、延时重试或放宽AlreadyOpen。详见[锁生命周期修复](../../../fixes/catalog-fix-inherited-lock-release.md)。
 
+B3 待确认增量：为同一应用库的独立只读查询，拟让 Store 与只读 target/连接共享 `Arc<CatalogLock>`，最后一个数据库使用者关闭后才显式 unlock；不复制 CatalogLock/File 来另造锁所有者，不增加写连接。Store 已关闭但真正读任务尚在时仍拒绝重开，只有裸 File 副本存活时则保持原修复行为。完整生命周期与回归要求见 [B3 §5–7](sgm-4-facts-analytics-b3.md)；本段是后续设计，不改写上述既有验收结果。
+
 ### 5.4 create_source 和 create_group
 
 签名：create_source(&mut self, draft: SourceDraft) -> Result<SourceView>；create_group(&mut self, draft: GroupDraft) -> Result<GroupView>。

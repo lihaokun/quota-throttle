@@ -105,3 +105,11 @@ B1 随后已完成本地验收；[B2 统一采集细化](../design/source-groups
 ## 2026-10-17 B2 隔离验证补记
 
 上述启动门禁及分页假设随后已在固定二进制的临时实例中验证，B2 已完成本地实现、测试和独立契约审核。冲突 `.env`、多页/时间端点、10 万/20 万条分页趋势，以及真实 producer→分页→worker→B1 组合的结果见 [B2 审核记录](../audits/sgm-4-facts-analytics/batch-b2-audit.md)。这补齐了前述待验证项，不改变无快照完整性证明、无可靠纯失败终态及不一致换库的边界；没有读取实际服务环境或改动部署。
+
+## 2026-10-17 B3 查询基础核对
+
+由 B3 引入：现有 CatalogStore 已使用 WAL，v5 有分钟时间索引、事实秒级时间索引和原始身份主键。B3 可在同一个应用库上开只读连接，在单个读事务内同时得到状态、总计、分模型与 per-token 统计；不需要另建账本或逐 key 访问管理 API。WAL 的读快照允许写连接继续提交，但长读者仍有资源/checkpoint 成本，因此方案限制并发、扫描和存活时间。[SQLite 隔离](https://www.sqlite.org/isolation.html)
+
+本地锁定 rusqlite 0.40.2 的中断句柄不要求新增 feature；Tokio 1.52.3 的本地源码也明确已开始的 spawn_blocking 不会因 abort 停止。取消须结合标志、有限 SQL 页和真实任务生命周期，不能把超时返回当作后台已经退出。[rusqlite 接口](https://docs.rs/rusqlite/0.40.2/rusqlite/struct.Connection.html#method.get_interrupt_handle)、[SQLite 中断边界](https://www.sqlite.org/c3ref/interrupt.html)
+
+补归属可复用 A3 和 B1 单元增量，在同一事务撤旧/加新；按冻结 ID 上界分页，未知项也推进本遍、下一遍重扫，不需要新任务表。以上为源码/契约核对和 [B3 方案](../design/source-groups-token-management/subplans/sgm-4-facts-analytics-b3.md)，不是查询性能或并发测试已通过的声明。

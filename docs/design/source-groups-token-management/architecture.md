@@ -329,3 +329,17 @@ C-1 不对未 managed 的目录成员写自动目标，不通过周期操作增�
 | restart_scan | catalog → 采集器 | 当前完整票据匹配后同窗新代次第一页，事实/投影不变；不改变 begin_scan 重放 |
 
 近期与历史复用现有两个 checkpoint；历史从保存起点全窗重扫，不增加任务表。SQL_DSN/LOG_SQL_DSN 显式 local 的已确认启动前提仅用于核验日志 SQLite 分支，不是数据集身份凭证。若当前服务缺少可验证条件，B2 只报告；设置启动环境及任何重启都留给获得授权后的 SGM-7。
+
+## 第四子计划 B3 查询与补归属方案
+
+[B3 细化](subplans/sgm-4-facts-analytics-b3.md)已形成待确认方案，尚未实现。继续复用同一应用库的 v5 事实与分钟联合投影；不增加表、写者、采集器或公开 HTTP 接口。字段与值域见 B3 §3–4，事前验收见 [B3 expectations](../../audits/sgm-4-facts-analytics/batch-b3-expectations.md)。
+
+| 共享类型/责任 | 所有者和消费者 | 约束 |
+| --- | --- | --- |
+| UsageQuery / UsageFilter / UsageGrain | ledger/analytics 定义，catalog/worker 消费 | 显式半开区间/固定偏移、Hour/Day、source/group/token/model 的 Any/Unknown/Exact；不按名称认领身份 |
+| UsageSnapshot / UsageReport / UsageBucket | analytics/catalog → worker → 后续状态投影 | 同一 LedgerState/revision、总计/模型/token/桶模型分项；未初始化 usage=None，全部是已观测口径，不公开原始事实 |
+| AnalyticsError | 查询/补正入口 → 内部调用方 | Ledger/Control 及固定输入、容量、溢出、取消、超时、忙错误；无标签/路径/正文 |
+| AttributionCursor / Batch / Report | catalog → worker 私有补正进度 | 冻结事实 ID 上界，每批≤256，只有未知归属可细化；原生字段/总体 token/检查点不变，结束不代表已无未知 |
+| 只读连接与目录锁 | catalog/worker | 同应用库 WAL 读事务，不取长 Core；Store/读任务共享原持锁 guard，最后连接退出后显式解锁；只读不是另一个写者 |
+
+查询一次返回完整有界结果，不以截断 Top-N 或跨请求可变分页冒充同快照总计。补归属经单写者原子撤旧/加新/改事实，内存游标丢失可重扫，无新增任务表。查询和补正都为显式内部入口，运行调度与面板接线仍属后续小步。
