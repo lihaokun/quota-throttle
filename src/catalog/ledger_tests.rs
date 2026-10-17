@@ -6,6 +6,8 @@ use std::time::{Duration, Instant};
 
 #[path = "ledger_properties.rs"]
 mod properties;
+#[path = "ledger_scan_tests.rs"]
+mod scans;
 
 fn error_is<T>(r: LedgerResult<T>, expected: LedgerError) {
     assert_eq!(r.err(), Some(expected));

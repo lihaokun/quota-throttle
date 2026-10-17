@@ -249,6 +249,36 @@ impl CatalogStore {
         commit(tx, &mut self.poisoned)?;
         Ok(ticket)
     }
+    pub(crate) fn restart_scan(
+        &mut self,
+        ticket: &ScanTicket,
+        now: i64,
+    ) -> LedgerResult<ScanTicket> {
+        // Step B2.3: 完整验票后同窗新代次，不改原事实、投影或 begin_scan 重放语义。
+        self.usable()?;
+        check(safe(now))?;
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let s = initialized(&tx)?;
+        let mut p = matched(&tx, ticket)?;
+        check(
+            now >= p.window.ok_or(LedgerError::InvalidCheckpoint)?.to
+                && p.last_observed_at.is_none_or(|at| now >= at),
+        )?;
+        p.generation = increment(p.generation)?;
+        p.next_page = 1;
+        p.last_observed_at = None;
+        p.fault = None;
+        save_progress(&tx, &p)?;
+        bump(&tx, s.revision)?;
+        let next = ScanTicket {
+            instance: instance(&tx)?,
+            progress: p,
+        };
+        commit(tx, &mut self.poisoned)?;
+        Ok(next)
+    }
     pub(crate) fn load_scan_ticket(&self, lane: ScanLane) -> LedgerResult<Option<ScanTicket>> {
         self.usable()?;
         let tx = self.conn.unchecked_transaction()?;
