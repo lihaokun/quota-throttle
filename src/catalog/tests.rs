@@ -18,10 +18,13 @@ mod ledger;
 mod observed_publication;
 #[path = "policy_tests.rs"]
 mod policy;
+#[path = "policy_command_tests.rs"]
+mod policy_commands;
 
 const DROP_LEDGER_V5: &str = "DROP TABLE ledger_minute_usage; DROP TABLE ledger_facts; DROP TABLE ledger_checkpoints; DROP TABLE ledger_state;";
 const DROP_OBSERVED_V6: &str = "DROP TABLE IF EXISTS volcano_observation_queue; DROP TABLE IF EXISTS volcano_request_observations; DROP TABLE IF EXISTS volcano_period_history; DROP INDEX IF EXISTS ledger_cell_source_time; DROP INDEX IF EXISTS ledger_fact_source_usage; DROP INDEX IF EXISTS ledger_fact_source_request;";
 fn drop_ledger_for_legacy(conn: &Connection) {
+    replace_control_operations(conn, SCHEMA_V2).unwrap();
     conn.execute_batch(DROP_OBSERVED_V6).unwrap();
     conn.execute_batch(DROP_LEDGER_V5).unwrap();
 }

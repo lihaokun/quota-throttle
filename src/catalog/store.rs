@@ -16,6 +16,7 @@ const SCHEMA_V3: &str = include_str!("schema_v3.sql");
 const SCHEMA_V4: &str = include_str!("schema_v4.sql");
 const SCHEMA_V5: &str = include_str!("schema_v5.sql");
 const SCHEMA_V6: &str = include_str!("schema_v6.sql");
+const SCHEMA_V7: &str = include_str!("schema_v7.sql");
 pub(super) const SOURCE_COLUMNS: &str =
     "source_id,kind,name,note,manual_paused,retired_at,config_revision";
 pub(super) const GROUP_COLUMNS: &str = "group_id,newapi_group,name,kind,revision,ready";
@@ -224,6 +225,16 @@ impl CatalogStore {
             }
             store.migrate_v5()?;
         }
+        if version <= 6 {
+            if !new_file && version == 6 {
+                let suffix: String =
+                    store
+                        .conn
+                        .query_row("SELECT lower(hex(randomblob(16)))", [], |r| r.get(0))?;
+                store.backup_to(&parent.join(format!("catalog-v6-before-v7-{suffix}.sqlite3")))?;
+            }
+            store.migrate_v6()?;
+        }
         let conn = &store.conn;
         // Step P5: 配置回读及数据检查完成才发布 Store。
         conn.pragma_update(None, "journal_mode", "WAL")?;
@@ -366,6 +377,31 @@ impl CatalogStore {
         tx.pragma_update(None, "user_version", 6)?;
         verify_schema(&tx, 6)?;
         super::ledger::observed::verify_observed(&tx)?;
+        commit(tx, &mut self.poisoned)
+    }
+
+    fn migrate_v6(&mut self) -> Result<()> {
+        // Step C2.0: 父子表记录与meta同事务，外键始终开启，不重写冻结DDL。
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let instance: String = tx.query_row(
+            "SELECT catalog_instance_id FROM catalog_meta WHERE singleton=1",
+            [],
+            |r| r.get(0),
+        )?;
+        replace_control_operations(&tx, SCHEMA_V7)?;
+        tx.execute("DROP TABLE catalog_meta", [])?;
+        let meta = SCHEMA_V7
+            .split(';')
+            .next()
+            .ok_or_else(|| error(ErrorKind::Storage))?;
+        tx.execute_batch(meta)?;
+        tx.execute("INSERT INTO catalog_meta VALUES(1,7,?1)", [instance])?;
+        tx.pragma_update(None, "user_version", 7)?;
+        verify_schema(&tx, 7)?;
+        verify_core_data(&tx)?;
+        super::control::verify_control(&tx)?;
         commit(tx, &mut self.poisoned)
     }
 
@@ -726,6 +762,39 @@ fn map_probe_error(err: rusqlite::Error) -> CatalogError {
     }
 }
 
+fn replace_control_operations(conn: &Connection, schema: &'static str) -> Result<()> {
+    require(!conn.is_autocommit(), ErrorKind::Storage)?;
+    let extra:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE tbl_name IN ('control_operations','operation_targets') AND (type='trigger' OR (type='index' AND sql IS NOT NULL AND name!='operation_targets_member'))) OR EXISTS(SELECT 1 FROM sqlite_schema s JOIN pragma_foreign_key_list(s.name) f WHERE s.type='table' AND f.\"table\" IN ('control_operations','operation_targets') AND s.name!='operation_targets')",[],|r|r.get(0))?;
+    require(!extra, ErrorKind::CorruptData)?;
+    conn.execute_batch("CREATE TABLE _qt_c2_operations AS SELECT * FROM control_operations; CREATE TABLE _qt_c2_targets AS SELECT * FROM operation_targets; DROP TABLE operation_targets; DROP TABLE control_operations;")?;
+    let parent = schema
+        .split(';')
+        .map(str::trim)
+        .find(|s| s.starts_with("CREATE TABLE control_operations ("))
+        .ok_or_else(|| error(ErrorKind::Storage))?;
+    conn.execute_batch(parent)?;
+    conn.execute(
+        "INSERT INTO control_operations SELECT * FROM _qt_c2_operations",
+        [],
+    )?;
+    for sql in SCHEMA_V2.split(';').map(str::trim).filter(|s| {
+        s.starts_with("CREATE TABLE operation_targets (")
+            || s.starts_with("CREATE INDEX operation_targets_member ")
+    }) {
+        conn.execute_batch(sql)?;
+    }
+    conn.execute(
+        "INSERT INTO operation_targets SELECT * FROM _qt_c2_targets",
+        [],
+    )?;
+    conn.execute_batch("DROP TABLE _qt_c2_targets; DROP TABLE _qt_c2_operations;")?;
+    let violations: i64 =
+        conn.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| {
+            r.get(0)
+        })?;
+    require(violations == 0, ErrorKind::CorruptData)
+}
+
 fn verify_schema(conn: &Connection, expected_version: i64) -> Result<()> {
     let version: i64 = conn
         .query_row(
@@ -743,9 +812,10 @@ fn verify_schema(conn: &Connection, expected_version: i64) -> Result<()> {
             !(s.is_empty() || expected_version >= 2 && s.starts_with("CREATE TABLE catalog_meta"))
         })
         .chain(SCHEMA_V2.split(';').map(str::trim).filter(|s| {
-            expected_version >= 2
-                && !s.is_empty()
-                && !(expected_version >= 3 && s.starts_with("CREATE TABLE catalog_meta"))
+            let included = expected_version >= 2 && !s.is_empty();
+            let superseded = (expected_version >= 3 && s.starts_with("CREATE TABLE catalog_meta"))
+                || (expected_version >= 7 && s.starts_with("CREATE TABLE control_operations"));
+            included && !superseded
         }))
         .chain(SCHEMA_V3.split(';').map(str::trim).filter(|s| {
             expected_version >= 3
@@ -762,11 +832,16 @@ fn verify_schema(conn: &Connection, expected_version: i64) -> Result<()> {
                 && !s.is_empty()
                 && !(expected_version >= 6 && s.starts_with("CREATE TABLE catalog_meta"))
         }))
+        .chain(SCHEMA_V6.split(';').map(str::trim).filter(|s| {
+            expected_version >= 6
+                && !s.is_empty()
+                && !(expected_version >= 7 && s.starts_with("CREATE TABLE catalog_meta"))
+        }))
         .chain(
-            SCHEMA_V6
+            SCHEMA_V7
                 .split(';')
                 .map(str::trim)
-                .filter(|s| expected_version >= 6 && !s.is_empty()),
+                .filter(|s| expected_version >= 7 && !s.is_empty()),
         );
     for statement in statements {
         let tail = statement

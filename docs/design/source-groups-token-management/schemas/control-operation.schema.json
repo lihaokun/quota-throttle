@@ -1,14 +1,14 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:quota-throttle:control-operation:1",
-  "title": "Control operation view version 1",
+  "$id": "urn:quota-throttle:control-operation:2",
+  "title": "Control operation view version 2",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "operation_id", "kind", "target_type", "target_id", "phase", "target_revision", "total_targets", "confirmed_targets", "error_code", "updated_at"],
   "properties": {
-    "schema_version": {"const": 1},
+    "schema_version": {"const": 2},
     "operation_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{15,63}$"},
-    "kind": {"enum": ["ensure_member", "set_source_paused", "retire_member", "retire_source", "set_group_priorities", "sync_source_models"]},
+    "kind": {"enum": ["ensure_member", "set_source_paused", "retire_member", "retire_source", "set_group_priorities", "sync_source_models", "set_group_pin", "clear_volcano_error", "update_volcano_policy", "discover_source_models"]},
     "target_type": {"enum": ["source", "group", "membership"]},
     "target_id": {"type": "string", "pattern": "^[1-9][0-9]{0,18}$"},
     "phase": {"enum": ["queued", "applying", "waiting", "partial", "unknown", "succeeded", "failed", "superseded"]},
@@ -24,12 +24,16 @@
       "then": {"properties": {"target_type": {"const": "membership"}}}
     },
     {
-      "if": {"properties": {"kind": {"enum": ["set_source_paused", "retire_source", "sync_source_models"]}}},
+      "if": {"properties": {"kind": {"enum": ["set_source_paused", "retire_source", "sync_source_models", "clear_volcano_error", "update_volcano_policy", "discover_source_models"]}}},
       "then": {"properties": {"target_type": {"const": "source"}}}
     },
     {
-      "if": {"properties": {"kind": {"const": "set_group_priorities"}}},
+      "if": {"properties": {"kind": {"enum": ["set_group_priorities", "set_group_pin"]}}},
       "then": {"properties": {"target_type": {"const": "group"}}}
+    },
+    {
+      "if": {"properties": {"kind": {"enum": ["set_group_pin", "clear_volcano_error", "update_volcano_policy"]}}},
+      "then": {"properties": {"phase": {"const": "succeeded"}, "total_targets": {"const": 0}, "confirmed_targets": {"const": 0}}}
     },
     {
       "if": {"properties": {"phase": {"const": "succeeded"}}},

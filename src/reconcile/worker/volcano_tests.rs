@@ -189,7 +189,7 @@ async fn observed_worker_real_reconcile_disables_shared_source_before_promotion(
     .await;
 }
 
-fn add_glm(f: &Fixture) -> MembershipId {
+pub(super) fn add_glm(f: &Fixture) -> MembershipId {
     let mut c = f.worker.core.lock().unwrap();
     let source = c
         .store

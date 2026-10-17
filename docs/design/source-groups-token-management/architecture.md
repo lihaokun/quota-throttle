@@ -2,7 +2,7 @@
 
 2026-10-17 最新决定：用户接受[观测型熔断](subplans/sgm-4-observed-breaker.md)，成功且有 token 活动的有效观测清零同源连续失败计数，包括已锁存时的计数，但不自动解除耗尽。无需修改 NewAPI；下文旧的“最终结果/可信终态”前提由该新细化的去重观测语义替代，不再阻塞独立的 key 管理/三页面开发。
 
-日期：2026-10-15，进度更新：2026-10-18。状态：架构已确认，sgm-1 已完成，sgm-2 的执行/恢复和本地托管预检已实现并分步验证，sgm-3 A/B 和 C-1 已完成验收；sgm-4 A、B1–B3 及 O1–O4 观测持久发布已完成本地验收。尚未接现行服务，C-2 管理动作、运行合流及 sgm-5 至 sgm-7 未完成。需求依据：[最新版方案](../../research/source-groups-token-management-research.md)。接口实证：[实现前审核](review.md)。架构确认不包含生产部署授权。
+日期：2026-10-15，进度更新：2026-10-18。状态：架构已确认，sgm-1 已完成，sgm-2 的执行/恢复和本地托管预检已实现并分步验证，sgm-3 A/B、C-1 和 C-2 内部管理层已完成验收；sgm-4 A、B1–B3 及 O1–O4 观测持久发布已完成本地验收。尚未接现行服务，运行合流及 sgm-5 至 sgm-7 未完成。需求依据：[最新版方案](../../research/source-groups-token-management-research.md)。接口实证：[实现前审核](review.md)。架构确认不包含生产部署授权。
 
 ## 目标与边界
 
@@ -47,7 +47,7 @@ sgm-1 已采用 rusqlite 0.40.2（bundled、backup），版本锁入 Cargo.lock�
 
 测试和开发使用独立 state_path；正式库路径在部署时确认，不覆盖生产 one-api.db。schema_version 标识兼容性，旧版本遇到更高 schema 需拒绝写入；备份需使用一致性备份方式，不能忽略 WAL。
 
-版本承接：SGM-1 定义 v1 目录；SGM-2 负责 v1→v2 控制意图、v2→v3 执行记录及打开时的恢复；SGM-3 B 追加 v4 来源/组策略状态；SGM-4 B1 追加 v5 事实、分钟联合用量、账本状态与采集检查点；[O4](subplans/sgm-4-observed-publication.md)追加 v6 待处理观测引用、请求相位、周期历史及来源查询索引。open 对合法旧应用库先完整校验/备份再逐版本升级，不修补损坏库，也不承诺整链原子回滚。来源/组/成员与各自必需侧表同事务落库；打开库保留未决执行恢复，但不按墙钟清火山额度、重放已有历史错误或自动启动采集。公开快照 wire=1 与数据库 v6 分开。旧迁移审核见[迁移增量核对](../../audits/sgm-1-catalog-store/migration-scope-review.md)，v6 新路径见[O4审核](../../audits/sgm-4-facts-analytics/observed-publication-audit.md)；不改变 SGM-7 的生产切换授权要求。
+版本承接：SGM-1 定义 v1 目录；SGM-2 负责 v1→v2 控制意图、v2→v3 执行记录及打开时的恢复；SGM-3 B 追加 v4 来源/组策略状态；SGM-4 B1 追加 v5 事实、分钟联合用量、账本状态与采集检查点；[O4](subplans/sgm-4-observed-publication.md)追加 v6 待处理观测引用、请求相位、周期历史及来源查询索引；[C2](subplans/sgm-3-source-policies-c2.md)的 v7 扩展原操作表约束，不新增长期表。open 对合法旧应用库先完整校验/备份再逐版本升级，不修补损坏库，也不承诺整链原子回滚。来源/组/成员与各自必需侧表同事务落库；打开库保留未决执行恢复，但不按墙钟清火山额度、重放已有历史错误或自动启动采集。目录快照 wire=1、OperationView wire=2 与数据库 v7 分开。旧迁移审核见[迁移增量核对](../../audits/sgm-1-catalog-store/migration-scope-review.md)，v6 路径见[O4审核](../../audits/sgm-4-facts-analytics/observed-publication-audit.md)，v7 见[C2审核](../../audits/sgm-3-source-policies/c2-audit.md)；不改变 SGM-7 的生产切换授权要求。
 
 ## 核心共享数据结构
 
@@ -93,7 +93,7 @@ sgm-1 已采用 rusqlite 0.40.2（bundled、backup），版本锁入 Cargo.lock�
 ### ControlOperation 与 TokenView
 
 - ControlOperation：operation_id、kind、target_id、expected_revision、payload_fingerprint、phase、已确认资源、错误、created_at/updated_at。
-- 同 operation_id 重放返回同一操作；载荷不同返回冲突。queued/applying/partial/unknown 不等于成功，超时也不等于未执行。
+- 同 operation_id 重放返回同一操作；载荷不同返回冲突。queued/applying/partial/unknown 不等于成功，超时也不等于未执行。C2新增局部设置kind的Succeeded/0 targets仅表示设置已保存；带远端targets的操作仍须完整回读。
 - TokenView：token_id、owner_scope、name、masked_key、explicit_group、effective_group、status、expires_at、限制；不带上游绑定。
 - 新 token 通过托管非管理员调用身份签发。既有管理员 token 可按原身份管理，但不宣称它们具备新 token 的强分组隔离。
 - 所有者：控制面/令牌管理；消费者：NewAPI 客户端及页面。
@@ -106,7 +106,7 @@ sgm-1 已采用 rusqlite 0.40.2（bundled、backup），版本锁入 Cargo.lock�
 | source_probe | 来源已配置正确 quota/model 鉴权 | 每源采集一次，多组复用；未知不变成 0，模型失败保留存量 | 智谱/目录只读请求，更新观测快照 |
 | glm_policy | 原阈值、组成员和同源 quota 快照 | 调用原决策规则，作用域仅当前组；相同输入结果等价 | 产生 priority 意图，不直接 HTTP |
 | volcano_policy | 事实归属/版本有效，时钟可用 | 共享三态、两个原因独立；源状态变化使受影响组重选 | 写运行状态与源级同步意图 |
-| reconciler | 持久操作意图、当前 revision | 全部对应渠道回读后才确认；不创建孤立活动副本 | NewAPI CRUD/status/priority 管理请求 |
+| reconciler | 带远端targets的持久操作意图、当前 revision | 全部对应渠道回读后才确认；不创建孤立活动副本；不把局部设置回执当渠道确认 | NewAPI CRUD/status/priority 管理请求 |
 | ledger/analytics | 管理消费/错误日志可读取 | 去重事实投影一致，保留 time/model/token/source 维度与缺口 | 预算内查询，事务更新账本/统计 |
 | token_service | 受托管签发身份、组就绪、管理员操作 | 一个 key 一个组；生成归属可对账；明文按需短时返回 | NewAPI token 管理，不保存明文副本 |
 | status/panel | 只读已发布快照或持久操作结果 | 三页面口径一致，期望与实际分开，火山无临期标签 | 本地 HTTP；写操作经统一控制入口 |
@@ -203,7 +203,7 @@ priority 是对支持该请求模型的候选表达偏好。原生单次重试�
 | I3 GLM 策略等价 | 原决策函数不改规则，适配层仅分组选集与源快照映射，旧 default 迁移保留 ID/顺序；golden 回归检查 |
 | I4 人工停用不会被重置/撤错绕过 | 状态由暂停优先表达式推导；reset/clear_error 不写 manual_paused；版本检查排除旧回执 |
 | I5 同一消费只计一次 | instance/log ID 唯一键与事务聚合；原始事实只有一次，多个投影视图不再相加 |
-| I6 未确认不显示已执行 | desired、observed、applied_revision 分开；只有目标回读齐全才能操作成功 |
+| I6 未确认不显示已执行 | desired、observed、applied_revision 分开；带远端targets的操作只有回读齐全才能成功。C2局部设置kind的Succeeded/0只能显示设置已保存，不能显示渠道已切换 |
 | I7 新签发普通 token 无隐式跨组或换模型 | token 指定组、关闭跨组重试、成员类型匹配；原生筛选组/model；本工具不设置 auto 或偷偷映射模型。管理员旧 token 的特殊权限不在此保证内 |
 | I8 凭据不经普通快照泄漏 | SecretRef 私有、token 列表打码、明文复制单独操作；文本渲染与日志脱敏 |
 
@@ -304,7 +304,7 @@ B 只实现有界纯函数和内部事务。原始日志去重、终态识别与
 | RoutingPermit 的成员绑定 | policy → planner/worker | 在原 source/group/priority/time 外补 membership_id/member_revision，防止旧目标许可复用 |
 | 配置/采集器所有权 | worker | 原 Config 生命周期只读、dry_run 双写门禁、SourceProbe 单飞和单 commands 槽；Core/目录事务不跨网络 await，取消不发布半轮 |
 
-C-1 不对未 managed 的目录成员写自动目标，不通过周期操作增加接管授权；稳定 no-op 不新建操作/提升版本，资格恢复只唤醒已有 NotReady 待办。公开管理动作和真实火山事实的完整组合分别留待 C-2/C-3 细化与 SGM-4 合流，生产接管/部署仍属 SGM-7。
+C-1 不对未 managed 的目录成员写自动目标，不通过周期操作增加接管授权；稳定 no-op 不新建操作/提升版本，资格恢复只唤醒已有 NotReady 待办。内部管理动作由 C-2 承接，火山观测事实与发布由 O4 承接；HTTP/运行组装及生产接管/部署仍属后续范围。
 
 ## 第四子计划 B1 共享接口与版本边界
 
@@ -357,4 +357,17 @@ C-1 不对未 managed 的目录成员写自动目标，不通过周期操作增�
 | GlmPolicyCommit.scope | catalog → worker | 新增本类全部历史/当前成员；只撤换本类许可，不延长另一类 lease，原 GLM 选择/授权规则不变 |
 | refresh_volcano_policy | worker 显式内部入口 | 共享命令槽/发布 fence；dry_run 只读；提交失败保留缓存，未知提交闭锁；不新增周期任务 |
 
-来源处理每轮16条队列，使用原 source/request 单向归并与 period/cutoff 隔离。当前周期绝对 token 从原分钟投影与精确秒边缘读取，最大1M行/10秒。近期消费页成功、队列已处理、预检和原成员资格共同限制正向许可；它们不证明上游日志绝对完整。按原组选择器独立首选，跨组共享来源耗尽。实现验收见[O4报告](../../audits/sgm-4-facts-analytics/observed-publication-audit.md)，运行 CLI、管理命令/页面和生产部署仍是后续范围。
+来源处理每轮16条队列，使用原 source/request 单向归并与 period/cutoff 隔离。当前周期绝对 token 从原分钟投影与精确秒边缘读取，最大1M行/10秒。近期消费页成功、队列已处理、预检和原成员资格共同限制正向许可；它们不证明上游日志绝对完整。按原组选择器独立首选，跨组共享来源耗尽。实现验收见[O4报告](../../audits/sgm-4-facts-analytics/observed-publication-audit.md)，管理命令按下节 C2 承接；运行 CLI、页面和生产部署仍是后续范围。
+
+## 第三子计划 C2 管理接口
+
+[C2细化](subplans/sgm-3-source-policies-c2.md)扩展原 ControlCommand，不增加 HTTP 入口或后台调度。新局部操作使用原 OperationView 的 Succeeded/0 表示设置保存，不能作为渠道已执行的证据。
+
+| 命令 | 作用域及约束 |
+| --- | --- |
+| SetGroupPin | GLM 组内固定/取消固定；校验组/策略版本及成员资格，不改变原95%释放规则 |
+| ClearVolcanoError | 同一火山来源清当前错误判定；先推进日格，不清当前周期 token 上限或人工暂停 |
+| UpdateVolcanoPolicy | 同源上限/重置设置；未初始化时只保存设置，不伪造零用量 |
+| DiscoverSourceModels | 按来源显式有界 GET，成功沿原模型目标/执行回读链同步所有组，失败保持存量模型 |
+
+局部命令、持久版本和周期历史同事务；新来源/组版本使旧许可失效，后续真实 C1/O4 刷新才能发布新许可。发现等待不持 Core，返回时重核来源版本；成功重放不再次 GET，取消不留半操作。私有发现材料不实现通用 Debug/Serialize。验收边界见[C2审核](../../audits/sgm-3-source-policies/c2-audit.md)；key 管理及三个页面不由这些内部入口替代。

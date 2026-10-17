@@ -55,7 +55,7 @@ AutomaticEnableChannelEnabled 已在固定版本的 [option 初始化与更新](
 
 HTTP 429、登录失败、分页缺口是管理面问题，不进入来源失败计数。200 且 success=false 不能当成功，200 缺 success=true 是协议错误；写请求返回 5xx、断连、超时或不可解析回执时，执行结果可能未知，不能直接当“未执行”。拒绝响应也不能证明所有写入均无副作用，仍须核对；除已核实的认证拒绝外，不把它作为安全重发创建的凭据。
 
-OperationView 使用独立 schema：queued、applying、waiting、partial、unknown、succeeded、failed、superseded。accepted/queued 只代表意图持久化；失败回执也不撤销已经保存的暂停/退役意图。用户重试通过同一 operation_id 查询/恢复，不复制逻辑操作。succeeded 表示该 generation 的目标曾被完整回读确认，不承诺外部系统以后不会再变。
+OperationView 使用独立 schema：queued、applying、waiting、partial、unknown、succeeded、failed、superseded。accepted/queued 只代表意图持久化；失败回执也不撤销已经保存的暂停/退役意图。用户重试通过同一 operation_id 查询/恢复，不复制逻辑操作。对于带远端targets的操作，succeeded 表示该 generation 的目标曾被完整回读确认，不承诺外部系统以后不会再变。2026-10-18 C2扩展三个局部设置kind，其Succeeded/0 targets仅表示设置已提交，页面须区别于渠道执行成功；OperationView wire升2，详见[C2契约](sgm-3-source-policies-c2.md)。
 
 ### 3.2 七项分布式契约
 
@@ -86,7 +86,7 @@ OperationView 使用独立 schema：queued、applying、waiting、partial、unkn
 | WorkSnapshot | 单个 member/target/source/group、来源退役请求、所需同组目标与观测 | store 在一致读事务发布；普通成员任务不加载全库；提升屏障按需取同组数据 |
 | BackendReadiness | 已核实的版本/接口、原生自动启用开关、绑定部署信息及检查时间 | 只读预检产生；unknown/冲突不能按 ready 处理，也不触发全局 option 写入 |
 | ChannelObservation | channel_id、type、group、base_url、models、priority、status、auto_ban、观测时间 | 后端 typed 结果；缺失字段是错误，不能默认可用；未知原字段仅 RawChannelDocument 保留 |
-| OperationView | schema_version=1、operation_id、kind、target_type、target_id、phase、target_revision、total_targets、confirmed_targets、error_code、updated_at | 白名单只读视图；confirmed≤total，succeeded 必须全部确认；无秘密/原始错误正文 |
+| OperationView | schema_version=2（C2扩展）、operation_id、kind、target_type、target_id、phase、target_revision、total_targets、confirmed_targets、error_code、updated_at | 白名单只读视图；confirmed≤total，远端操作succeeded须全部确认；局部设置kind的Succeeded/0仅表示设置保存；无秘密/原始错误正文 |
 
 ControlCommand 的引用和类型匹配在同一事务验证。相同 operation_id 先查原收据：参数相同返回原操作，不要求旧 expected_revision 仍是当前版本；参数不同返回 idempotency_conflict。新 ID 才执行 expected_revision 检查。payload 摘要只来自规范结构，不包含时间或遍历顺序；敏感值不放操作表。
 

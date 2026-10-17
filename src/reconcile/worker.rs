@@ -19,6 +19,7 @@ use tokio::sync::{watch, Mutex as AsyncMutex, Notify, Semaphore};
 
 mod analytics;
 mod collection;
+mod management;
 mod policy;
 
 struct Core {
@@ -71,6 +72,7 @@ pub struct ReconcileWorker {
     client: Arc<NewApiClient>,
     policy_config: Arc<Config>,
     probe: AsyncMutex<SourceProbe>,
+    model_catalog: AsyncMutex<crate::model_catalog::ModelCatalogClient>,
     collector: AsyncMutex<collection::CollectorSession>,
     collection_running: AtomicBool,
     query_slots: Arc<Semaphore>,
@@ -218,6 +220,13 @@ impl ReconcileWorker {
             client,
             policy_config,
             probe: AsyncMutex::new(SourceProbe::default()),
+            model_catalog: AsyncMutex::new(crate::model_catalog::ModelCatalogClient::new(
+                reqwest::Client::builder()
+                    .redirect(reqwest::redirect::Policy::none())
+                    .connect_timeout(Duration::from_secs(3))
+                    .build()
+                    .map_err(|_| error(ControlErrorCode::Storage))?,
+            )),
             collector: AsyncMutex::new(collection::CollectorSession::default()),
             collection_running: AtomicBool::new(false),
             query_slots: Arc::new(Semaphore::new(1)),
@@ -287,6 +296,9 @@ impl ReconcileWorker {
             .operation(id)
     }
     pub fn submit(&self, id: OperationId, command: ControlCommand) -> ControlResult<OperationView> {
+        if self.policy_config.dry_run && command.is_c2() {
+            return Err(error(ControlErrorCode::NotReady));
+        }
         let _slot = self
             .commands
             .try_acquire()

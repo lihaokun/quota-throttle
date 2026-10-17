@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fmt;
 
-pub const OPERATION_SCHEMA_VERSION: i64 = 1;
+pub const OPERATION_SCHEMA_VERSION: i64 = 2;
 macro_rules! control_enum {
     ($name:ident { $($variant:ident => $wire:literal),+ $(,)? }) => {
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -29,7 +29,9 @@ control_enum!(ControlErrorCode {
 });
 control_enum!(OperationKind {
     EnsureMember=>"ensure_member", SetSourcePaused=>"set_source_paused", RetireMember=>"retire_member",
-    RetireSource=>"retire_source", SetGroupPriorities=>"set_group_priorities", SyncSourceModels=>"sync_source_models"
+    RetireSource=>"retire_source", SetGroupPriorities=>"set_group_priorities", SyncSourceModels=>"sync_source_models",
+    SetGroupPin=>"set_group_pin", ClearVolcanoError=>"clear_volcano_error",
+    UpdateVolcanoPolicy=>"update_volcano_policy", DiscoverSourceModels=>"discover_source_models"
 });
 control_enum!(OperationPhase { Queued=>"queued", Applying=>"applying", Waiting=>"waiting", Partial=>"partial",
     Unknown=>"unknown", Succeeded=>"succeeded", Failed=>"failed", Superseded=>"superseded" });
@@ -121,6 +123,27 @@ pub enum ControlCommand {
         expected_revision: i64,
         models: Vec<String>,
     },
+    SetGroupPin {
+        group_id: GroupId,
+        expected_revision: i64,
+        expected_policy_revision: i64,
+        membership_id: Option<MembershipId>,
+    },
+    ClearVolcanoError {
+        source_id: SourceId,
+        expected_revision: i64,
+        expected_runtime_revision: i64,
+    },
+    UpdateVolcanoPolicy {
+        source_id: SourceId,
+        expected_revision: i64,
+        expected_runtime_revision: i64,
+        policy: VolcanoPolicy,
+    },
+    DiscoverSourceModels {
+        source_id: SourceId,
+        expected_revision: i64,
+    },
 }
 impl fmt::Debug for ControlCommand {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -128,8 +151,47 @@ impl fmt::Debug for ControlCommand {
     }
 }
 impl ControlCommand {
-    fn target(&self) -> (OperationKind, TargetType, i64, i64) {
+    pub(super) fn target(&self) -> (OperationKind, TargetType, i64, i64) {
         match self {
+            Self::SetGroupPin {
+                group_id,
+                expected_revision,
+                ..
+            } => (
+                OperationKind::SetGroupPin,
+                TargetType::Group,
+                group_id.get(),
+                *expected_revision,
+            ),
+            Self::ClearVolcanoError {
+                source_id,
+                expected_revision,
+                ..
+            } => (
+                OperationKind::ClearVolcanoError,
+                TargetType::Source,
+                source_id.get(),
+                *expected_revision,
+            ),
+            Self::UpdateVolcanoPolicy {
+                source_id,
+                expected_revision,
+                ..
+            } => (
+                OperationKind::UpdateVolcanoPolicy,
+                TargetType::Source,
+                source_id.get(),
+                *expected_revision,
+            ),
+            Self::DiscoverSourceModels {
+                source_id,
+                expected_revision,
+            } => (
+                OperationKind::DiscoverSourceModels,
+                TargetType::Source,
+                source_id.get(),
+                *expected_revision,
+            ),
             Self::EnsureMember {
                 membership_id,
                 expected_revision,
@@ -190,12 +252,51 @@ impl ControlCommand {
             ),
         }
     }
-    fn canonical(mut self) -> ControlResult<(Self, String)> {
+    pub(crate) fn is_policy_setting(&self) -> bool {
+        matches!(
+            self,
+            Self::SetGroupPin { .. }
+                | Self::ClearVolcanoError { .. }
+                | Self::UpdateVolcanoPolicy { .. }
+        )
+    }
+    pub(crate) fn is_c2(&self) -> bool {
+        self.is_policy_setting() || matches!(self, Self::DiscoverSourceModels { .. })
+    }
+    pub(super) fn canonical(mut self) -> ControlResult<(Self, String)> {
+        // Step C2.1: 稳定请求摘要；发现结果不进入发现命令身份。
         ensure(
             positive_revision(self.target().3),
             ControlErrorCode::InvalidInput,
         )?;
         match &mut self {
+            Self::SetGroupPin {
+                expected_policy_revision,
+                ..
+            } => ensure(
+                positive_revision(*expected_policy_revision),
+                ControlErrorCode::InvalidInput,
+            )?,
+            Self::ClearVolcanoError {
+                expected_runtime_revision,
+                ..
+            } => ensure(
+                positive_revision(*expected_runtime_revision),
+                ControlErrorCode::InvalidInput,
+            )?,
+            Self::UpdateVolcanoPolicy {
+                expected_runtime_revision,
+                policy,
+                ..
+            } => {
+                ensure(
+                    (0..=JSON_SAFE).contains(expected_runtime_revision),
+                    ControlErrorCode::InvalidInput,
+                )?;
+                policy
+                    .validate()
+                    .map_err(|_| failure(ControlErrorCode::InvalidInput))?;
+            }
             Self::SetGroupPriorities { priorities, .. } => {
                 ensure(
                     priorities.len() <= MAX_MEMBERSHIPS
@@ -209,15 +310,7 @@ impl ControlCommand {
                 )?;
             }
             Self::SyncSourceModels { models, .. } => {
-                ensure(
-                    !models.is_empty()
-                        && models.len() <= 1000
-                        && models.iter().all(|m| !m.contains([',', '\0'])),
-                    ControlErrorCode::InvalidInput,
-                )?;
-                *models = crate::model_catalog::normalize_models_csv(&models.join(","));
-                models.sort();
-                ensure(!models.is_empty(), ControlErrorCode::InvalidInput)?;
+                canonical_models(models)?;
             }
             _ => {}
         }
@@ -226,6 +319,37 @@ impl ControlCommand {
         let digest = format!("{:x}", Sha256::digest(encoded));
         Ok((self, digest))
     }
+}
+
+fn canonical_models(models: &mut Vec<String>) -> ControlResult<()> {
+    ensure(
+        !models.is_empty()
+            && models.len() <= 1000
+            && models.iter().all(|m| !m.contains([',', '\0'])),
+        ControlErrorCode::InvalidInput,
+    )?;
+    *models = crate::model_catalog::normalize_models_csv(&models.join(","));
+    models.sort();
+    ensure(!models.is_empty(), ControlErrorCode::InvalidInput)
+}
+
+pub(super) fn replayed_operation(
+    conn: &Connection,
+    id: &OperationId,
+    digest: &str,
+) -> ControlResult<Option<OperationView>> {
+    let existing: Option<String> = conn
+        .query_row(
+            "SELECT payload_digest FROM control_operations WHERE operation_id=?1",
+            [id.as_str()],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if let Some(existing) = existing {
+        ensure(existing == digest, ControlErrorCode::IdempotencyConflict)?;
+        return operation_projection(conn, id).map(Some);
+    }
+    Ok(None)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -271,6 +395,33 @@ impl CatalogStore {
         command: ControlCommand,
         now: i64,
     ) -> ControlResult<OperationView> {
+        self.submit_resolved_operation(id, command, None, now)
+    }
+    pub(crate) fn submit_discovered_models(
+        &mut self,
+        id: OperationId,
+        source_id: SourceId,
+        expected_revision: i64,
+        models: Vec<String>,
+        now: i64,
+    ) -> ControlResult<OperationView> {
+        self.submit_resolved_operation(
+            id,
+            ControlCommand::DiscoverSourceModels {
+                source_id,
+                expected_revision,
+            },
+            Some(models),
+            now,
+        )
+    }
+    fn submit_resolved_operation(
+        &mut self,
+        id: OperationId,
+        command: ControlCommand,
+        mut discovered: Option<Vec<String>>,
+        now: i64,
+    ) -> ControlResult<OperationView> {
         self.usable()?;
         ensure(valid_timestamp(Some(now)), ControlErrorCode::InvalidInput)?;
         let (command, digest) = command.canonical()?;
@@ -278,21 +429,30 @@ impl CatalogStore {
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         // Step P9: 先查幂等 ID；旧 expected_revision 不影响完全相同的重放。
-        let existing: Option<String> = tx
-            .query_row(
-                "SELECT payload_digest FROM control_operations WHERE operation_id=?1",
-                [id.as_str()],
-                |r| r.get(0),
-            )
-            .optional()?;
-        if let Some(existing) = existing {
-            ensure(existing == digest, ControlErrorCode::IdempotencyConflict)?;
-            return operation_projection(&tx, &id);
+        if let Some(existing) = replayed_operation(&tx, &id, &digest)? {
+            return Ok(existing);
         }
         let (kind, target_type, target_id, expected) = command.target();
         let current = target_revision(&tx, target_type, target_id)?;
         ensure(current == expected, ControlErrorCode::RevisionConflict)?;
         let next = bump(current)?;
+        if command.is_policy_setting() {
+            super::policy_commands::apply_policy_command_tx(&tx, &command, next, now)?;
+            tx.execute("INSERT INTO control_operations(operation_id,kind,target_type,target_id,payload_digest,target_revision,expected_targets,phase,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,0,'succeeded',?7,?7)",params![id.as_str(),kind.as_str(),target_type.as_str(),target_id,digest,next,now])?;
+            let view = operation_projection(&tx, &id)?;
+            commit(tx, &mut self.poisoned)?;
+            return Ok(view);
+        }
+        if matches!(&command, ControlCommand::DiscoverSourceModels { .. }) {
+            canonical_models(
+                discovered
+                    .as_mut()
+                    .ok_or_else(|| failure(ControlErrorCode::InvalidInput))?,
+            )
+            .map_err(|_| failure(ControlErrorCode::InvalidResponse))?;
+        } else {
+            ensure(discovered.is_none(), ControlErrorCode::InvalidInput)?;
+        }
         let members = affected_members(&tx, &command)?;
         // Step P10: 目标/实体 generation/操作及关联收据同事务，未提交不发布 queued。
         match &command {
@@ -309,7 +469,14 @@ impl CatalogStore {
                 )?;
                 tx.execute("UPDATE sources SET manual_paused=1,config_revision=?1,retired_at=?2 WHERE source_id=?3",params![next,if members.is_empty(){Some(now)}else{None},target_id])?;
             }
-            ControlCommand::SyncSourceModels { models, .. } => {
+            ControlCommand::SyncSourceModels { .. }
+            | ControlCommand::DiscoverSourceModels { .. } => {
+                let models = match &command {
+                    ControlCommand::SyncSourceModels { models, .. } => models,
+                    _ => discovered
+                        .as_ref()
+                        .ok_or_else(|| failure(ControlErrorCode::InvalidInput))?,
+                };
                 let json: String = tx.query_row(
                     "SELECT settings_json FROM sources WHERE source_id=?1",
                     [target_id],
@@ -480,6 +647,18 @@ pub(super) fn operation_projection(
         |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
     let phase = OperationPhase::parse(&row.3)?;
+    let kind = OperationKind::parse(&row.0)?;
+    if matches!(
+        kind,
+        OperationKind::SetGroupPin
+            | OperationKind::ClearVolcanoError
+            | OperationKind::UpdateVolcanoPolicy
+    ) {
+        ensure(
+            total == 0 && phase == OperationPhase::Succeeded,
+            ControlErrorCode::Storage,
+        )?;
+    }
     ensure(
         total == row.7
             && total >= 0
@@ -491,7 +670,7 @@ pub(super) fn operation_projection(
     Ok(OperationView {
         schema_version: OPERATION_SCHEMA_VERSION,
         operation_id: id.clone(),
-        kind: OperationKind::parse(&row.0)?,
+        kind,
         target_type: TargetType::parse(&row.1)?,
         target_id: row.2.to_string(),
         phase,
@@ -504,6 +683,8 @@ pub(super) fn operation_projection(
 }
 
 pub(super) fn verify_control(conn: &Connection) -> super::types::Result<()> {
+    let wrong_kind:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM control_operations o JOIN source_groups g ON o.target_id=g.group_id WHERE o.kind='set_group_pin' AND (o.target_type!='group' OR g.kind!='glm')) OR EXISTS(SELECT 1 FROM control_operations o JOIN sources s ON o.target_id=s.source_id WHERE o.kind IN ('clear_volcano_error','update_volcano_policy') AND (o.target_type!='source' OR s.kind!='volcano')) OR EXISTS(SELECT 1 FROM control_operations WHERE kind IN ('set_group_pin','clear_volcano_error','update_volcano_policy') AND (expected_targets!=0 OR phase!='succeeded'))",[],|r|r.get(0))?;
+    require(!wrong_kind, ErrorKind::CorruptData)?;
     let broken:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM sources s LEFT JOIN source_control c USING(source_id) WHERE c.source_id IS NULL) OR EXISTS(SELECT 1 FROM memberships m LEFT JOIN member_control c USING(membership_id) WHERE c.membership_id IS NULL) OR EXISTS(SELECT 1 FROM member_control c JOIN memberships m USING(membership_id) WHERE c.create_name != 'qt-'||(SELECT catalog_instance_id FROM catalog_meta)||'-m'||m.membership_id OR (c.create_state='resolved') != (m.channel_id IS NOT NULL))",[],|r|r.get(0))?;
     require(!broken, ErrorKind::CorruptData)?;
     let bad_targets:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM operation_targets t JOIN memberships m USING(membership_id) JOIN member_control c USING(membership_id) JOIN control_operations o USING(operation_id) WHERE t.target_member_revision>c.revision OR (o.target_type='source' AND o.target_id!=m.source_id) OR (o.target_type='group' AND o.target_id!=m.group_id) OR (o.target_type='membership' AND o.target_id!=m.membership_id))",[],|r|r.get(0))?;

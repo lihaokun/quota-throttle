@@ -42,6 +42,43 @@ impl ModelCatalogClient {
             .with_context(|| format!("模型目录不是合法 JSON: {}", cfg.url))?;
         parse_model_ids(&body).with_context(|| format!("模型目录结构非法: {}", cfg.url))
     }
+
+    /// C2专用有界GET；worker使用不跟随重定向的专用client并脱敏错误。
+    pub(crate) async fn discover_bounded(
+        &self,
+        cfg: &ModelDiscoveryConfig,
+        key: &str,
+    ) -> Result<Vec<String>> {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            let mut response = apply_discovery_auth(self.client.get(&cfg.url), cfg.auth, key)
+                .send()
+                .await?;
+            if !response.status().is_success() {
+                bail!("model discovery rejected");
+            }
+            const MAX_BYTES: usize = 1024 * 1024;
+            if response
+                .content_length()
+                .is_some_and(|n| n > MAX_BYTES as u64)
+            {
+                bail!("model discovery too large");
+            }
+            let mut bytes = Vec::new();
+            while let Some(chunk) = response.chunk().await? {
+                if chunk.len() > MAX_BYTES - bytes.len() {
+                    bail!("model discovery too large");
+                }
+                bytes.extend_from_slice(&chunk);
+            }
+            let models = parse_model_ids(&serde_json::from_slice(&bytes)?)?;
+            if models.len() > 1000 {
+                bail!("too many models");
+            }
+            Ok(models)
+        })
+        .await
+        .context("model discovery timeout")?
+    }
 }
 
 fn apply_discovery_auth(

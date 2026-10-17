@@ -25,6 +25,7 @@ fn legacy_image(conn: &Connection) -> BTreeMap<String, Vec<Vec<rusqlite::types::
 }
 fn downgrade(f: &mut Fixture) {
     let tx = f.store.conn.transaction().unwrap();
+    replace_control_operations(&tx, SCHEMA_V2).unwrap();
     let instance: String = tx
         .query_row("SELECT catalog_instance_id FROM catalog_meta", [], |r| {
             r.get(0)

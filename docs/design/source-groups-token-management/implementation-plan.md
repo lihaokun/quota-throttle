@@ -4,7 +4,7 @@
 
 ## 当前完成与未完成
 
-2026-10-17 授权，进度更新2026-10-18：用户要求连续完成剩余开发，不再逐小步等待确认；仍按 workflow 逐步实现、测试和独立审核，且不接管/重启/部署现有服务。B3 已验收。用户随后明确接受[观测型熔断](subplans/sgm-4-observed-breaker.md)，并要求成功有 token 流时清零计数：不改 NewAPI，不再以可靠最终结果补丁阻塞开发。观测归并核心 O1–O3 及 O4 持久事务/worker 显式接线均已验收；管理命令、key、三页面和运行组装仍须各自完成。
+2026-10-17 授权，进度更新2026-10-18：用户要求连续完成剩余开发，不再逐小步等待确认；仍按 workflow 逐步实现、测试和独立审核，且不接管/重启/部署现有服务。B3 已验收。用户随后明确接受[观测型熔断](subplans/sgm-4-observed-breaker.md)，并要求成功有 token 流时清零计数：不改 NewAPI，不再以可靠最终结果补丁阻塞开发。观测归并核心 O1–O3、O4 持久事务/worker 显式接线及 C-2 内部管理命令均已验收；key、三页面和运行组装仍须各自完成。
 
 - 已有：[需求方案](../../research/source-groups-token-management-research.md)、[实现前审核](review.md)、已确认架构、可复现的隔离 NewAPI 契约探针。
 - 已完成：[sgm-1](subplans/sgm-1-catalog-store.md) 的独立目录库及导入函数、[schema](schemas/catalog-snapshot.schema.json)、[审核与复审记录](../../audits/sgm-1-catalog-store/audit-report.md)。复审后的局部修复为 85 项测试及 release 构建通过，四种定向变异被 PBT 检出；不接管 CLI/运行服务。
@@ -38,6 +38,8 @@
 复审修正已完成：健康会话显式 retry 多余登录已在 `3b1bbae` 修复，[F1 记录](../../fixes/newapi-fix-healthy-auth-retry.md)包含红绿回归、11 项新增测试（含 128 cases PBT）和 4 项变异；全量 288 passed/1 ignored，release 通过。P1 已补[迁移归属及只读增量核对](../../audits/sgm-1-catalog-store/migration-scope-review.md)，保留历史审核证据。SGM-3 B 已按用户确认完成；下一批仍先细化再确认，不以可选代码清理扩大范围，不改运行服务。
 
 2026-10-18 O4 [本地验收](../../audits/sgm-4-facts-analytics/observed-publication-audit.md)通过，代码/契约本地提交 `f7e54a2`：应用库 v6 持久请求去重、周期历史、来源绝对用量、全部组目标/许可同事务，worker 显式刷新按提供者 scope 发布。新增28入口，4组各128 cases PBT，9类可编译变异及独审通过；默认 debug/release 各533 passed/0 failed/18 ignored，16项独立性能通过（十万消费80ms、最大目录5010ms）。源代码不改 GLM 算法或 NewAPI，不新增运行定时器；下一步 C-2 管理动作及 key/三页面/CLI 接线仍需各自验收。服务未部署。
+
+2026-10-18 C-2 [内部管理验收](../../audits/sgm-3-source-policies/c2-audit.md)通过：GLM组固定/取消、火山撤错/上限及重置设置、按来源模型发现沿原命令/策略/执行链接线。DB v7保留历史操作/成功回执/账本，OperationView wire2区分局部保存与远端确认。新增22普通（4组各128 cases PBT）及1性能入口；默认debug/release各555 passed/0 failed/19 ignored，10种有效编译变异、最终定向/机械/clippy/build及独审通过，17项独立性能通过，万条操作迁移563ms。没有改原GLM/火山算法、NewAPI或现行服务；下一步为SGM-5访问key管理，再接三页面及运行/发布组装。
 
 ## 分步实施顺序
 

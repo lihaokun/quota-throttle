@@ -8,6 +8,7 @@ pub(crate) mod glm_round;
 pub(crate) mod ledger;
 mod legacy;
 pub(crate) mod policy;
+pub(crate) mod policy_commands;
 mod store;
 pub mod types;
 pub(crate) mod volcano_publication;
