@@ -2,6 +2,7 @@ use super::*;
 use crate::catalog::ledger::{ScanLane, ScanPhase, ScanProgress};
 use proptest::prelude::*;
 
+mod control_tests;
 mod properties;
 
 fn control() -> QueryControl {

@@ -1,10 +1,11 @@
-//! 有界查询计算；无数据库、网络、定时任务或业务策略副作用。
+//! 有界查询计算和取消上下文；不打开数据库或启动网络、任务与业务策略。
 use super::{add_usage, valid_label, UsageTotals};
 use crate::catalog::control::ControlErrorCode;
 use crate::catalog::ledger::{LedgerError, LedgerState, ScanWindow};
 use crate::catalog::{GroupId, SourceId, JSON_SAFE};
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 mod query;
@@ -15,6 +16,8 @@ pub(crate) const MAX_MODELS: usize = 1024;
 pub(crate) const MAX_TOKENS: usize = 4096;
 pub(crate) const MAX_BUCKET_MODELS: usize = 65536;
 pub(crate) const QUERY_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const QUERY_PAGE_ROWS: usize = 256;
+pub(crate) const MAX_QUERY_ROWS: usize = 1_000_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AnalyticsError {
@@ -28,20 +31,69 @@ pub(crate) enum AnalyticsError {
     Busy,
 }
 pub(crate) type AnalyticsResult<T> = std::result::Result<T, AnalyticsError>;
+impl From<LedgerError> for AnalyticsError {
+    fn from(e: LedgerError) -> Self {
+        if matches!(&e, LedgerError::Catalog(c) if c.kind == crate::catalog::ErrorKind::Busy) {
+            Self::Busy
+        } else {
+            Self::Ledger(e)
+        }
+    }
+}
+impl From<crate::catalog::CatalogError> for AnalyticsError {
+    fn from(e: crate::catalog::CatalogError) -> Self {
+        LedgerError::Catalog(e).into()
+    }
+}
+impl From<rusqlite::Error> for AnalyticsError {
+    fn from(e: rusqlite::Error) -> Self {
+        LedgerError::from(e).into()
+    }
+}
 
 pub(crate) struct QueryControl {
     cancelled: AtomicBool,
     deadline: Instant,
+    interrupt: Mutex<Option<Arc<rusqlite::InterruptHandle>>>,
 }
 impl QueryControl {
     pub(crate) fn new(deadline: Instant) -> Self {
         Self {
             cancelled: AtomicBool::new(false),
             deadline,
+            interrupt: Mutex::new(None),
         }
     }
     pub(crate) fn cancel(&self) {
         self.cancelled.store(true, Ordering::Release);
+        let handle = self
+            .interrupt
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        if let Some(handle) = handle {
+            handle.interrupt();
+        }
+    }
+    pub(crate) fn register_interrupt(
+        &self,
+        handle: rusqlite::InterruptHandle,
+    ) -> AnalyticsResult<()> {
+        let handle = Arc::new(handle);
+        *self
+            .interrupt
+            .lock()
+            .map_err(|_| AnalyticsError::Control(ControlErrorCode::Storage))? =
+            Some(handle.clone());
+        // 取消可能发生在注册之前；此时 interrupt 可能是 no-op，标志仍阻止下一条 SQL。
+        let result = self.check();
+        if result.is_err() {
+            handle.interrupt();
+        }
+        result
+    }
+    pub(crate) fn deadline(&self) -> Instant {
+        self.deadline
     }
     pub(crate) fn check(&self) -> AnalyticsResult<()> {
         self.check_at(Instant::now())
