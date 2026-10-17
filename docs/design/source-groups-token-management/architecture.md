@@ -316,3 +316,16 @@ C-1 不对未 managed 的目录成员写自动目标，不通过周期操作增�
 | LedgerError | catalog/ledger → 内部调用方 | 固定错误；输入非法与持久损坏分开；未知提交沿既有 poisoned 停写 |
 
 事实以单个 catalog 名称空间内的 native_log_id 去重，已知 channel 身份永久保留，未知归属可等待后续显式修正。原生库不一致替换/回滚仍受 SGM-7 恢复前提约束，不能把 catalog UUID 当作自动识别原生数据库的证明。B1 不生成 FinalOutcome/VolcanoEvidence 或渠道许可；B2 采集、B3 查询/补归属及 C 的可信终态仍有各自门禁。
+
+## 第四子计划 B2 待确认共享接口
+
+[B2 细化](subplans/sgm-4-facts-analytics-b2.md)保持模块划分与 v5。以下是待确认的进程内接口，不改变公开 wire 或现行服务；只有完成能力探针和分步实现验收后才具有运行能力。
+
+| 类型/责任 | 所有者和消费者 | 约束 |
+| --- | --- | --- |
+| LogPageQuery / CheckedLogPage | NewAPI 日志入口 → 统一采集器 | 固定全局管理员查询，≤100 原始行，页键全验；无公共 serde，不是完整性证据 |
+| LocalLogLease / LogCapabilityIssue | 本地日志预检 → 采集器 | 真实托管绑定、固定版本及 SQLite 启动分支；独立于路由 BackendReadiness，不降低自动恢复门禁 |
+| CollectionReport / CollectionError | worker 单飞采集 → 后续运行组装/状态投影 | 当轮已提交计数、两个检查点及固定诊断；不产生来源策略许可 |
+| restart_scan | catalog → 采集器 | 当前完整票据匹配后同窗新代次第一页，事实/投影不变；不改变 begin_scan 重放 |
+
+近期与历史复用现有两个 checkpoint；历史从保存起点全窗重扫，不增加任务表。SQL_DSN/LOG_SQL_DSN 显式 local 的建议启动前提仅用于核验日志 SQLite 分支，不是数据集身份凭证。若当前服务缺少可验证条件，B2 只报告；设置启动环境及任何重启都留给获得授权后的 SGM-7。

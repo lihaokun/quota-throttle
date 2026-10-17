@@ -91,3 +91,13 @@ GIN 格式直接包含路径等自由文本，本轮插入测试进一步说明�
 由这些实现推导：固定时间窗和持久去重可以处理重复，但 offset 变化、同计数替换或较晚写入仍不能凭“扫到末页/重复两遍相同”证明完整。catalog_instance_id 也不是原生日志数据库身份凭证；不一致换库/回滚须保持为明确的恢复边界，不能靠另造本地 UUID 宣称解决。
 
 下一小步形成 [B 总体方案与 B1 事务细化](../design/source-groups-token-management/subplans/sgm-4-facts-analytics-b.md)。B1 待确认，B2 原生多页/时间边界及可控变化场景仍需补验证；没有据此改变已确认的火山规则或切到直读 NewAPI 数据库。
+
+## 2026-10-17 B2 启动条件复核
+
+B1 随后已完成本地验收；[B2 统一采集细化](../design/source-groups-token-management/subplans/sgm-4-facts-analytics-b2.md)进入待确认阶段。本次只读固定提交公开源码，没有读取正在运行进程的环境或执行新的原生探针。
+
+本项目 boot 启动只显式覆盖 PORT，其他环境继承。原生 InitResources 在初始化数据库前加载 `.env`；主库由 SQL_DSN 选择，LOG_SQL_DSN 非空时日志可使用另一数据库，`local` 分支才选择 SQLite。由此不能仅凭本地托管和工作目录证明管理员日志 ID 来自 SQLite。[本项目启动](../../src/boot.rs)、[原生启动](https://github.com/QuantumNous/new-api/blob/6ce7305cd36f16506fb6a2c3c524a5a318539ba7/main.go)、[数据库选择](https://github.com/QuantumNous/new-api/blob/6ce7305cd36f16506fb6a2c3c524a5a318539ba7/model/main.go)
+
+所检查的 `/api/status` 与系统实例响应不提供日志数据库类型；系统实例的运行信息主要是版本、平台及启动时间，不能把它当作日志数据集标识。[状态响应](https://github.com/QuantumNous/new-api/blob/6ce7305cd36f16506fb6a2c3c524a5a318539ba7/controller/misc.go)、[系统实例生产者](https://github.com/QuantumNous/new-api/blob/6ce7305cd36f16506fb6a2c3c524a5a318539ba7/service/system_instance.go)
+
+依赖锁定 godotenv 1.5.1，其 Load 不覆盖已存在变量。因此建议对已核对的同一托管进程，有界检查初始 SQL_DSN/LOG_SQL_DSN 均显式为 local；缺少时仅报告无法确认，不推断实际不是 SQLite，不自动改配置。这是源码推导的最小支持门禁，仍需隔离实例验证冲突 `.env` 和实际管理员分页，不是当前部署已满足的结论。[依赖](https://github.com/QuantumNous/new-api/blob/6ce7305cd36f16506fb6a2c3c524a5a318539ba7/go.mod)、[不覆盖式加载](https://github.com/joho/godotenv/blob/v1.5.1/godotenv.go#L184)
