@@ -4,8 +4,12 @@ use crate::ledger::{FactError, MAX_FACTS};
 use serde_json::{json, Value};
 use std::time::{Duration, Instant};
 
+#[path = "ledger_attribution_tests.rs"]
+mod attribution;
 #[path = "ledger_properties.rs"]
 mod properties;
+#[path = "ledger_query_tests.rs"]
+mod queries;
 #[path = "ledger_scan_tests.rs"]
 mod scans;
 

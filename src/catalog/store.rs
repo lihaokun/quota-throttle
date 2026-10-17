@@ -6,9 +6,10 @@ use rusqlite::{
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-const APPLICATION_ID: i64 = 0x51545343;
+pub(super) const APPLICATION_ID: i64 = 0x51545343;
 const SCHEMA: &str = include_str!("schema_v1.sql");
 const SCHEMA_V2: &str = include_str!("schema_v2.sql");
 const SCHEMA_V3: &str = include_str!("schema_v3.sql");
@@ -44,7 +45,7 @@ impl From<rusqlite::Error> for CatalogError {
 }
 
 /// 仅成功持锁后构造；关闭本句柄不足以释放被其他描述符继承的 flock。
-struct CatalogLock(File);
+pub(super) struct CatalogLock(File);
 
 impl CatalogLock {
     fn acquire(file: File) -> Result<Self> {
@@ -66,8 +67,8 @@ impl Drop for CatalogLock {
 /// 字段顺序保证 SQLite 连接先于进程锁释放。不要在 Store::drop 提前解锁。
 pub struct CatalogStore {
     pub(super) conn: Connection,
-    _lock: CatalogLock,
-    path: PathBuf,
+    pub(super) _lock: Arc<CatalogLock>,
+    pub(super) path: PathBuf,
     pub(super) poisoned: bool,
 }
 
@@ -165,7 +166,7 @@ impl CatalogStore {
         }
         let mut store = Self {
             conn,
-            _lock: lock,
+            _lock: Arc::new(lock),
             path,
             poisoned: false,
         };
@@ -672,7 +673,7 @@ fn prepare_private_directory(path: &Path) -> Result<PathBuf> {
         .map_err(|_| error(ErrorKind::UnsafePath))
 }
 #[cfg(unix)]
-fn check_private_file(path: &Path, allow_missing: bool) -> Result<()> {
+pub(super) fn check_private_file(path: &Path, allow_missing: bool) -> Result<()> {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
     match fs::symlink_metadata(path) {
         Ok(m) => require(

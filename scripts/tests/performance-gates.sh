@@ -13,6 +13,8 @@ expected="$(printf '%s\n' \
   catalog::store::tests::ledger::performance_gate_ledger_reopen_100k \
   catalog::store::tests::ledger::scans::performance_gate_collection_page \
   catalog::store::tests::ledger::scans::performance_gate_collection_restart_100k \
+  catalog::store::tests::ledger::queries::scale::performance_gate_analytics_sql_100k \
+  catalog::store::tests::ledger::attribution::performance_gate_attribution_batch_10k_history \
   catalog::store::tests::policy::migration::ledger::performance_gate_ledger_v4_migration \
   catalog::store::tests::policy::performance_gate_policy_v3_migration \
   catalog::store::tests::policy::migration::performance_gate_complex_history_migration \

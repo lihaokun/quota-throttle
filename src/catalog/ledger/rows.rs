@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 
 pub(super) const FACT_COLUMNS: &str = "native_log_id,request_id,kind,occurred_at,channel_id,token_id,model,native_group,input,output,is_stream,metadata_json,source_id,group_id,attribution_issue";
 pub(super) const CELL_COLUMNS: &str = "minute,channel_id,source_id,group_id,native_group,token_id,model,input,output,consumption_rows";
+pub(super) const CELL_MATCH: &str = "minute=?1 AND coalesce(channel_id,0)=coalesce(?2,0) AND coalesce(source_id,0)=coalesce(?3,0) AND coalesce(group_id,0)=coalesce(?4,0) AND coalesce(native_group,'')=coalesce(?5,'') AND coalesce(token_id,0)=coalesce(?6,0) AND coalesce(model,'')=coalesce(?7,'')";
 pub(super) const DIM_ORDER: &str = "coalesce(channel_id,0),coalesce(source_id,0),coalesce(group_id,0),coalesce(native_group,''),coalesce(token_id,0),coalesce(model,'')";
 pub(super) type History = BTreeMap<ChannelId, ChannelAttribution>;
 
@@ -174,7 +175,9 @@ pub(super) fn add_cell(
         k.token_id,
         k.model
     ];
-    let mut stmt=conn.prepare("SELECT input,output,consumption_rows FROM ledger_minute_usage WHERE minute=?1 AND coalesce(channel_id,0)=coalesce(?2,0) AND coalesce(source_id,0)=coalesce(?3,0) AND coalesce(group_id,0)=coalesce(?4,0) AND coalesce(native_group,'')=coalesce(?5,'') AND coalesce(token_id,0)=coalesce(?6,0) AND coalesce(model,'')=coalesce(?7,'')")?;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT input,output,consumption_rows FROM ledger_minute_usage WHERE {CELL_MATCH}"
+    ))?;
     let old = stmt
         .query_row(args, |r| {
             Ok(UsageTotals {
@@ -192,5 +195,64 @@ pub(super) fn add_cell(
     }
     let t = add_usage(old.unwrap_or_default(), delta)?;
     conn.prepare(&format!("INSERT INTO ledger_minute_usage({CELL_COLUMNS}) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10) ON CONFLICT DO UPDATE SET input=excluded.input,output=excluded.output,consumption_rows=excluded.consumption_rows"))?.execute(params![k.minute,k.channel_id.map(|n|n.get()),k.source_id.map(|n|n.get()),k.group_id.map(|n|n.get()),k.native_group,k.token_id,k.model,t.input,t.output,t.consumption_rows])?;
+    Ok(())
+}
+
+pub(super) fn subtract_cell(
+    conn: &Connection,
+    k: &UsageCellKey,
+    delta: UsageTotals,
+) -> LedgerResult<()> {
+    let args = params![
+        k.minute,
+        k.channel_id.map(|v| v.get()),
+        k.source_id.map(|v| v.get()),
+        k.group_id.map(|v| v.get()),
+        k.native_group,
+        k.token_id,
+        k.model
+    ];
+    let old = conn
+        .query_row(
+            &format!(
+                "SELECT input,output,consumption_rows FROM ledger_minute_usage WHERE {CELL_MATCH}"
+            ),
+            args,
+            |r| {
+                Ok(UsageTotals {
+                    input: r.get(0)?,
+                    output: r.get(1)?,
+                    consumption_rows: r.get(2)?,
+                })
+            },
+        )
+        .optional()?
+        .ok_or_else(corrupt)?;
+    add_usage(UsageTotals::default(), old).map_err(|_| corrupt())?;
+    add_usage(UsageTotals::default(), delta).map_err(|_| corrupt())?;
+    if old.consumption_rows < 1 || delta.consumption_rows < 1 {
+        return Err(corrupt());
+    }
+    let sub = |a: i64, b: i64| a.checked_sub(b).filter(|v| *v >= 0).ok_or_else(corrupt);
+    let remaining = UsageTotals {
+        input: sub(old.input, delta.input)?,
+        output: sub(old.output, delta.output)?,
+        consumption_rows: sub(old.consumption_rows, delta.consumption_rows)?,
+    };
+    let changed = if remaining.consumption_rows == 0 {
+        if remaining.input != 0 || remaining.output != 0 {
+            return Err(corrupt());
+        }
+        conn.execute(
+            &format!("DELETE FROM ledger_minute_usage WHERE {CELL_MATCH}"),
+            args,
+        )?
+    } else {
+        add_usage(UsageTotals::default(), remaining).map_err(|_| corrupt())?;
+        conn.execute(&format!("UPDATE ledger_minute_usage SET input=?8,output=?9,consumption_rows=?10 WHERE {CELL_MATCH}"),params![k.minute,k.channel_id.map(|v|v.get()),k.source_id.map(|v|v.get()),k.group_id.map(|v|v.get()),k.native_group,k.token_id,k.model,remaining.input,remaining.output,remaining.consumption_rows])?
+    };
+    if changed != 1 {
+        return Err(corrupt());
+    }
     Ok(())
 }
