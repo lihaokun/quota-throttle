@@ -2,7 +2,7 @@
 
 2026-10-17 最新决定：用户接受[观测型熔断](subplans/sgm-4-observed-breaker.md)，成功且有 token 活动的有效观测清零同源连续失败计数，包括已锁存时的计数，但不自动解除耗尽。无需修改 NewAPI；下文旧的“最终结果/可信终态”前提由该新细化的去重观测语义替代，不再阻塞独立的 key 管理/三页面开发。
 
-日期：2026-10-15，进度更新：2026-10-17。状态：架构已确认，sgm-1 已完成，sgm-2 的执行/恢复和本地托管预检已实现并分步验证，sgm-3 A/B 和 C-1 已完成验收；sgm-4 A、B1 的 v5 事务账本和 B2 统一采集已完成本地验收。尚未接现行服务，C-2/C-3、sgm-4 后续及 sgm-5 至 sgm-7 未完成。需求依据：[最新版方案](../../research/source-groups-token-management-research.md)。接口实证：[实现前审核](review.md)。架构确认不包含生产部署授权。
+日期：2026-10-15，进度更新：2026-10-18。状态：架构已确认，sgm-1 已完成，sgm-2 的执行/恢复和本地托管预检已实现并分步验证，sgm-3 A/B 和 C-1 已完成验收；sgm-4 A、B1–B3 及 O1–O4 观测持久发布已完成本地验收。尚未接现行服务，C-2 管理动作、运行合流及 sgm-5 至 sgm-7 未完成。需求依据：[最新版方案](../../research/source-groups-token-management-research.md)。接口实证：[实现前审核](review.md)。架构确认不包含生产部署授权。
 
 ## 目标与边界
 
@@ -47,7 +47,7 @@ sgm-1 已采用 rusqlite 0.40.2（bundled、backup），版本锁入 Cargo.lock�
 
 测试和开发使用独立 state_path；正式库路径在部署时确认，不覆盖生产 one-api.db。schema_version 标识兼容性，旧版本遇到更高 schema 需拒绝写入；备份需使用一致性备份方式，不能忽略 WAL。
 
-版本承接：SGM-1 定义 v1 目录；SGM-2 负责 v1→v2 控制意图、v2→v3 执行记录及打开时的恢复；SGM-3 B 追加 v4 来源/组策略状态；SGM-4 B1 追加 v5 事实、分钟联合用量、账本状态与采集检查点。open 对合法旧应用库先完整校验/备份再逐版本升级，不修补损坏库，也不承诺整链原子回滚。来源/组/成员与各自必需侧表同事务落库；v5 保留未决执行恢复，但不按墙钟清火山额度或自动启动采集。公开快照 wire=1 与数据库 v5 分开。历史审核边界及当前受影响路径见[迁移增量核对](../../audits/sgm-1-catalog-store/migration-scope-review.md)，不改变 SGM-7 的生产切换授权要求。
+版本承接：SGM-1 定义 v1 目录；SGM-2 负责 v1→v2 控制意图、v2→v3 执行记录及打开时的恢复；SGM-3 B 追加 v4 来源/组策略状态；SGM-4 B1 追加 v5 事实、分钟联合用量、账本状态与采集检查点；[O4](subplans/sgm-4-observed-publication.md)追加 v6 待处理观测引用、请求相位、周期历史及来源查询索引。open 对合法旧应用库先完整校验/备份再逐版本升级，不修补损坏库，也不承诺整链原子回滚。来源/组/成员与各自必需侧表同事务落库；打开库保留未决执行恢复，但不按墙钟清火山额度、重放已有历史错误或自动启动采集。公开快照 wire=1 与数据库 v6 分开。旧迁移审核见[迁移增量核对](../../audits/sgm-1-catalog-store/migration-scope-review.md)，v6 新路径见[O4审核](../../audits/sgm-4-facts-analytics/observed-publication-audit.md)；不改变 SGM-7 的生产切换授权要求。
 
 ## 核心共享数据结构
 
@@ -334,7 +334,7 @@ C-1 不对未 managed 的目录成员写自动目标，不通过周期操作增�
 
 ## 第四子计划 B3 查询与补归属方案
 
-[B3 细化](subplans/sgm-4-facts-analytics-b3.md)已确认，第一小步内存查询计算已完成[本地验收](../../audits/sgm-4-facts-analytics/batch-b3-query-audit.md)；只读数据库组合和补归属仍未实现。继续复用同一应用库的 v5 事实与分钟联合投影；不增加表、写者、采集器或公开 HTTP 接口。字段与值域见 B3 §3–4，事前验收见 [B3 expectations](../../audits/sgm-4-facts-analytics/batch-b3-expectations.md)。
+[B3 细化](subplans/sgm-4-facts-analytics-b3.md)的内存计算、只读数据库组合和补归属均已完成[本地验收](../../audits/sgm-4-facts-analytics/batch-b3-completion-audit.md)。继续复用同一应用库的 v5 事实与分钟联合投影；B3 本身不增加表、写者、采集器或公开 HTTP 接口。字段与值域见 B3 §3–4，事前验收见 [B3 expectations](../../audits/sgm-4-facts-analytics/batch-b3-expectations.md)。
 
 | 共享类型/责任 | 所有者和消费者 | 约束 |
 | --- | --- | --- |
@@ -345,3 +345,16 @@ C-1 不对未 managed 的目录成员写自动目标，不通过周期操作增�
 | 只读连接与目录锁 | catalog/worker | 同应用库 WAL 读事务，不取长 Core；Store/读任务共享原持锁 guard，最后连接退出后显式解锁；只读不是另一个写者 |
 
 查询一次返回完整有界结果，不以截断 Top-N 或跨请求可变分页冒充同快照总计。补归属经单写者原子撤旧/加新/改事实，内存游标丢失可重扫，无新增任务表。查询和补正都为显式内部入口，运行调度与面板接线仍属后续小步。
+
+## 第四子计划 O4 观测发布共享接口
+
+[O4 细化](subplans/sgm-4-observed-publication.md)承接 O1–O3 和 B1–B3，保持一个事实账本和原 VolcanoRuntime。v6 的三个侧表只保存待处理引用、请求去重相位和周期过渡；source/type8 适配由目录核验，GLM 不进入该观测熔断。
+
+| 类型/责任 | 所有者和消费者 | 约束 |
+| --- | --- | --- |
+| VolcanoPolicyCommit | catalog 单事务 → worker | 队列/相位/Runtime/历史/全部组目标同事务，返回本类完整 membership/source scope、最终版本 permits/disabled；不序列化 |
+| VolcanoRefreshReport | catalog → worker | 仅来源/消费/等待/变更计数及 preview_only，不报告远端已收敛，不含原始请求或凭据 |
+| GlmPolicyCommit.scope | catalog → worker | 新增本类全部历史/当前成员；只撤换本类许可，不延长另一类 lease，原 GLM 选择/授权规则不变 |
+| refresh_volcano_policy | worker 显式内部入口 | 共享命令槽/发布 fence；dry_run 只读；提交失败保留缓存，未知提交闭锁；不新增周期任务 |
+
+来源处理每轮16条队列，使用原 source/request 单向归并与 period/cutoff 隔离。当前周期绝对 token 从原分钟投影与精确秒边缘读取，最大1M行/10秒。近期消费页成功、队列已处理、预检和原成员资格共同限制正向许可；它们不证明上游日志绝对完整。按原组选择器独立首选，跨组共享来源耗尽。实现验收见[O4报告](../../audits/sgm-4-facts-analytics/observed-publication-audit.md)，运行 CLI、管理命令/页面和生产部署仍是后续范围。
