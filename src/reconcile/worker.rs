@@ -17,6 +17,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 use tokio::sync::{watch, Mutex as AsyncMutex, Notify, Semaphore};
 
+mod collection;
 mod policy;
 
 struct Core {
@@ -69,6 +70,8 @@ pub struct ReconcileWorker {
     client: Arc<NewApiClient>,
     policy_config: Arc<Config>,
     probe: AsyncMutex<SourceProbe>,
+    collector: AsyncMutex<collection::CollectorSession>,
+    collection_running: AtomicBool,
 }
 #[derive(Debug, Default, Clone, Copy)]
 pub struct RoundReport {
@@ -212,6 +215,8 @@ impl ReconcileWorker {
             client,
             policy_config,
             probe: AsyncMutex::new(SourceProbe::default()),
+            collector: AsyncMutex::new(collection::CollectorSession::default()),
+            collection_running: AtomicBool::new(false),
         }))
     }
     fn mutate<T>(

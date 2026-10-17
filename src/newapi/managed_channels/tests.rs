@@ -352,6 +352,8 @@ async fn native_managed_channel_contract_on_fresh_database() {
         .env("GIN_MODE", "release")
         .env("GOMAXPROCS", "2")
         .env("SQLITE_PATH", &database)
+        .env("SQL_DSN", "local")
+        .env("LOG_SQL_DSN", "local")
         .env(
             "SESSION_SECRET",
             directory.path().to_string_lossy().as_ref(),
@@ -563,6 +565,26 @@ async fn native_persisted_confirmation(
         Some(crate::newapi::preflight::BackendIssue::RecoveryEnabled)
     );
     assert!(!rejected.readiness().ready_at(now()));
+    // B2：原路由预检仍拒绝自动恢复，但真实管理员日志可独立读取。
+    let lease = client.check_local_logs(process).await.unwrap();
+    client.recheck_local_logs(process, &lease).await.unwrap();
+    let query = crate::newapi::logs::LogPageQuery::new(
+        crate::catalog::ledger::ScanWindow { from: 0, to: now() },
+        1,
+    )
+    .unwrap();
+    client
+        .read_log_page(query, &lease, RequestClass::Observe, &|| true)
+        .await
+        .unwrap();
+    let pid_path = process.data_dir.join("new-api.pid");
+    let original = std::fs::read(&pid_path).unwrap();
+    std::fs::write(&pid_path, u32::MAX.to_string()).unwrap();
+    assert_eq!(
+        client.recheck_local_logs(process, &lease).await.err(),
+        Some(crate::ledger::collection::LogCapabilityIssue::LocalBinding)
+    );
+    std::fs::write(&pid_path, original).unwrap();
     assert_eq!(
         api.check_native_recovery().await.unwrap(),
         NativeRecoveryCheck::Enabled
@@ -874,4 +896,13 @@ async fn native_worker_reconcile(
         .unwrap();
     assert_eq!(actual.status, 2);
     assert_eq!(actual.group, "worker-native");
+    let before = serde_json::to_value(worker.snapshot().unwrap()).unwrap();
+    let collection = worker.collect_facts_once(process).await.unwrap();
+    assert!(!collection.preview_only);
+    assert!((1..=4).contains(&collection.committed));
+    assert!(collection.issue.is_none());
+    assert_eq!(
+        serde_json::to_value(worker.snapshot().unwrap()).unwrap(),
+        before
+    );
 }
