@@ -11,6 +11,7 @@ use crate::config::{ChannelTemplate, KeyMapping, ModelDiscoveryConfig, NewApiCon
 use crate::model_catalog::{model_sets_equal, normalize_models_csv, ModelCatalogClient};
 use crate::status::{ChannelState, RequestLog};
 use anyhow::{bail, Context, Result};
+pub(crate) mod logs;
 pub mod managed_channels;
 pub mod preflight;
 pub mod transport;

@@ -38,6 +38,9 @@ pub(crate) struct Fake {
     pub calls: Arc<Mutex<Vec<Recorded>>>,
     task: tokio::task::JoinHandle<()>,
 }
+pub(crate) fn queued_requests(budget: &ManagementBudget) -> usize {
+    budget.state.lock().unwrap().queue.len()
+}
 impl Drop for Fake {
     fn drop(&mut self) {
         self.task.abort();

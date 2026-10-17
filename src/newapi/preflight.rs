@@ -51,7 +51,7 @@ impl BackendCheck {
 pub(crate) fn unavailable() -> BackendReadiness {
     BackendReadiness::from_preflight("", NativeRecoveryCheck::Unknown, false, 0, 0)
 }
-fn utc_now() -> Result<i64, BackendIssue> {
+pub(super) fn utc_now() -> Result<i64, BackendIssue> {
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .ok()
@@ -113,16 +113,16 @@ fn parse_pid(value: &str) -> Result<u32, BackendIssue> {
         .filter(|n| *n > 0)
         .ok_or(BackendIssue::LocalBinding)
 }
-async fn read_pid(process: &NewApiProcess) -> Result<u32, BackendIssue> {
+pub(super) async fn read_pid(process: &NewApiProcess) -> Result<u32, BackendIssue> {
     let path = process.data_dir.join("new-api.pid");
     tokio::task::spawn_blocking(move || parse_pid(&read_small(&path, 32)?))
         .await
         .map_err(|_| BackendIssue::LocalBinding)?
 }
-#[derive(PartialEq, Eq)]
-struct ProcessSnapshot {
-    pid: u32,
-    start: u64,
+#[derive(Clone, PartialEq, Eq)]
+pub(super) struct ProcessSnapshot {
+    pub(super) pid: u32,
+    pub(super) start: u64,
 }
 fn process_start(stat: &str, pid: u32) -> Result<u64, BackendIssue> {
     let (prefix, tail) = stat.rsplit_once(") ").ok_or(BackendIssue::LocalBinding)?;
@@ -146,7 +146,7 @@ fn owns_listener(text: &str, pid: u32) -> bool {
         && lines[0].matches("pid=").count() == 1
         && lines[0].contains(&format!("pid={pid},"))
 }
-async fn process_snapshot(
+pub(super) async fn process_snapshot(
     process: &NewApiProcess,
     pid: u32,
 ) -> Result<ProcessSnapshot, BackendIssue> {
@@ -201,7 +201,7 @@ async fn process_snapshot(
         .map_err(|_| BackendIssue::LocalBinding)??;
     Ok(ProcessSnapshot { pid, start })
 }
-async fn known_legacy_build(pid: u32) -> bool {
+pub(super) async fn known_legacy_build(pid: u32) -> bool {
     tokio::task::spawn_blocking(move || -> std::io::Result<bool> {
         let mut file = std::fs::File::open(format!("/proc/{pid}/exe"))?;
         let limit = 256 * 1024 * 1024;
@@ -250,7 +250,7 @@ fn page_capability(body: &Value) -> bool {
         })
 }
 impl NewApiClient {
-    fn local_target(&self, process: &NewApiProcess) -> Result<(), BackendIssue> {
+    pub(super) fn local_target(&self, process: &NewApiProcess) -> Result<(), BackendIssue> {
         let url = Url::parse(&process.base_url).map_err(|_| BackendIssue::LocalBinding)?;
         if process.configured_version() != SUPPORTED_BACKEND_VERSION {
             return Err(BackendIssue::UnsupportedVersion);
