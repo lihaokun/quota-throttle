@@ -1,5 +1,6 @@
 //! 统一事实解析及消费投影纯函数；尚未接采集、持久化或调度。
 #![allow(dead_code)] // B/C 接线之前，不用假生产调用消除未使用警告。
+pub(crate) mod collection;
 mod decode;
 pub(crate) mod storage_codec;
 mod types;
