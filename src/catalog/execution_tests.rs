@@ -128,7 +128,7 @@ fn update(store: &mut CatalogStore, id: MembershipId, n: usize, explicit: bool) 
 }
 fn as_v2(store: &mut CatalogStore) {
     let tx = store.conn.transaction().unwrap();
-    tx.execute_batch(DROP_LEDGER_V5).unwrap();
+    drop_ledger_for_legacy(&tx);
     let instance: String = tx
         .query_row("SELECT catalog_instance_id FROM catalog_meta", [], |r| {
             r.get(0)

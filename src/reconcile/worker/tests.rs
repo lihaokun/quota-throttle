@@ -22,6 +22,8 @@ fn r10_worker_private_snapshots_have_no_debug_or_serialize() {
 mod policy_tests;
 #[path = "scenarios.rs"]
 mod scenarios;
+#[path = "volcano_tests.rs"]
+mod volcano_tests;
 
 fn policy_config() -> Arc<Config> {
     Arc::new(

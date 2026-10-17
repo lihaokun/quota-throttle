@@ -273,7 +273,10 @@ fn query_uninitialized_corrupt_and_changed_identity_are_explicit() {
             ErrorKind::UnsupportedSchema
         ))))
     );
-    store.conn.pragma_update(None, "user_version", 5).unwrap();
+    store
+        .conn
+        .pragma_update(None, "user_version", DATABASE_SCHEMA_VERSION)
+        .unwrap();
     store
         .conn
         .execute("DELETE FROM ledger_checkpoints WHERE lane='history'", [])

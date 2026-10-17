@@ -10,6 +10,7 @@ use serde_json::Value;
 
 mod attribution;
 pub(crate) use attribution::*;
+pub(crate) mod observed;
 pub(crate) mod query;
 mod rows;
 mod types;
@@ -340,6 +341,8 @@ impl CatalogStore {
         let delta = usage_delta(&attributed)?;
         for f in &attributed {
             rows::insert_fact(&tx, f)?;
+            observed::enqueue_observation(&tx, f, observed_at)
+                .map_err(|_| LedgerError::Catalog(error(ErrorKind::Storage)))?;
         }
         for (k, t) in &delta.cells {
             rows::add_cell(&tx, k, *t)?;

@@ -15,6 +15,7 @@ const SCHEMA_V2: &str = include_str!("schema_v2.sql");
 const SCHEMA_V3: &str = include_str!("schema_v3.sql");
 const SCHEMA_V4: &str = include_str!("schema_v4.sql");
 const SCHEMA_V5: &str = include_str!("schema_v5.sql");
+const SCHEMA_V6: &str = include_str!("schema_v6.sql");
 pub(super) const SOURCE_COLUMNS: &str =
     "source_id,kind,name,note,manual_paused,retired_at,config_revision";
 pub(super) const GROUP_COLUMNS: &str = "group_id,newapi_group,name,kind,revision,ready";
@@ -150,6 +151,9 @@ impl CatalogStore {
             if version >= 5 {
                 super::ledger::verify_ledger(&probe)?;
             }
+            if version >= 6 {
+                super::ledger::observed::verify_observed(&probe)?;
+            }
             probe.execute_batch("ROLLBACK")?;
         }
         // Step P4: 仅初始化本次创建的库；schema 与版本标记同事务。
@@ -210,6 +214,16 @@ impl CatalogStore {
             }
             store.migrate_v4()?;
         }
+        if version <= 5 {
+            if !new_file && version == 5 {
+                let suffix: String =
+                    store
+                        .conn
+                        .query_row("SELECT lower(hex(randomblob(16)))", [], |r| r.get(0))?;
+                store.backup_to(&parent.join(format!("catalog-v5-before-v6-{suffix}.sqlite3")))?;
+            }
+            store.migrate_v5()?;
+        }
         let conn = &store.conn;
         // Step P5: 配置回读及数据检查完成才发布 Store。
         conn.pragma_update(None, "journal_mode", "WAL")?;
@@ -232,6 +246,7 @@ impl CatalogStore {
         super::control::verify_control(conn)?;
         super::execution::verify_execution(conn)?;
         super::policy::verify_policy(conn)?;
+        super::ledger::observed::verify_observed(conn)?;
         let snapshot = store.snapshot()?;
         for source in &snapshot.sources {
             store.read_material(source.source_id, true)?;
@@ -332,6 +347,24 @@ impl CatalogStore {
         tx.pragma_update(None, "user_version", 5)?;
         verify_schema(&tx, 5)?;
         super::ledger::verify_ledger(&tx)?;
+        commit(tx, &mut self.poisoned)
+    }
+
+    fn migrate_v5(&mut self) -> Result<()> {
+        // Step O4.0: 队列/相位/历史与版本一起建立，不回放旧错误或清旧状态。
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let instance: String =
+            tx.query_row("SELECT catalog_instance_id FROM catalog_meta", [], |r| {
+                r.get(0)
+            })?;
+        tx.execute("DROP TABLE catalog_meta", [])?;
+        tx.execute_batch(SCHEMA_V6)?;
+        tx.execute("INSERT INTO catalog_meta VALUES(1,6,?1)", [instance])?;
+        tx.pragma_update(None, "user_version", 6)?;
+        verify_schema(&tx, 6)?;
+        super::ledger::observed::verify_observed(&tx)?;
         commit(tx, &mut self.poisoned)
     }
 
@@ -723,11 +756,16 @@ fn verify_schema(conn: &Connection, expected_version: i64) -> Result<()> {
                 && !s.is_empty()
                 && !(expected_version >= 5 && s.starts_with("CREATE TABLE catalog_meta"))
         }))
+        .chain(SCHEMA_V5.split(';').map(str::trim).filter(|s| {
+            expected_version >= 5
+                && !s.is_empty()
+                && !(expected_version >= 6 && s.starts_with("CREATE TABLE catalog_meta"))
+        }))
         .chain(
-            SCHEMA_V5
+            SCHEMA_V6
                 .split(';')
                 .map(str::trim)
-                .filter(|s| expected_version >= 5 && !s.is_empty()),
+                .filter(|s| expected_version >= 6 && !s.is_empty()),
         );
     for statement in statements {
         let tail = statement

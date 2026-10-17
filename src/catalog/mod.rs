@@ -10,6 +10,7 @@ mod legacy;
 pub(crate) mod policy;
 mod store;
 pub mod types;
+pub(crate) mod volcano_publication;
 
 pub use legacy::{build_legacy_import, LegacyChannel, LegacyImportPlan};
 pub use store::CatalogStore;

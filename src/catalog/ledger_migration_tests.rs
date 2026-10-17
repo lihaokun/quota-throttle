@@ -57,7 +57,7 @@ fn migrate_case(version: i64, n: usize, nv: usize, salt: i64, offset: i64, prepa
             .conn
             .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        5
+        DATABASE_SCHEMA_VERSION
     );
     assert_eq!(store.snapshot().unwrap().schema_version, 1);
     let state = store.load_ledger_state().unwrap();

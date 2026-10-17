@@ -1,7 +1,7 @@
 //! 组合轨迹只使用真实 worker/Store/HTTP；期望由输入命令推进，不调用计划器作 oracle。
 use super::*;
 
-async fn drive(future: impl std::future::Future<Output = ()> + Send + 'static) {
+pub(super) async fn drive(future: impl std::future::Future<Output = ()> + Send + 'static) {
     let task = tokio::spawn(future);
     // 始终 runnable，防止 OS socket 尚未返回时 paused runtime 跳到超时。
     for _ in 0..200_000 {

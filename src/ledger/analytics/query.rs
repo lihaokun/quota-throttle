@@ -47,6 +47,37 @@ pub(crate) struct MinutePartition {
     pub(crate) whole: Option<ScanWindow>,
     pub(crate) edges: Vec<ScanWindow>,
 }
+pub(crate) fn partition_window(window: ScanWindow) -> AnalyticsResult<MinutePartition> {
+    if window.from < 0 || window.from >= window.to || window.to > JSON_SAFE {
+        return Err(AnalyticsError::InvalidQuery);
+    }
+    Ok(partition_valid_window(window))
+}
+fn partition_valid_window(window: ScanWindow) -> MinutePartition {
+    let ScanWindow { from, to } = window;
+    let left = (from + 59) / 60 * 60;
+    let right = to / 60 * 60;
+    if left >= right {
+        return MinutePartition {
+            whole: None,
+            edges: vec![window],
+        };
+    }
+    let edges = [
+        ScanWindow { from, to: left },
+        ScanWindow { from: right, to },
+    ]
+    .into_iter()
+    .filter(|w| w.from < w.to)
+    .collect();
+    MinutePartition {
+        whole: Some(ScanWindow {
+            from: left,
+            to: right,
+        }),
+        edges,
+    }
+}
 impl UsageQuery {
     pub(crate) fn new(
         window: ScanWindow,
@@ -85,29 +116,7 @@ impl UsageQuery {
         &self.filter
     }
     pub(crate) fn partition(&self) -> MinutePartition {
-        let ScanWindow { from, to } = self.window;
-        let left = (from + 59) / 60 * 60;
-        let right = to / 60 * 60;
-        if left >= right {
-            return MinutePartition {
-                whole: None,
-                edges: vec![self.window],
-            };
-        }
-        let edges = [
-            ScanWindow { from, to: left },
-            ScanWindow { from: right, to },
-        ]
-        .into_iter()
-        .filter(|w| w.from < w.to)
-        .collect();
-        MinutePartition {
-            whole: Some(ScanWindow {
-                from: left,
-                to: right,
-            }),
-            edges,
-        }
+        partition_valid_window(self.window)
     }
     fn anchor(&self) -> i128 {
         let shift = i128::from(self.utc_offset_minutes) * 60;

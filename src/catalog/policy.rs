@@ -113,7 +113,7 @@ impl CatalogStore {
     }
 }
 
-fn policy_error(e: PolicyError) -> super::control::ControlError {
+pub(super) fn policy_error(e: PolicyError) -> super::control::ControlError {
     failure(match e {
         PolicyError::InvalidInput | PolicyError::Capacity => Code::InvalidInput,
         PolicyError::SequenceExhausted => Code::Storage,
@@ -125,7 +125,7 @@ fn volcano_policy(settings: &SourceSettings) -> ControlResult<&VolcanoPolicy> {
         _ => Err(failure(Code::InvalidInput)),
     }
 }
-fn source_record(
+pub(super) fn source_record(
     conn: &Connection,
     id: SourceId,
 ) -> ControlResult<(SourceView, SourceSettings, bool)> {
@@ -208,7 +208,7 @@ fn decode_runtime(row: &Row<'_>, id: SourceId) -> ControlResult<Option<VolcanoRu
         coverage_end,
     }))
 }
-fn read_runtime(
+pub(super) fn read_runtime(
     conn: &Connection,
     id: SourceId,
     policy: &VolcanoPolicy,
@@ -228,7 +228,7 @@ fn read_runtime(
     }
     Ok(runtime)
 }
-fn write_runtime(tx: &Transaction<'_>, r: &VolcanoRuntime) -> ControlResult<()> {
+pub(super) fn write_runtime(tx: &Transaction<'_>, r: &VolcanoRuntime) -> ControlResult<()> {
     let rows = tx.execute("UPDATE volcano_runtime SET revision=?2,period_id=?3,period_start=?4,next_reset_at=?5,used_input=?6,used_output=?7,consecutive_failures=?8,error_exhausted=?9,limit_exhausted=?10,error_epoch=?11,error_cutoff_at=?12,evidence_cursor=?13,coverage_end=?14 WHERE source_id=?1",
         params![r.source_id.get(),r.revision,r.period_id,r.period_start,r.next_reset_at,r.used_input,r.used_output,r.consecutive_failures,r.error_exhausted,r.limit_exhausted,r.error_epoch,r.error_cutoff_at,r.evidence_cursor,r.coverage_end])?;
     ensure(rows == 1, Code::Storage)
@@ -336,6 +336,9 @@ pub(crate) fn apply_source_policy_tx(
     if runtime != old {
         runtime.revision = bump(old.revision).map_err(|_| failure(Code::Storage))?;
         write_runtime(tx, &runtime)?;
+    }
+    if let Some(t) = &transition {
+        super::ledger::observed::record_period(tx, id, old.period_id, t)?;
     }
     Ok(SourcePolicyWrite {
         source,

@@ -104,6 +104,17 @@ impl CatalogStore {
             if count != 1 {
                 return Err(corrupt());
             }
+            if old.source_id.is_none() && new.source_id.is_some() {
+                if let Some(at) = state
+                    .scans
+                    .iter()
+                    .find(|s| s.lane == ScanLane::Recent)
+                    .and_then(|s| s.last_observed_at)
+                {
+                    super::observed::enqueue_observation(&tx, &new, at)
+                        .map_err(|_| LedgerError::Catalog(error(ErrorKind::Storage)))?;
+                }
+            }
             changed += 1;
         }
         let ledger_revision = if changed > 0 {

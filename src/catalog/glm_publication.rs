@@ -2,7 +2,7 @@
 #![cfg_attr(not(test), allow(dead_code))]
 use super::control::{ensure, failure, ControlErrorCode as Code, ControlResult};
 use super::glm_round::{apply_glm_round_tx, compute_glm_round_tx, editable, GlmRoundDraft};
-use super::store::{commit, decode_source_view, read_material, SOURCE_COLUMNS};
+use super::store::{commit, decode_source_view, read_material, read_snapshot, SOURCE_COLUMNS};
 use super::*;
 use crate::config::Config;
 use crate::reconcile::planner::{BackendReadiness, RoutingPermit, OBSERVATION_MAX_AGE_SECS};
@@ -25,6 +25,7 @@ pub(crate) struct GlmPolicyCommit {
     pub permits: HashMap<MembershipId, RoutingPermit>,
     pub changed_groups: Vec<GroupId>,
     pub changed_members: Vec<MembershipId>,
+    pub scope: HashSet<MembershipId>,
 }
 
 fn build_glm_permits(
@@ -194,7 +195,20 @@ impl CatalogStore {
         let applied = apply_glm_round_tx(&tx, cfg, cycle, now_ms)?;
         let permits = build_glm_permits(cfg, cycle, backend, &applied.round, now_ms)?;
         wake_recovered_tx(&tx, &applied.round, previous, &permits, now_ms / 1000)?;
+        let snapshot = read_snapshot(&tx)?;
+        let sources: HashSet<_> = snapshot
+            .sources
+            .iter()
+            .filter(|s| s.kind == SourceKind::Glm)
+            .map(|s| s.source_id)
+            .collect();
         let result = GlmPolicyCommit {
+            scope: snapshot
+                .memberships
+                .iter()
+                .filter(|m| sources.contains(&m.source_id))
+                .map(|m| m.membership_id)
+                .collect(),
             report: PolicyRefreshReport {
                 cycle_id: applied.round.cycle_id,
                 preview_only: false,

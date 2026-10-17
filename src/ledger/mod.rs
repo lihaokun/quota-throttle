@@ -10,6 +10,7 @@ mod types;
 use crate::catalog::{ChannelId, JSON_SAFE};
 pub(crate) use decode::decode_native_row;
 pub(crate) use decode::valid_label;
+pub(crate) use decode::valid_request_id;
 use std::collections::{BTreeMap, BTreeSet};
 pub(crate) use types::*;
 

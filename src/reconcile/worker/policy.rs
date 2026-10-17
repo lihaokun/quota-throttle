@@ -81,8 +81,39 @@ impl ReconcileWorker {
                 &c.permits,
                 now_ms,
             )?;
-            c.permits = committed.permits;
+            c.permits.retain(|id, _| !committed.scope.contains(id));
+            c.permits.extend(committed.permits);
             c.last_glm_cycle = Some(committed.report.cycle_id);
+            Ok(committed.report)
+        })
+    }
+
+    pub(crate) async fn refresh_volcano_policy(
+        &self,
+    ) -> ControlResult<crate::catalog::volcano_publication::VolcanoRefreshReport> {
+        // Step O4.5: 来源投影与组目标确认提交后，仅替换本类许可；不续另一类 lease。
+        let _slot = self
+            .commands
+            .try_acquire()
+            .map_err(|_| error(ControlErrorCode::QueueFull))?;
+        let at = now();
+        if self.policy_config.dry_run {
+            return self
+                .core
+                .lock()
+                .map_err(|_| error(ControlErrorCode::Storage))?
+                .store
+                .preview_volcano_round(&self.policy_config, at);
+        }
+        self.publish(|c| {
+            let committed =
+                c.store
+                    .commit_volcano_round(&self.policy_config, c.backend, &c.permits, at)?;
+            c.permits.retain(|id, _| !committed.scope.contains(id));
+            c.permits.extend(committed.permits);
+            c.source_disabled
+                .retain(|id, _| !committed.source_scope.contains(id));
+            c.source_disabled.extend(committed.disabled);
             Ok(committed.report)
         })
     }

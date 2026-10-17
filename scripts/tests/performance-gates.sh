@@ -9,6 +9,8 @@ cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.."
 
 expected="$(printf '%s\n' \
   catalog::store::tests::glm_round::performance_gate_glm_maximum_catalog \
+  catalog::store::tests::observed_publication::scale::performance_gate_observed_period_usage_100k \
+  catalog::store::tests::observed_publication::scale::performance_gate_observed_maximum_catalog \
   catalog::store::tests::ledger::performance_gate_ledger_ingestion \
   catalog::store::tests::ledger::performance_gate_ledger_reopen_100k \
   catalog::store::tests::ledger::scans::performance_gate_collection_page \
