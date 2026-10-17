@@ -589,9 +589,9 @@ fn migration_case(
             used_output: output,
             coverage_end: NOW + 11,
             outcomes: vec![
-                FinalOutcome {
+                OutcomeObservation {
                     first_event_at: NOW + 1,
-                    completed_at: NOW + 10,
+                    observed_at: NOW + 10,
                     kind: OutcomeKind::Unavailable
                 };
                 failures as usize

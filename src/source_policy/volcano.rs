@@ -1,4 +1,5 @@
-//! 只消费已归并事实的火山策略。没有日志查询、时钟读取、数据库或渠道写入。
+//! 消费已去重观测的火山策略；成功 token 活动清计数，不自动解除耗尽。
+//! 没有日志查询、时钟读取、数据库或渠道写入。
 use super::PolicyError;
 use crate::catalog::{
     GroupId, GroupView, MembershipId, MembershipLifecycle, SourceId, SourceKind, VolcanoPolicy,
@@ -95,17 +96,19 @@ pub enum OutcomeKind {
     Ignored,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FinalOutcome {
+pub struct OutcomeObservation {
+    /// 已见有效日志的最早时刻，不证明请求开始。
     pub first_event_at: i64,
-    pub completed_at: i64,
+    /// 本条观测日志的时刻，不证明请求最终结束。
+    pub observed_at: i64,
     pub kind: OutcomeKind,
 }
-impl FinalOutcome {
+impl OutcomeObservation {
     fn validate(&self) -> Result<()> {
         ensure(
             nonnegative(self.first_event_at)
-                && nonnegative(self.completed_at)
-                && self.first_event_at <= self.completed_at,
+                && nonnegative(self.observed_at)
+                && self.first_event_at <= self.observed_at,
         )
     }
 }
@@ -120,7 +123,7 @@ pub struct VolcanoEvidence {
     pub used_input: i64,
     pub used_output: i64,
     pub coverage_end: i64,
-    pub outcomes: Vec<FinalOutcome>,
+    pub outcomes: Vec<OutcomeObservation>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EvidenceDisposition {
@@ -277,13 +280,14 @@ pub fn apply_usage(
 pub fn apply_outcome(
     runtime: &VolcanoRuntime,
     policy: &VolcanoPolicy,
-    outcome: &FinalOutcome,
+    outcome: &OutcomeObservation,
 ) -> Result<VolcanoRuntime> {
+    // Step O3: 既有时间/代次门禁不变；Success 清计数，耗尽原因仍锁存。
     runtime.validate(policy)?;
     outcome.validate()?;
     let mut next = runtime.clone();
     if outcome.first_event_at < runtime.period_start
-        || outcome.completed_at >= runtime.next_reset_at
+        || outcome.observed_at >= runtime.next_reset_at
         || runtime
             .error_cutoff_at
             .is_some_and(|cutoff| outcome.first_event_at <= cutoff)
@@ -330,7 +334,7 @@ pub fn apply_evidence(
     )?;
     for outcome in &batch.outcomes {
         outcome.validate()?;
-        ensure(outcome.completed_at < batch.coverage_end)?;
+        ensure(outcome.observed_at < batch.coverage_end)?;
     }
     if batch.period_id != runtime.period_id || batch.error_epoch != runtime.error_epoch {
         return Ok((runtime.clone(), EvidenceDisposition::Stale));

@@ -11,7 +11,7 @@ const NOW: i64 = 20 * DAY_SECONDS + 18 * 3600;
 fn policy_evidence_is_not_a_frontend_deserialization_type() {
     use crate::newapi::transport::assurance_tests::assert_not_impl;
     assert_not_impl!(VolcanoEvidence, serde::Deserialize<'static>);
-    assert_not_impl!(FinalOutcome, serde::Deserialize<'static>);
+    assert_not_impl!(OutcomeObservation, serde::Deserialize<'static>);
     assert_not_impl!(VolcanoRuntime, serde::Serialize);
 }
 fn sid(n: i64) -> SourceId {
@@ -29,10 +29,10 @@ fn policy() -> VolcanoPolicy {
 fn seed(p: &VolcanoPolicy) -> VolcanoRuntime {
     initialize_runtime(sid(7), p, NOW).unwrap()
 }
-fn outcome(kind: OutcomeKind, at: i64) -> FinalOutcome {
-    FinalOutcome {
+fn outcome(kind: OutcomeKind, at: i64) -> OutcomeObservation {
+    OutcomeObservation {
         first_event_at: at,
-        completed_at: at,
+        observed_at: at,
         kind,
     }
 }
@@ -218,7 +218,7 @@ fn cutoff_period_and_new_error_epoch_exclude_old_events() {
     let mut late = batch.clone();
     for event in &mut late.outcomes {
         event.first_event_at = NOW + 20;
-        event.completed_at = NOW + 20;
+        event.observed_at = NOW + 20;
     }
     assert_eq!(
         apply_evidence(&cleared, &p, &late, NOW + 100).unwrap(),
@@ -236,9 +236,9 @@ fn cutoff_period_and_new_error_epoch_exclude_old_events() {
             .consecutive_failures,
         1
     );
-    let prior_period = FinalOutcome {
+    let prior_period = OutcomeObservation {
         first_event_at: cleared.period_start - 1,
-        completed_at: NOW + 11,
+        observed_at: NOW + 11,
         kind: OutcomeKind::Unavailable,
     };
     assert_eq!(apply_outcome(&cleared, &p, &prior_period).unwrap(), cleared);
@@ -319,7 +319,7 @@ fn evidence_is_atomic_absolute_and_cursor_guarded() {
     );
     let mut malformed = frame(&next, 2, &[OutcomeKind::Unavailable; 2]);
     malformed.used_input = 80;
-    malformed.outcomes[1].completed_at = malformed.outcomes[1].first_event_at - 1;
+    malformed.outcomes[1].observed_at = malformed.outcomes[1].first_event_at - 1;
     assert_eq!(
         apply_evidence(&next, &p, &malformed, NOW + 100),
         Err(PolicyError::InvalidInput)
@@ -668,7 +668,7 @@ proptest! {
             let mut invalid=fresh.clone();
             match invalid_kind {
                 0=>invalid.used_input= -1,
-                1=>invalid.outcomes.push(FinalOutcome{first_event_at:now+1,completed_at:now,kind:OutcomeKind::Unavailable}),
+                1=>invalid.outcomes.push(OutcomeObservation{first_event_at:now+1,observed_at:now,kind:OutcomeKind::Unavailable}),
                 2=>{invalid.outcomes.clear();invalid.coverage_end=expected.period_start-1;},
                 3=>invalid.source_id=sid(8),
                 _=>invalid.to_cursor=0,

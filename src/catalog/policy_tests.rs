@@ -63,9 +63,9 @@ fn batch(
         used_output: output,
         coverage_end: now + 1,
         outcomes: vec![
-            FinalOutcome {
+            OutcomeObservation {
                 first_event_at: now,
-                completed_at: now,
+                observed_at: now,
                 kind: OutcomeKind::Unavailable
             };
             failures
@@ -800,7 +800,7 @@ proptest! {
             let now=NOW+i as i64+1;
             let evidence=VolcanoEvidence{source_id:s,period_id:1,error_epoch:expected.error_epoch,from_cursor:expected.evidence_cursor,to_cursor:i as i64+1,
                 used_input:expected.used_input+i64::from(*input),used_output:expected.used_output+2,coverage_end:now+1,
-                outcomes:vec![FinalOutcome{first_event_at:now,completed_at:now,kind:OutcomeKind::Unavailable};*failures as usize]};
+                outcomes:vec![OutcomeObservation{first_event_at:now,observed_at:now,kind:OutcomeKind::Unavailable};*failures as usize]};
             actual=store.apply_source_policy(s,1,expected.revision,SourcePolicyUpdate::Evidence(evidence),now).unwrap().runtime;
             expected.revision+=1;expected.used_input+=i64::from(*input);expected.used_output+=2;
             expected.consecutive_failures+=i64::from(*failures);expected.error_exhausted|=expected.consecutive_failures>=3;
