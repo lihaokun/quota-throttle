@@ -17,6 +17,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 use tokio::sync::{watch, Mutex as AsyncMutex, Notify, Semaphore};
 
+mod analytics;
 mod collection;
 mod policy;
 
@@ -72,6 +73,8 @@ pub struct ReconcileWorker {
     probe: AsyncMutex<SourceProbe>,
     collector: AsyncMutex<collection::CollectorSession>,
     collection_running: AtomicBool,
+    query_slots: Arc<Semaphore>,
+    repair_cursor: AsyncMutex<Option<crate::catalog::ledger::AttributionCursor>>,
 }
 #[derive(Debug, Default, Clone, Copy)]
 pub struct RoundReport {
@@ -217,6 +220,8 @@ impl ReconcileWorker {
             probe: AsyncMutex::new(SourceProbe::default()),
             collector: AsyncMutex::new(collection::CollectorSession::default()),
             collection_running: AtomicBool::new(false),
+            query_slots: Arc::new(Semaphore::new(1)),
+            repair_cursor: AsyncMutex::new(None),
         }))
     }
     fn mutate<T>(
