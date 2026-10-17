@@ -101,3 +101,7 @@ B1 随后已完成本地验收；[B2 统一采集细化](../design/source-groups
 所检查的 `/api/status` 与系统实例响应不提供日志数据库类型；系统实例的运行信息主要是版本、平台及启动时间，不能把它当作日志数据集标识。[状态响应](https://github.com/QuantumNous/new-api/blob/6ce7305cd36f16506fb6a2c3c524a5a318539ba7/controller/misc.go)、[系统实例生产者](https://github.com/QuantumNous/new-api/blob/6ce7305cd36f16506fb6a2c3c524a5a318539ba7/service/system_instance.go)
 
 依赖锁定 godotenv 1.5.1，其 Load 不覆盖已存在变量。因此建议对已核对的同一托管进程，有界检查初始 SQL_DSN/LOG_SQL_DSN 均显式为 local；缺少时仅报告无法确认，不推断实际不是 SQLite，不自动改配置。这是源码推导的最小支持门禁，仍需隔离实例验证冲突 `.env` 和实际管理员分页，不是当前部署已满足的结论。[依赖](https://github.com/QuantumNous/new-api/blob/6ce7305cd36f16506fb6a2c3c524a5a318539ba7/go.mod)、[不覆盖式加载](https://github.com/joho/godotenv/blob/v1.5.1/godotenv.go#L184)
+
+## 2026-10-17 B2 隔离验证补记
+
+上述启动门禁及分页假设随后已在固定二进制的临时实例中验证，B2 已完成本地实现、测试和独立契约审核。冲突 `.env`、多页/时间端点、10 万/20 万条分页趋势，以及真实 producer→分页→worker→B1 组合的结果见 [B2 审核记录](../audits/sgm-4-facts-analytics/batch-b2-audit.md)。这补齐了前述待验证项，不改变无快照完整性证明、无可靠纯失败终态及不一致换库的边界；没有读取实际服务环境或改动部署。

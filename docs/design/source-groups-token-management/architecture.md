@@ -1,6 +1,6 @@
 # 来源共享 分组路由和用量面板架构
 
-日期：2026-10-15，进度更新：2026-10-17。状态：架构已确认，sgm-1 已完成，sgm-2 的执行/恢复和本地托管预检已实现并分步验证，sgm-3 A/B 和 C-1 已完成验收；sgm-4 A 和 B1 的 v5 事务账本已完成本地验收。尚未接现行服务，C-2/C-3、sgm-4 后续及 sgm-5 至 sgm-7 未完成。需求依据：[最新版方案](../../research/source-groups-token-management-research.md)。接口实证：[实现前审核](review.md)。架构确认不包含生产部署授权。
+日期：2026-10-15，进度更新：2026-10-17。状态：架构已确认，sgm-1 已完成，sgm-2 的执行/恢复和本地托管预检已实现并分步验证，sgm-3 A/B 和 C-1 已完成验收；sgm-4 A、B1 的 v5 事务账本和 B2 统一采集已完成本地验收。尚未接现行服务，C-2/C-3、sgm-4 后续及 sgm-5 至 sgm-7 未完成。需求依据：[最新版方案](../../research/source-groups-token-management-research.md)。接口实证：[实现前审核](review.md)。架构确认不包含生产部署授权。
 
 ## 目标与边界
 
@@ -317,9 +317,9 @@ C-1 不对未 managed 的目录成员写自动目标，不通过周期操作增�
 
 事实以单个 catalog 名称空间内的 native_log_id 去重，已知 channel 身份永久保留，未知归属可等待后续显式修正。原生库不一致替换/回滚仍受 SGM-7 恢复前提约束，不能把 catalog UUID 当作自动识别原生数据库的证明。B1 不生成 FinalOutcome/VolcanoEvidence 或渠道许可；B2 采集、B3 查询/补归属及 C 的可信终态仍有各自门禁。
 
-## 第四子计划 B2 待确认共享接口
+## 第四子计划 B2 统一采集共享接口
 
-[B2 细化](subplans/sgm-4-facts-analytics-b2.md)保持模块划分与 v5。以下是待确认的进程内接口，不改变公开 wire 或现行服务；只有完成能力探针和分步实现验收后才具有运行能力。
+[B2 细化](subplans/sgm-4-facts-analytics-b2.md)保持模块划分与 v5。以下进程内接口已通过能力探针、分步实现及本地验收，不改变公开 wire 或现行服务，尚未由运行入口启动。证据见 [B2 审核](../../audits/sgm-4-facts-analytics/batch-b2-audit.md)。
 
 | 类型/责任 | 所有者和消费者 | 约束 |
 | --- | --- | --- |
@@ -328,4 +328,4 @@ C-1 不对未 managed 的目录成员写自动目标，不通过周期操作增�
 | CollectionReport / CollectionError | worker 单飞采集 → 后续运行组装/状态投影 | 当轮已提交计数、两个检查点及固定诊断；不产生来源策略许可 |
 | restart_scan | catalog → 采集器 | 当前完整票据匹配后同窗新代次第一页，事实/投影不变；不改变 begin_scan 重放 |
 
-近期与历史复用现有两个 checkpoint；历史从保存起点全窗重扫，不增加任务表。SQL_DSN/LOG_SQL_DSN 显式 local 的建议启动前提仅用于核验日志 SQLite 分支，不是数据集身份凭证。若当前服务缺少可验证条件，B2 只报告；设置启动环境及任何重启都留给获得授权后的 SGM-7。
+近期与历史复用现有两个 checkpoint；历史从保存起点全窗重扫，不增加任务表。SQL_DSN/LOG_SQL_DSN 显式 local 的已确认启动前提仅用于核验日志 SQLite 分支，不是数据集身份凭证。若当前服务缺少可验证条件，B2 只报告；设置启动环境及任何重启都留给获得授权后的 SGM-7。

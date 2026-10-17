@@ -1,6 +1,6 @@
 # SGM-4 B2 统一采集细化方案
 
-日期：2026-10-17。基线 `95374da`，状态：待确认。承接已验收的 [B1 事务账本](sgm-4-facts-analytics-b.md)，本轮只做设计，不接运行服务。确认后先做隔离能力探针，再按本文件的小步实现；探针与实现验收结果另记，不把方案当作通过证据。
+日期：2026-10-17。设计基线 `95374da`，实施基线 `812b190`。B2.0–B2.3 已按确认范围完成实现、测试、独审及本地退出验收，不接运行服务。执行证据见 [B2 审核记录](../../../audits/sgm-4-facts-analytics/batch-b2-audit.md)，不把方案当作通过证据。
 
 ## 1 范围和实施顺序
 
@@ -38,7 +38,7 @@ B2 实现一个全局日志采集器，将 NewAPI 管理日志经 A 校验、B1 
 
 本地 boot 只显式设置 PORT，继承其他环境。固定 NewAPI 启动先加载 `.env`，之后用 SQL_DSN 和 LOG_SQL_DSN 选择主库/日志库；日志库可以不同于主库。不能根据工作目录有 one-api.db 或 `/api/status` 返回正确版本就认定日志来自 SQLite。[本项目启动](../../../../src/boot.rs)、[原生初始化](https://github.com/QuantumNous/new-api/blob/6ce7305cd36f16506fb6a2c3c524a5a318539ba7/main.go)、[数据库选择](https://github.com/QuantumNous/new-api/blob/6ce7305cd36f16506fb6a2c3c524a5a318539ba7/model/main.go)
 
-本批建议的最小可验证前提是：同一个已核对的 Linux 托管进程，其启动环境中 **SQL_DSN=local 且 LOG_SQL_DSN=local**。读取 `/proc/<pid>/environ` 时有 1 MiB 上限，只判这两个键各出现一次且精确相等；不打印、不存储、不返回其他环境内容。读取失败、超限、重复或缺失都返回 SqliteUnverified，不猜默认值。该显式非空值由固定版本选为 SQLite；所用 godotenv 1.5.1 的 Load 不覆盖已存在环境变量，`.env` 不能改变这两个选择。[加载器实现](https://github.com/joho/godotenv/blob/v1.5.1/godotenv.go#L184)
+本批采用的最小可验证前提是：同一个已核对的 Linux 托管进程，其启动环境中 **SQL_DSN=local 且 LOG_SQL_DSN=local**。读取 `/proc/<pid>/environ` 时有 1 MiB 上限，只判这两个键各出现一次且精确相等；不打印、不存储、不返回其他环境内容。读取失败、超限、重复或缺失都返回 SqliteUnverified，不猜默认值。该显式非空值由固定版本选为 SQLite；所用 godotenv 1.5.1 的 Load 不覆盖已存在环境变量，`.env` 不能改变这两个选择。[加载器实现](https://github.com/joho/godotenv/blob/v1.5.1/godotenv.go#L184)
 
 这是保守的支持门禁：缺少这两个值不等于当前服务不是 SQLite，只代表该方法无法确认。也不把进程环境当作防恶意同用户篡改的安全证明。B2 不修改启动环境、不读取实际生产环境，不因缺证据自动重启；若发布时缺少条件，由 SGM-7 在获得窗口授权后明确设置并重启。替代证据方案须先补能力验证，不能偷偷读 NewAPI 数据库。
 
@@ -48,7 +48,7 @@ B2 实现一个全局日志采集器，将 NewAPI 管理日志经 A 校验、B1 
 
 ### 4.1 两条检查点足够表达首版计划
 
-建议默认：首次起点为 `max(0, now−31×86400)`；Recent 回看 300 秒；每轮至多 4 次逻辑日志读，轮次结束后至少等 10 秒。now 是合法 UTC 整秒且至少为 2，当前秒不纳入固定截止时间；不满足时初始化前即拒绝。首次显式初始化可指定更早 from；初始化后不因重启重新计算或移动起点。本批不增加改变已有起点的管理 API。
+已确认默认：首次起点为 `max(0, now−31×86400)`；Recent 回看 300 秒；每轮至多 4 次逻辑日志读，轮次结束后至少等 10 秒。now 是合法 UTC 整秒且至少为 2，当前秒不纳入固定截止时间；不满足时初始化前即拒绝。首次显式初始化可指定更早 from；初始化后不因重启重新计算或移动起点。本批不增加改变已有起点的管理 API。
 
 | lane/状态 | 下一动作 |
 | --- | --- |
@@ -95,7 +95,7 @@ B2 实现一个全局日志采集器，将 NewAPI 管理日志经 A 校验、B1 
 | ScanAction | Skip/Begin(window)/Continue/RestartSameWindow/RetrySameWindow/Blocked(fault)；纯计划器输出，不直接调用 SQL/HTTP |
 | CollectorSession | 每 lane 已接受代次、上一页键/total、是否需重扫；next_lane、上次墙钟、可空 lease、单调 next_due、固定诊断；至多两份 lane 状态，取消靠 RAII 标记，非持久 |
 | CollectionReport | 本轮逻辑页尝试/提交数、inserted/duplicates、安全 LedgerState、固定 issue、pagination_changed；至多两条进度，不含原始日志或成功路由声明 |
-| CollectionError | Ledger(LedgerError)/Control(ControlErrorCode)/Capability(LogCapabilityIssue)/Clock/Busy/InvalidPage；固定码，无底层自由文本 |
+| CollectionError | Ledger(LedgerError)/Control(ControlErrorCode)/Capability(LogCapabilityIssue)/Management(ManagementError)/Clock/Busy/InvalidPage；Management 复用原安全 kind/status/retry_after/delivery，承接 §6 B2.5 的 429 与鉴权分类，无底层自由文本 |
 
 所有新增类型 crate 私有，不新增面板 wire schema。已有 ScanLane/ScanFault/PageEnd 等只 import，不重复定义。CollectionReport 的已观测属性不允许转换成策略 Ready；B3 再设计公开状态投影。
 
@@ -148,7 +148,7 @@ B2 实现一个全局日志采集器，将 NewAPI 管理日志经 A 校验、B1 
 1. 若 dry_run，返回未执行报告，零网络/零账本写；否则 try_acquire 一个 commands 槽，再 try_lock 单飞。已有采集或容量满→Busy，无排队新任务。检查会话 next_due，未到期→安全 no-op。
 2. 设单调总截止 60 秒，安装取消 guard；获取真实 lease 并读 LedgerState。失败只报告固定问题，不初始化成完整零。初始化仅在空状态时调用 B1；已初始化使用原起点。
 3. 每次循环先核停止/截止，选择并提前轮换 next_lane，按 B2.2 决定动作。Begin/Restart/Retry 经 B2.6 事务桥接取得新票据；Continue 重新读取当前票据。每 lane 最多开启一窗。动作/读取失败不得留在原分支空转：存储/致命错误退出，其他错误把该 lane 标为本轮不可运行；两条均不可运行则退出。
-4. 在 Core 外重核绑定，计一次逻辑页尝试，使用 min(25 秒,本轮剩余期限) 调 B2.5；返回后再次核绑定、时钟和取消。失败不入账，按 §4.3 分类决定诊断、阻塞或结束；单 lane 的非全局故障允许另一条继续。
+4. 在 Core 外重核绑定并构造查询；不可编码的旧窗口重读时钟后通过 failed_page 标该 lane 为 InvalidPage，保留原窗、本轮继续另一方向。合法查询才计一次逻辑页尝试，使用 min(25 秒,本轮剩余期限) 调 B2.5；返回后再次核绑定、时钟和取消。失败不入账，按 §4.3 分类决定诊断、阻塞或结束；单 lane 的非全局故障允许另一条继续。
 5. 持短 Core 锁，通过 B1 commit_fact_page 同事务入账/推进。成功后才更新会话已接受代次/页尾与安全计数；旧 ticket 冲突重读状态、标记该 lane 下轮重扫，不循环抢写。未知提交/损坏立即终止本轮，不发布成功。
 6. 4 次尝试、无任务或总截止任一达到即结束；成功、错误和取消退出均把 next_due 设为此刻单调时间之后至少 10 秒，不能借 drop/再次调用绕过间隔。返回已提交部分及两条持久进度；没有“一轮全成才落库”的假原子性。取消 guard 只更新有界内存恢复标志/next_due 并释放锁/槽，不在 Drop 中写库；已经成功提交的页保留。
 
@@ -161,6 +161,10 @@ B2 实现一个全局日志采集器，将 NewAPI 管理日志经 A 校验、B1 
 ### B2.7 后台生命周期和诊断
 
 `run_fact_collection(process, shutdown: watch::Receiver<bool>)` 只由未来运行组装层显式调用，本批不接 CLI。开轮前检查 shutdown，调用 B2.6；select shutdown/截止使在途 future 取消。每轮结束后等待 next_due，不补发积压 tick；普通错误保留安全状态并等待，Storage/身份冲突保持阻塞而非高速重试。永久后台循环只靠 shutdown/致命存储错误终止；每一轮和睡眠都可取消。
+
+实现使用一个 worker 内 `collection_running` 原子标记及 RAII guard 保证后台生命周期唯一，第二个后台入口立即 Busy；显式单轮仍走原采集锁/间隔。新后台生命周期先使两 lane 的内存 accepted/previous 失效并要求重新预检，保留持久窗口、已提交事实和 next_due。这同时覆盖“在两轮之间休眠时停止，再用同一 worker 启动”的情况。dry_run/no-op 的后台也必须等待至少 10 秒，不能因旧 next_due 已过而空转。
+
+内部 LogIo 只为控制故障点分离异步读取，生产唯一适配始终使用同一个 NewApiClient 和生命周期内固定的 NewApiProcess；不提供公开 backend 注册或动态改接数据集。测试替身不作为真实能力证据，原生隔离测试另走真正 producer→页请求→worker→B1。小型 helper 沿既有契约拆分：report/ledger_state 只短读，log_lease 只缓存当前进程短期证据，failed_page 保持明确错误与独立诊断事务；它们均不改业务状态。
 
 正确性：轮次不 spawn 脱离生命周期的采集任务；shutdown 丢弃当前 future 后由其 guard 释放资源，重启只读持久状态。60 秒 timeout_at 覆盖轮次全部 await（含页前后检查），但不冒充同步提交硬中断；next_due 与单飞共同防重叠和补 tick 风暴。
 
@@ -192,7 +196,7 @@ B2 实现一个全局日志采集器，将 NewAPI 管理日志经 A 校验、B1 
 - [x] 新增 restart_scan 明示 B1 增量契约，未偷改 begin_scan/DDL；共享数据结构随架构补记。
 - [x] 近期/历史、公平性、全历史重扫成本、取消、时钟回拨、长期离线、解析/容量和未知提交均有处理路径。
 - [x] 不把 total、空页、无变化、扫描结束或本地 UUID 当作完整覆盖/原生数据库身份。
-- [ ] B2.0 原生多页/时间端点和启动条件实测；当前只有固定源码依据。
-- [ ] 用户确认建议默认值及保守 SQLite 启动门禁；未确认前不编码后续入口。
+- [x] B2.0 原生多页/时间端点和启动条件实测，两次通过；另记录 10 万/20 万条隔离分页趋势。
+- [x] 用户确认默认值及保守 SQLite 启动门禁，按小步实施，不接运行服务。
 
-当前只是细化及事前期待完成，不宣称 B2 通过实现验收或可以部署。
+本地退出验收已完成：40 项新增入口（38 普通/2 性能）、6 组各 128 cases PBT、15 种变异、机械及独审通过；默认 debug/release 各 445 passed/0 failed/11 ignored，全部 10 项独立性能和 1 项原生隔离门禁另行通过。B2 未接 CLI/面板，B3/C 与生产发布仍须独立完成。
