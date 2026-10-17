@@ -3,6 +3,7 @@
 pub(crate) mod analytics;
 pub(crate) mod collection;
 mod decode;
+pub(crate) mod observations;
 pub(crate) mod storage_codec;
 mod types;
 

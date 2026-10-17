@@ -16,7 +16,7 @@ pub(super) fn valid_text(text: &str, limit: usize) -> bool {
 pub(crate) fn valid_label(text: &str) -> bool {
     !text.is_empty() && valid_text(text, MAX_LABEL_BYTES)
 }
-fn valid_request_id(text: &str) -> bool {
+pub(crate) fn valid_request_id(text: &str) -> bool {
     !text.is_empty()
         && text.len() <= MAX_REQUEST_ID_BYTES
         && text

@@ -19,6 +19,7 @@ expected="$(printf '%s\n' \
   catalog::store::tests::policy::performance_gate_policy_v3_migration \
   catalog::store::tests::policy::migration::performance_gate_complex_history_migration \
   ledger::analytics::tests::performance_gate_analytics_maximum_output \
+  ledger::observations::tests::performance_gate_observed_breaker_100k \
   ledger::tests::performance_gate_ledger_maximum_batch \
   source_policy::volcano::tests::performance_gate_volcano_maximum_selection | LC_ALL=C sort)"
 listing="$(cargo test --release --locked --bin quota-throttle performance_gate_ -- --ignored --list)"
