@@ -39,8 +39,12 @@ ManagementRequest增加私有expected_user_id，new默认None。仅ManagedTokens
 
 仅ManagementRequest私有字段/绑定方法、prepare_request的条件及token统一send；测试新增在tokens/tests.rs。旧client/transport归一比较只扩充明确插入的剥离，不放宽冻结边界。
 
+代码、两个新增回归及机械清单已随SGM5 A提交于`6ece728`；逐项核对无遗漏，旧请求默认None保持不变。
+
 ## 八 文档更新
 
 已同步SGM5细化、事前expectations、架构类型约束、a-audit/a-decisions及机械清单。此前576项全量和9项变异通过为修正前证据，不冒称修正后验证。
+
+上述契约与验收文档也包含在`6ece728`；本次文档提交仅回填已产生的实现哈希，不改代码或验证条件。
 
 最终修正后验证：旧实现两条回归0 passed/2 failed；修正后NewAPI模块108 passed/0 failed/2 ignored，默认debug/release各578 passed/0 failed/20 ignored。11类有效编译变异（含本修正两项）均被捕获，还原源码后23项普通令牌测试通过；18项独立性能、精确机械检查、clippy/release build及独立复审通过，0个未关闭问题。原生隔离探针15项通过，新增分别为Bearer GET self和cookie POST create的错header拒绝；没有请求真实供应商或改运行服务。完整证据及保留边界见[A审核](../audits/sgm-5-token-management/a-audit.md)。
