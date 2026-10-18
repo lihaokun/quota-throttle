@@ -417,3 +417,11 @@ TokenOwners固定各自可选的issuer/legacy身份、至少配置一方，已�
 | CommittedGroupAssessment / GroupInputStamp | catalog → worker的不可序列化内部证据；原全部未退休策略输入的有界stamp，不是新许可/持久版本；不包含已退休目录历史 |
 
 GLM缓存只在原commit成功后随Core整体替换，重开为空；源样本不以轮完成时间续期。组current同时检查完整输入stamp、原评估与相关观察时效以及原临期周重置边界，不重算decide。火山runtime未初始化为null，coverage_end为空时计数不代表已观测零用量；页面必须保留此缺口语义。具体操作结果仍按需读取原OperationView，不能从ready、dirty或applied推断成功。
+
+## 第六子计划 A2 HTTP接线设计
+
+[A2总体](subplans/sgm-6-admin-http-a2.md)分为[A2.1本地入口与统一发布](subplans/sgm-6-http-boundary-a2-1.md)、A2.2业务wire/worker薄适配。本节记录设计边界，不表示接口已实现；A2.2仍须逐路由细化，之后才编码。
+
+A2.1唯一成功路径为GET `/api/admin/v1/state`，输出原PanelSnapshot wire1；新增HttpErrorBody wire1仅含schema_version与固定error枚举，由[错误schema](schemas/panel-http-error.schema.json)约束。成功响应的X-QT-Snapshot-Age-Ms是保守展示年龄，不修改原观察时间；后续B只能使展示过期，不能将采集时backend_ready/current当作当前路由或写授权。
+
+管理面信任可信本机/SSH隧道，硬性回环监听、固定单一Host/Origin、自定义头和JSON写入保护，不是本机用户隔离认证，不增登录会话。唯一server监督循环持有一个在途blocking投影，过期不提前移走句柄；正常shutdown+join实际回收，强制abort不承诺释放不可抢占任务。HTTP只读已发布完整bytes，不每请求跑SQL或网络。旧status/CLI及在线服务保持不动，实际运行接线属于SGM7。
