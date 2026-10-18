@@ -21,6 +21,7 @@ cargo() {
     ledger::analytics::tests::performance_gate_analytics_maximum_output
     ledger::observations::tests::performance_gate_observed_breaker_100k
     ledger::tests::performance_gate_ledger_maximum_batch
+    newapi::tokens::tests::performance_gate_token_maximum_page
     source_policy::volcano::tests::performance_gate_volcano_maximum_selection
   )
   if [[ "$*" == 'test --release --locked --bin quota-throttle performance_gate_ -- --ignored --list' ]]; then

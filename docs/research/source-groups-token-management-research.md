@@ -251,3 +251,15 @@ NewAPI 当前版本管理员所属 token 有指定渠道的特殊能力。管理
 此前关于“GLM 95% 策略未定”“火山临期窗口”的审查意见继续撤回；关于逐访问 key 持久绑定接入点的工作随该方案取消。新增部署前提是实际启用 ERROR_LOG_ENABLED；火山渠道关闭原生 auto_ban，GLM 不变。错误归并、统计补采预算、权限隔离及既有亲和规则的影响仍须在实施中验收。
 
 按 [workflow](../workflow.md#4-设计阶段流程) 先完成架构与细化评审，再分步实现。线上服务保持原状。
+
+## SGM5 令牌接口增量核验
+
+2026-10-18，由子计划sgm-5-token-management引入；基线eb0b727。[独立探针](../../scripts/probes/newapi_token_probe.py)冻结既有rc.20二进制SHA256，在临时库、随机端口、假账号和假上游中验证13项，成功后已停止自建进程；没有读生产配置、数据库或真实key。
+
+确认普通role1可按自己身份管理token，不能管理渠道；管理员token列表/单条查询也仅限当前账号，不可代替普通签发会话。新token无返回ID、名字非唯一，并且创建时忽略status=2、仍为启用。原生列表打码，完整key通过显式POST读取，返回不带sk-前缀。普通key在两种下游协议下均拒绝附加渠道编号；请求体中的其他group不能改写其所属组，整组不可用时不会改走其他组。
+
+原生缺失token是HTTP200/false/`record not found`；不能按404或者任意失败处理成不存在。单ID batch删除重复执行返回1、0，随后GET确认缺失。status_only仅需id/status，本次顺序实测保留组/模型/IP/有效期限制；其服务端内部仍使用完整选定字段Update，不推断并发消费下具有额外CAS保证。参考：[控制器](https://github.com/QuantumNous/new-api/blob/6ce7305cd36f16506fb6a2c3c524a5a318539ba7/controller/token.go)、[模型](https://github.com/QuantumNous/new-api/blob/6ce7305cd36f16506fb6a2c3c524a5a318539ba7/model/token.go)、[鉴权](https://github.com/QuantumNous/new-api/blob/6ce7305cd36f16506fb6a2c3c524a5a318539ba7/middleware/auth.go)。
+
+处置：两会话共享原预算；A先实现安全native能力，B保存稳定关联名并核对唯一结果，C负责组和签发身份就绪。token不套用渠道的禁用创建能力，未核归属前不开放复制；未知创建不重发。探针最初误用渠道状态路径导致404，修为现有POST status/batch并先回读后完整通过，业务期望未变。首次探针9项通过及最终13项通过日志保留于`/tmp/quota-throttle-sgm5-research.KfAD2N/`。
+
+SGM5 A最终身份检查又确认：profile一次核验不足以约束401后返回不同ID的会话；已为token请求固定expected_user_id和实际New-Api-User，异常principal在发送前拒绝。扩展后的原生探针15项通过，新增两项分别验证cookie的POST create和Bearer的GET self在身份与header不匹配时401拒绝；相关临时进程已退出。这不要求新身份服务或额外profile请求，详见[修正记录](../fixes/newapi-token-fix-auth-principal-drift.md)。

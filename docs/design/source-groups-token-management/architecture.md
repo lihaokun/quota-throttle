@@ -2,7 +2,7 @@
 
 2026-10-17 最新决定：用户接受[观测型熔断](subplans/sgm-4-observed-breaker.md)，成功且有 token 活动的有效观测清零同源连续失败计数，包括已锁存时的计数，但不自动解除耗尽。无需修改 NewAPI；下文旧的“最终结果/可信终态”前提由该新细化的去重观测语义替代，不再阻塞独立的 key 管理/三页面开发。
 
-日期：2026-10-15，进度更新：2026-10-18。状态：架构已确认，sgm-1 已完成，sgm-2 的执行/恢复和本地托管预检已实现并分步验证，sgm-3 A/B、C-1 和 C-2 内部管理层已完成验收；sgm-4 A、B1–B3 及 O1–O4 观测持久发布已完成本地验收。尚未接现行服务，运行合流及 sgm-5 至 sgm-7 未完成。需求依据：[最新版方案](../../research/source-groups-token-management-research.md)。接口实证：[实现前审核](review.md)。架构确认不包含生产部署授权。
+日期：2026-10-15，进度更新：2026-10-18。状态：架构已确认，sgm-1 已完成，sgm-2 的执行/恢复和本地托管预检已实现并分步验证，sgm-3 A/B、C-1 和 C-2 内部管理层已完成验收；sgm-4 A、B1–B3 及 O1–O4 观测持久发布、sgm-5 A原生令牌接口已完成本地验收。尚未接现行服务，运行合流、sgm-5 B/C及sgm-6/7未完成。需求依据：[最新版方案](../../research/source-groups-token-management-research.md)。接口实证：[实现前审核](review.md)。架构确认不包含生产部署授权。
 
 ## 目标与边界
 
@@ -371,3 +371,17 @@ C-1 不对未 managed 的目录成员写自动目标，不通过周期操作增�
 | DiscoverSourceModels | 按来源显式有界 GET，成功沿原模型目标/执行回读链同步所有组，失败保持存量模型 |
 
 局部命令、持久版本和周期历史同事务；新来源/组版本使旧许可失效，后续真实 C1/O4 刷新才能发布新许可。发现等待不持 Core，返回时重核来源版本；成功重放不再次 GET，取消不留半操作。私有发现材料不实现通用 Debug/Serialize。验收边界见[C2审核](../../audits/sgm-3-source-policies/c2-audit.md)；key 管理及三个页面不由这些内部入口替代。
+
+## 第五子计划 A 原生令牌接口
+
+[SGM5细化](subplans/sgm-5-token-management.md)先提供有限原生接口，再由B承接持久操作、C承接组及身份就绪。两种管理身份仍在后端托管，使用者只拿访问key，不需注册面板账号；它们必须属于同一已核对的原生实例并共享原请求预算。
+
+| 类型或接口 | 所有者与消费者 | 约束 |
+| --- | --- | --- |
+| TokenOwner/TokenOwnerScope | token_service → native接口 | 固定user_id及issuer/legacy_admin，不依据返回数据切换会话；新建只允许普通role1 |
+| NativeTokenView | native接口 → B/C/未来页面 | wire1、字符串原生ID、18个安全字段；列表本地重打码、空组显式继承账号组、原生quota不是token用量；[schema](schemas/native-token.schema.json)约束 |
+| CreationLookup | native接口 → B | Missing/One/Ambiguous；唯一项逐字核关联名及固定设置，历史过期不妨碍查回；不自行认领或重发创建 |
+| RevealedToken | native接口 → 未来显式复制入口 | 私有SecretString、无Debug/Serialize，统一单个sk-前缀；不入普通快照、日志或应用库 |
+| ManagedTokens | 原client/transport → token_service | owner/role、响应ID与有限页严格校验；请求固定expected_user_id及header，重登不能改认账号；相同预算和最终发送guard，写前失败NotSent、写后不确定维持Uncertain |
+
+原生token创建忽略禁用status且不返回ID，因此不能借用渠道的禁用创建承诺；B必须先持久化稳定关联并查回确认，之后才能开放复制。新增接口不写组配置/账号余额，不创建后台任务或持久表，也未挂HTTP。仅专用token单条GET可将固定原生缺失响应解释为None，其他管理响应语义保持不变。A的ACK不代表SGM5整体完成，验收范围见[A记录](../../audits/sgm-5-token-management/a-audit.md)。

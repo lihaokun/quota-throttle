@@ -24,6 +24,7 @@ expected="$(printf '%s\n' \
   ledger::analytics::tests::performance_gate_analytics_maximum_output \
   ledger::observations::tests::performance_gate_observed_breaker_100k \
   ledger::tests::performance_gate_ledger_maximum_batch \
+  newapi::tokens::tests::performance_gate_token_maximum_page \
   source_policy::volcano::tests::performance_gate_volcano_maximum_selection | LC_ALL=C sort)"
 listing="$(cargo test --release --locked --bin quota-throttle performance_gate_ -- --ignored --list)"
 actual="$(printf '%s\n' "$listing" | sed -n 's/: test$//p' | LC_ALL=C sort)"

@@ -100,6 +100,8 @@ pub struct ManagementRequest {
     body: Option<Vec<u8>>,
     semantics: RequestSemantics,
     response_limit: usize,
+    token_lookup: bool,
+    expected_user_id: Option<i64>,
 }
 impl ManagementRequest {
     pub fn new(
@@ -149,7 +151,34 @@ impl ManagementRequest {
             body,
             semantics,
             response_limit,
+            token_lookup: false,
+            expected_user_id: None,
         })
+    }
+
+    /// 固定版本token单条GET的窄缺失语义，不能用于写请求或其他资源。
+    pub(super) fn token_lookup(id: i64) -> Result<Self> {
+        if id <= 0 {
+            return Err(error(ManagementErrorKind::InvalidInput));
+        }
+        let mut request = Self::new(
+            Method::GET,
+            &format!("/api/token/{id}"),
+            None,
+            RequestSemantics::Read,
+            SINGLE_BODY_LIMIT,
+        )?;
+        request.token_lookup = true;
+        Ok(request)
+    }
+
+    /// 固定业务账号，认证恢复不能把请求改签给另一个principal。
+    pub(super) fn for_user(mut self, id: i64) -> Result<Self> {
+        if id <= 0 {
+            return Err(error(ManagementErrorKind::InvalidInput));
+        }
+        self.expected_user_id = Some(id);
+        Ok(self)
     }
 }
 
@@ -158,6 +187,16 @@ pub struct ManagementResponse {
     body: Vec<u8>,
 }
 impl ManagementResponse {
+    pub(super) fn token_missing(&self) -> bool {
+        self.status == StatusCode::OK
+            && serde_json::from_slice::<Value>(&self.body)
+                .ok()
+                .is_some_and(|v| {
+                    v.get("success").and_then(Value::as_bool) == Some(false)
+                        && v.get("message").and_then(Value::as_str) == Some("record not found")
+                        && v.get("data").is_none_or(Value::is_null)
+                })
+    }
     pub fn status(&self) -> StatusCode {
         self.status
     }
@@ -532,6 +571,9 @@ impl ManagementTransport {
                     self.refresh_session(generation).await?;
                 }
                 Ok(response) => {
+                    if request.token_lookup && response.token_missing() {
+                        return Ok(response);
+                    }
                     response
                         .envelope()
                         .map_err(|err| err.for_request(request.semantics))?;
@@ -726,6 +768,17 @@ impl ManagementTransport {
                 );
             }
             _ => {}
+        }
+        // 固定owner同时约束当前Session及发送header，覆盖等待期间cookie被替换的窗口。
+        if let Some(expected) = request.expected_user_id {
+            if matches!(auth, Some(Auth::Session(actual)) if *actual != expected) {
+                return Err(error(ManagementErrorKind::AuthFailed));
+            }
+            headers.insert(
+                "new-api-user",
+                header::HeaderValue::from_str(&expected.to_string())
+                    .map_err(|_| error(ManagementErrorKind::InvalidInput))?,
+            );
         }
         let mut builder = self
             .client

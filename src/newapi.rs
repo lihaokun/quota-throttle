@@ -14,6 +14,7 @@ use anyhow::{bail, Context, Result};
 pub(crate) mod logs;
 pub mod managed_channels;
 pub mod preflight;
+pub(crate) mod tokens;
 pub mod transport;
 
 use reqwest::Method;
@@ -152,6 +153,10 @@ pub struct NewApiClient {
 }
 
 impl NewApiClient {
+    #[allow(dead_code)]
+    pub(crate) fn managed_tokens(&self, owner: tokens::TokenOwner) -> tokens::ManagedTokens<'_> {
+        tokens::ManagedTokens::new(&self.transport, owner)
+    }
     pub async fn retry_management_authentication(&self) -> transport::Result<()> {
         self.transport.retry_authentication().await
     }
