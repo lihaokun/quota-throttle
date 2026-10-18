@@ -12,6 +12,7 @@ use crate::model_catalog::{model_sets_equal, normalize_models_csv, ModelCatalogC
 use crate::status::{ChannelState, RequestLog};
 use anyhow::{bail, Context, Result};
 pub(crate) mod logs;
+pub(crate) mod groups;
 pub mod managed_channels;
 pub mod preflight;
 pub(crate) mod tokens;
@@ -153,6 +154,12 @@ pub struct NewApiClient {
 }
 
 impl NewApiClient {
+    pub(crate) fn managed_groups<'a>(&'a self, guard: &'a (dyn Fn() -> bool + Send + Sync)) -> groups::ManagedGroups<'a> {
+        groups::ManagedGroups::new(&self.transport, guard)
+    }
+    pub(crate) fn shares_management_scope(&self, other: &Self) -> bool {
+        self.transport.shares_scope(&other.transport)
+    }
     #[allow(dead_code)]
     pub(crate) fn managed_tokens(&self, owner: tokens::TokenOwner) -> tokens::ManagedTokens<'_> {
         tokens::ManagedTokens::new(&self.transport, owner)

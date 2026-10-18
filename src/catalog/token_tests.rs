@@ -14,6 +14,8 @@ use std::time::{Duration, Instant};
 
 #[path = "token_migration_tests.rs"]
 mod migration;
+#[path = "token_service_tests.rs"]
+mod service;
 
 const NOW: i64 = 2_000_000_000;
 fn owner() -> TokenOwner {

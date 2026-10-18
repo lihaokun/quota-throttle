@@ -446,6 +446,9 @@ pub(super) fn endpoint_is_loopback(url: &Url) -> bool {
     })
 }
 impl ManagementTransport {
+    pub(super) fn shares_scope(&self, other: &Self) -> bool {
+        self.base_url == other.base_url && Arc::ptr_eq(&self.budget, &other.budget)
+    }
     pub(super) fn base_url(&self) -> &str {
         &self.base_url
     }

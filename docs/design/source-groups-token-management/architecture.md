@@ -2,7 +2,7 @@
 
 2026-10-17 最新决定：用户接受[观测型熔断](subplans/sgm-4-observed-breaker.md)，成功且有 token 活动的有效观测清零同源连续失败计数，包括已锁存时的计数，但不自动解除耗尽。无需修改 NewAPI；下文旧的“最终结果/可信终态”前提由该新细化的去重观测语义替代，不再阻塞独立的 key 管理/三页面开发。
 
-日期：2026-10-15，进度更新：2026-10-18。状态：架构已确认，sgm-1 已完成，sgm-2 的执行/恢复和本地托管预检已实现并分步验证，sgm-3 A/B、C-1 和 C-2 内部管理层已完成验收；sgm-4 A、B1–B3 及 O1–O4 观测持久发布、sgm-5 A原生令牌接口与B持久操作已完成本地验收。尚未接现行服务，运行合流、sgm-5 C及sgm-6/7未完成。需求依据：[最新版方案](../../research/source-groups-token-management-research.md)。接口实证：[实现前审核](review.md)。架构确认不包含生产部署授权。
+日期：2026-10-15，进度更新：2026-10-19。状态：架构已确认，sgm-1 已完成，sgm-2 的执行/恢复和本地托管预检已实现并分步验证，sgm-3 A/B、C-1 和 C-2 内部管理层已完成验收；sgm-4 A、B1–B3及O1–O4观测持久发布、sgm-5 A/B/C原生令牌/持久操作/组与服务组合已完成本地验收。尚未接现行服务，运行合流及sgm-6/7未完成。需求依据：[最新版方案](../../research/source-groups-token-management-research.md)。接口实证：[实现前审核](review.md)。本次部署目标fermat为全新初始化，不迁移旧配置/数据，不影响现行本地服务。
 
 ## 目标与边界
 
@@ -139,7 +139,7 @@ P4 按全局源状态、成员状态和组资格决定是否启用；再由该�
 
 GLM 继续原算法，用共享 Source 快照重映射为该组成员 ID 后决策；当前成员顺序和旧 default 渠道 ID 保持兼容。
 
-创建组还需注册 NewAPI 组配置及签发身份可用组，读取后合并保留无关组与倍率；成员可路由、组注册和权限回读一致后才标记 ready。已有成员或访问 key 引用的组不能直接删除或更改类型，先明确处理引用，不把旧 key 静默改到 default。
+创建组还需注册 NewAPI 组配置及签发身份可用组，读取后合并保留无关组与倍率；成员路由配置、组注册和权限回读一致后才标记 ready。ready不代表此刻已有启用成员或剩余额度；允许先核对禁用成员配置，再由原策略/协调器启用，签发key另核当前可用性，避免循环依赖。已有成员或访问 key 引用的组不能直接删除或更改类型，先明确处理引用，不把旧 key 静默改到 default。
 
 火山正常保持首选，只在源不可用/移除或组首次选择时按稳定成员顺序轮转可用源。切换在组内串行，先解除旧的独占高优先级、回读，再提升新首选并回读；中间可能暂时没有唯一高优先级，显示切换中，不制造已确认的双首选。
 
@@ -398,3 +398,9 @@ C-1 不对未 managed 的目录成员写自动目标，不通过周期操作增�
 | token_send_allowed | C挂原A最终guard；只读检查本地版本/attempt与创建组/expiry，不能替代A owner或C真实就绪 |
 
 确认创建只证明已唯一绑定的事实（可已过期/耗尽），不代表当前可以复制或调用。C仍负责当前就绪与敏感返回。未知创建不重POST；未知状态写不能凭超时或匹配GET清除，可能保持未决；token操作逐实体串行。原生ID不复用和实例不被不一致替换的前提沿既有恢复边界。B不接运行/面板，不修改GLM、火山、账本或原生HTTP行为；A的两个共享枚举仅补反序列化以供SQL解析复用。
+
+## 第五子计划 C 组与服务组合类型
+
+[C细化](subplans/sgm-5-token-management-c.md)已完成[本地验收](../../audits/sgm-5-token-management/c-audit.md)。沿原worker的Core、发布fence、lane和预算组合A/B，不另建调度器或DB版本。GroupCheckReport wire1为本次配置核验的五字段安全报告；GroupReferences wire1为已知本地引用计数，恒known_local_only=true/deletion_authorized=false，零计数不授权删除。字段由[组检查schema](schemas/group-check.schema.json)与[引用schema](schemas/group-references.schema.json)约束，消费者为内部控制面与后续页面。
+
+TokenOwners固定各自可选的issuer/legacy身份、至少配置一方，已配置issuer与原管理员client同实例/同预算；缺issuer不回退管理员签发，也不阻断legacy管理。TokenAdmission仅为一次处理栈上的私有版本/期限证据；都不序列化或持久化。组ready只承接配置引导，正向token发送仍依赖原策略许可和真实当前观察。最终transport guard沿原原子epoch/时间窗口，不在预算锁中取Core或查询SQLite。

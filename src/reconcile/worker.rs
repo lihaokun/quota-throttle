@@ -21,6 +21,7 @@ mod analytics;
 mod collection;
 mod management;
 mod policy;
+pub(crate) mod token_service;
 
 struct Core {
     input_epoch: u64,
@@ -77,6 +78,7 @@ pub struct ReconcileWorker {
     collection_running: AtomicBool,
     query_slots: Arc<Semaphore>,
     repair_cursor: AsyncMutex<Option<crate::catalog::ledger::AttributionCursor>>,
+    token_owners: Option<token_service::TokenOwners>,
 }
 #[derive(Debug, Default, Clone, Copy)]
 pub struct RoundReport {
@@ -231,6 +233,7 @@ impl ReconcileWorker {
             collection_running: AtomicBool::new(false),
             query_slots: Arc::new(Semaphore::new(1)),
             repair_cursor: AsyncMutex::new(None),
+            token_owners: None,
         }))
     }
     fn mutate<T>(
@@ -356,6 +359,10 @@ impl ReconcileWorker {
             Ok(view)
         })?;
         if view.phase == OperationPhase::Succeeded {
+            return Ok(view);
+        }
+        if view.target_type == crate::catalog::control::TargetType::Token {
+            self.retry_token_auth(id).await?;
             return Ok(view);
         }
         self.client
@@ -1001,6 +1008,7 @@ impl ReconcileWorker {
                 }
             }
         }
+        self.token_round(stop, &mut report).await?;
         Ok(report)
     }
     pub async fn reconcile_once(self: &Arc<Self>) -> ControlResult<RoundReport> {
@@ -1022,12 +1030,17 @@ impl ReconcileWorker {
                 result=&mut task=>{accept_background_round(result.map_err(|_|error(ControlErrorCode::Storage))?)?;}
                 _=shutdown.changed()=>{stop.store(true,Ordering::SeqCst);accept_background_round(task.await.map_err(|_|error(ControlErrorCode::Storage))?)?;if *shutdown.borrow() || shutdown.has_changed().is_err() {return Ok(());}}
             }
-            let next = self
-                .core
-                .lock()
-                .map_err(|_| error(ControlErrorCode::Storage))?
-                .store
-                .next_attempt_at()?;
+            let next = {
+                let core = self.core.lock().map_err(|_| error(ControlErrorCode::Storage))?;
+                let members = core.store.next_attempt_at()?;
+                let tokens = if self.token_owners.is_some() && !self.policy_config.dry_run {
+                    core.store.next_token_attempt_at()?
+                } else { None };
+                match (members, tokens) {
+                    (Some(a), Some(b)) => Some(a.min(b)),
+                    (a, b) => a.or(b),
+                }
+            };
             let delay = next
                 .map(|at| Duration::from_secs(at.saturating_sub(now()).max(1) as u64))
                 .unwrap_or(Duration::from_secs(3600));

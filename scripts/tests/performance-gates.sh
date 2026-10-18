@@ -8,9 +8,12 @@ fi
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.."
 
 expected="$(printf '%s\n' \
+  catalog::store::tests::control::performance_gate_control_group_priorities \
   catalog::store::tests::glm_round::performance_gate_glm_maximum_catalog \
   catalog::store::tests::tokens::migration::performance_gate_token_identity_10k \
   catalog::store::tests::tokens::migration::performance_gate_token_v7_migration_10k_operations \
+  catalog::store::tests::tokens::service::performance_gate_group_references_10k \
+  newapi::groups::tests::performance_gate_group_options_10k \
   catalog::store::tests::policy_commands::migration::performance_gate_c2_v6_migration_10k_operations \
   catalog::store::tests::observed_publication::scale::performance_gate_observed_period_usage_100k \
   catalog::store::tests::observed_publication::scale::performance_gate_observed_maximum_catalog \
@@ -35,3 +38,13 @@ if [[ "$actual" != "$expected" ]]; then
   exit 1
 fi
 cargo test --release --locked --bin quota-throttle performance_gate_ -- --ignored --test-threads=1 --nocapture
+
+# 大组操作原预算也约束debug，不能只移到较快的release后视为同一门禁。
+debug_gate=catalog::store::tests::control::performance_gate_control_group_priorities
+listing="$(cargo test --locked --bin quota-throttle "$debug_gate" -- --ignored --exact --list)"
+actual="$(printf '%s\n' "$listing" | sed -n 's/: test$//p')"
+if [[ "$actual" != "$debug_gate" ]]; then
+  printf 'Debug performance gate mismatch; expected exactly: %s\n' "$debug_gate" >&2
+  exit 1
+fi
+cargo test --locked --bin quota-throttle "$debug_gate" -- --ignored --exact --test-threads=1 --nocapture

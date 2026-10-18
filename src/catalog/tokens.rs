@@ -175,6 +175,22 @@ impl fmt::Debug for TokenWork {
     }
 }
 impl TokenWork {
+    pub fn group_id(&self) -> Option<GroupId> {
+        self.record.group
+    }
+    pub fn loaded_at(&self) -> i64 {
+        self.loaded_at
+    }
+    pub fn kind(&self) -> OperationKind {
+        self.operation.kind
+    }
+    pub fn enabled(&self) -> Option<bool> {
+        match self.action {
+            Action::Enable => Some(true),
+            Action::Disable => Some(false),
+            _ => None,
+        }
+    }
     pub fn token_id(&self) -> ManagedTokenId {
         self.record.id
     }
@@ -532,6 +548,15 @@ impl CatalogStore {
         )?;
         commit(tx, &mut self.poisoned)?;
         Ok(result)
+    }
+    pub(crate) fn replayed_token_operation(
+        &self,
+        id: &OperationId,
+        command: &TokenCommand,
+    ) -> ControlResult<Option<OperationView>> {
+        self.usable()?;
+        let (_, digest) = command.canonical()?;
+        replayed_operation(&self.conn, id, &digest)
     }
     pub(crate) fn submit_token_operation(
         &mut self,

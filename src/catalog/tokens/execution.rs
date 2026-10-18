@@ -141,6 +141,72 @@ fn matches_creation(work: &TokenWork, view: &NativeTokenView) -> ControlResult<i
 }
 
 impl CatalogStore {
+    pub(crate) fn validate_token_work(
+        &self,
+        old: &TokenWork,
+        view: &NativeTokenView,
+        now: i64,
+    ) -> ControlResult<()> {
+        self.usable()?;
+        let work = current_work(&self.conn, old, now)?;
+        ensure(work.record.native_id.is_some(), Code::NotReady)?;
+        if work.record.creation.is_some() {
+            matches_creation(&work, view)?;
+        } else {
+            observed_identity(&work.record, view)?;
+        }
+        Ok(())
+    }
+    pub(crate) fn validate_token_access(
+        &self,
+        id: ManagedTokenId,
+        revision: i64,
+        view: &NativeTokenView,
+    ) -> ControlResult<()> {
+        self.token_reveal_target(id, revision)?;
+        let row = record(&self.conn, id)?;
+        if let Some(creation) = &row.creation {
+            matches_creation(&load_work(&self.conn, creation, 0)?, view)?;
+        } else {
+            observed_identity(&row, view)?;
+        }
+        Ok(())
+    }
+    pub(crate) fn note_token_delay(
+        &mut self,
+        old: &TokenWork,
+        now: i64,
+    ) -> ControlResult<OperationView> {
+        self.usable()?;
+        clock(now)?;
+        ensure(
+            now.checked_sub(old.loaded_at).is_some_and(|age| age > 60),
+            Code::NotReady,
+        )?;
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let work = load_work(&tx, &old.operation.operation_id, now)?;
+        ensure(
+            work.instance == old.instance
+                && work.record == old.record
+                && work.action == old.action
+                && work.operation == old.operation
+                && work.create_state == old.create_state
+                && work.record.revision == work.operation.target_revision,
+            Code::RevisionConflict,
+        )?;
+        if work.operation.phase == OperationPhase::Succeeded {
+            return Ok(work.operation);
+        }
+        let result = problem(&tx, &work, Code::NotReady, now)?;
+        commit(tx, &mut self.poisoned)?;
+        Ok(result)
+    }
+    pub(crate) fn next_token_attempt_at(&self) -> ControlResult<Option<i64>> {
+        self.usable()?;
+        Ok(self.conn.query_row("SELECT MIN(CASE WHEN phase='queued' THEN updated_at WHEN updated_at<=?1 THEN updated_at+30 END) FROM control_operations WHERE target_type='token' AND phase IN ('queued','waiting','unknown')", [JSON_SAFE - 30], |r| r.get(0))?)
+    }
     pub(crate) fn prepare_token_execution(
         &mut self,
         old: &TokenWork,

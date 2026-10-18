@@ -98,7 +98,7 @@ InvalidInput表示坏输入，NotFound表示本地身份/操作不存在，Revis
 
 `token_send_allowed(ticket,now)`为只读最终准入接口：完整票据匹配历史attempt，当前逻辑/证据版本仍等于票据、操作仍Applying且attempt仍prepared才为true；create另核当前组ready/创建组版本及未来expiry。已结算、被新证据覆盖或资格过期返回false，坏票据/存储错误返回安全错误，均无写。不核原生当前role、不生成远端就绪证据。
 
-论证：prepare提交先于票据，任何进程退出最多留下保守prepared；再次prepare看见phase/尝试事实必拒绝。证据版本使prepare之前发出的GET失效。C须把token_send_allowed和真实就绪检查挂到原A最终guard，在预算等待/401后再验；本批不以fixture代替该组合保证。
+论证：prepare提交先于票据，任何进程退出最多留下保守prepared；再次prepare看见phase/尝试事实必拒绝。证据版本使prepare之前发出的GET失效。C须将token_send_allowed和真实就绪的逻辑条件接到原A最终guard，在预算等待/401后仍有效；原transport预算锁中不可执行SQL，因此C细化采用预算锁外同Core核验、绑定此次提交epoch及截止时间的等价原子gate。任一相关状态变更先封旧epoch，SQL错误/poison不发布可发送gate；不把独立fixture当作组合保证。
 
 ### T5B.6 交付结算和回读确认
 

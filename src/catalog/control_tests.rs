@@ -765,6 +765,18 @@ fn mixed_provider_multi_group_v1_migration_preserves_bound_and_unbound_members()
 
 #[test]
 fn full_group_operation_is_bounded_and_preserves_each_priority() {
+    full_group_operation_case();
+}
+
+#[test]
+#[ignore = "独立串行性能门禁：bash scripts/tests/performance-gates.sh"]
+fn performance_gate_control_group_priorities() {
+    let elapsed = full_group_operation_case();
+    println!("CONTROL_GROUP_PRIORITY_MAXIMUM_MS={}", elapsed.as_millis());
+    assert!(elapsed < Duration::from_secs(5));
+}
+
+fn full_group_operation_case() -> Duration {
     let (_dir, mut store) = setup();
     let (cfg, channels) = legacy(MAX_SOURCES);
     let plan = build_legacy_import(&cfg, &channels).unwrap();
@@ -788,7 +800,7 @@ fn full_group_operation_is_bounded_and_preserves_each_priority() {
             1,
         )
         .unwrap();
-    assert!(started.elapsed() < Duration::from_secs(5));
+    let elapsed = started.elapsed();
     assert_eq!(result.total_targets, MAX_SOURCES);
     assert_eq!(result.confirmed_targets, 0);
     for (id, priority) in priorities {
@@ -796,6 +808,7 @@ fn full_group_operation_is_bounded_and_preserves_each_priority() {
         assert_eq!(target.desired_priority, priority);
         assert_eq!(target.revision, 2);
     }
+    elapsed
 }
 
 #[test]

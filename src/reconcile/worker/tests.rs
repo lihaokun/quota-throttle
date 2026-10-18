@@ -26,6 +26,8 @@ mod scenarios;
 mod volcano_tests;
 #[path = "management_tests.rs"]
 mod management_tests;
+#[path = "token_service_tests.rs"]
+mod token_service_tests;
 
 fn policy_config() -> Arc<Config> {
     Arc::new(
