@@ -108,4 +108,4 @@ SGM5 C尚未退出前只写设计与审核材料；之后先以独立测试目�
 - [x] 独立设计复审通过，移出历史扫描并锁定完整显示谓词/字段/错误分支，0个未关闭设计阻断。
 - [x] 事前十节[expectations](../../../audits/sgm-6-three-page-panel/a1-expectations.md)与[输出schema](../schemas/panel-snapshot.schema.json)就位。
 - [x] 实现、基本/边界/PBT、变异、默认全量和性能通过；证据见[A1审核](../../../audits/sgm-6-three-page-panel/a1-audit.md)。
-- [ ] 机械、独审及五维度退出，文档/提交同步。
+- [x] 机械、独审及五维度退出，文档/提交同步；实现提交`b4116ef`。

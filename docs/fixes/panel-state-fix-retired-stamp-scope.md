@@ -32,7 +32,7 @@ stamp固定为完整的未退休成员集合，consumer仅按lifecycle过滤已�
 
 ## 七 代码同步
 
-仅改`src/catalog/panel.rs`的consumer集合筛选及对应矩阵断言，不改producer算法。独立方案复核通过后已实施；新矩阵还覆盖请求退休后新轮仍current、真正退休后旧轮stale、最后新轮current。全部验证通过，实现提交引用待回填。
+仅改`src/catalog/panel.rs`的consumer集合筛选及对应矩阵断言，不改producer算法。独立方案复核通过后已实施；新矩阵还覆盖请求退休后新轮仍current、真正退休后旧轮stale、最后新轮current。全部验证通过，实现提交`b4116ef`。
 
 ## 八 文档同步
 

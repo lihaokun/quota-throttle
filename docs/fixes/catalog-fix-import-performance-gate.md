@@ -50,12 +50,12 @@ fermat 隔离目录 `/tmp/quota-throttle-sgm6-a1.LAtp1k` 的默认 debug 全量�
 
 ## 七 代码同步
 
-首项修改 `src/catalog/tests.rs`、两个 `scripts/tests/performance-gates*.sh` 和本批机械脚本 `scripts/contract_audit/sgm6_a1.sh`，在A1变异恢复通过后才实施。保留原导入预算10秒、快照预算10秒及全部普通断言。最终代码提交待验收完成后回填。
+首项修改 `src/catalog/tests.rs`、两个 `scripts/tests/performance-gates*.sh` 和本批机械脚本 `scripts/contract_audit/sgm6_a1.sh`，在A1变异恢复通过后才实施。保留原导入预算10秒、快照预算10秒及全部普通断言。全部验收通过，代码提交`b4116ef`。
 
 第一项及后续系统补齐均按先写方案/独立批准后实施；两个新增测试文件为`src/catalog/execution_tests.rs`及`src/source_policy/tests.rs`，不改生产execution/store/GLM函数。实际diff复审通过，机械脚本逐字归一化两份原测试；source_policy冻结仅排除此明确测试文件，生产实现仍逐字冻结。fermat第二轮运行期间副本未变，结束并原样复现后才同步最终测试代码。A1普通数量不变，原27 ignored经三项容量补齐后为30 ignored。
 
 ## 八 文档同步
 
-本RCA、A1审核/decisions/expectations/细化和实施计划已记录旧失败及性能补齐，提交引用待回填。8类A1业务变异与4类零预算变异分开计数；最终门禁为27个release、4个debug入口，后者包含原大组5秒及本批10/10/3/5秒共五个预算。旧25/2只是第一项补齐后的阶段目标。不会覆盖历史失败、把本次隔离验证称作远端CI或部署。
+本RCA、A1审核/decisions/expectations/细化和实施计划已记录旧失败及性能补齐，提交引用已回填。8类A1业务变异与4类零预算变异分开计数；最终门禁为27个release、4个debug入口，后者包含原大组5秒及本批10/10/3/5秒共五个预算。旧25/2只是第一项补齐后的阶段目标。不会覆盖历史失败、把本次隔离验证称作远端CI或部署。
 
 负向证据分别在本机`/tmp/quota-throttle-sgm6-a1-import-gate.siKruU`和`/tmp/quota-throttle-sgm6-a1-remaining-gates.A5PC37`。两批恢复都显式更新时间戳，编译日志分别记录18.77秒、27.16秒，防止Cargo复用旧变异二进制；完整来源/测试内容逐字恢复一致。详细输出见[A1审核](../audits/sgm-6-three-page-panel/a1-audit.md)。
