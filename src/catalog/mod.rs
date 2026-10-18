@@ -10,6 +10,7 @@ mod legacy;
 pub(crate) mod policy;
 pub(crate) mod policy_commands;
 mod store;
+pub(crate) mod tokens;
 pub mod types;
 pub(crate) mod volcano_publication;
 

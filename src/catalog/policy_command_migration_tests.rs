@@ -28,7 +28,7 @@ fn ingest(f: &mut Fixture, rows: &[serde_json::Value], at: i64) {
         .commit_fact_page(&t, rows, PageEnd::ReachedEnd, at)
         .unwrap();
 }
-fn history_fixture() -> Fixture {
+pub(super) fn history_fixture() -> Fixture {
     let mut f = fixture();
     f.store.initialize_ledger(0, NOW).unwrap();
     let rows=(1..=4).map(|id|json!({"id":id,"type":if id==1{2}else{5},"created_at":NOW-1,"channel":1003,"token_id":77,"model_name":"fake-c2-model","group":"c2-2","prompt_tokens":if id==1{4}else{0},"completion_tokens":if id==1{2}else{0},"is_stream":false,"request_id":format!("r{id}"),"other":if id==1 {String::new()}else{json!({"error_type":"openai_error","status_code":503,"error_code":"unavailable"}).to_string()}})).collect::<Vec<_>>();
@@ -112,6 +112,7 @@ fn as_v6(store: &mut CatalogStore) {
     let mut expected = image(&store.conn);
     expected.get_mut("catalog_meta").unwrap()[0][1] = rusqlite::types::Value::Integer(6);
     let tx = store.conn.transaction().unwrap();
+    tx.execute_batch(DROP_TOKENS_V8).unwrap();
     replace_control_operations(&tx, SCHEMA_V2).unwrap();
     let id: String = tx
         .query_row("SELECT catalog_instance_id FROM catalog_meta", [], |r| {
@@ -130,7 +131,7 @@ fn as_v6(store: &mut CatalogStore) {
 fn expected_v7(
     mut before: BTreeMap<String, Vec<Vec<rusqlite::types::Value>>>,
 ) -> BTreeMap<String, Vec<Vec<rusqlite::types::Value>>> {
-    before.get_mut("catalog_meta").unwrap()[0][1] = rusqlite::types::Value::Integer(7);
+    before.get_mut("catalog_meta").unwrap()[0][1] = rusqlite::types::Value::Integer(DATABASE_SCHEMA_VERSION);
     before
 }
 fn open_again(f: Fixture) -> Fixture {

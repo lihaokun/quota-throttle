@@ -5,7 +5,7 @@ use sha2::{Digest, Sha256};
 use std::fmt;
 
 pub const CATALOG_SNAPSHOT_VERSION: i64 = 1;
-pub const DATABASE_SCHEMA_VERSION: i64 = 7;
+pub const DATABASE_SCHEMA_VERSION: i64 = 8;
 pub const JSON_SAFE: i64 = 9_007_199_254_740_991;
 pub const MAX_SOURCES: usize = 1000;
 pub const MAX_GROUPS: usize = 100;
@@ -120,6 +120,7 @@ id_type!(SourceId);
 id_type!(GroupId);
 id_type!(MembershipId);
 id_type!(ChannelId);
+id_type!(ManagedTokenId);
 
 #[derive(Clone, Copy)]
 pub(super) struct SecretRef(pub(super) i64);

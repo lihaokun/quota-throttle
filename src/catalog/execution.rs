@@ -116,7 +116,7 @@ pub enum ExecutionOutcome {
     Uncertain,
 }
 impl ExecutionOutcome {
-    fn columns(self) -> (&'static str, Option<ControlErrorCode>) {
+    pub(super) fn columns(self) -> (&'static str, Option<ControlErrorCode>) {
         match self {
             Self::NotSent(e) => ("not_sent", Some(e)),
             Self::Responded(e) => ("responded", e),

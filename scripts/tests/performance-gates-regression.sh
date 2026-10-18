@@ -6,6 +6,8 @@ cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.."
 cargo() {
   local tests=(
     catalog::store::tests::glm_round::performance_gate_glm_maximum_catalog
+  catalog::store::tests::tokens::migration::performance_gate_token_identity_10k
+  catalog::store::tests::tokens::migration::performance_gate_token_v7_migration_10k_operations
     catalog::store::tests::policy_commands::migration::performance_gate_c2_v6_migration_10k_operations
     catalog::store::tests::observed_publication::scale::performance_gate_observed_period_usage_100k
     catalog::store::tests::observed_publication::scale::performance_gate_observed_maximum_catalog

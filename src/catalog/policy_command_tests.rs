@@ -19,6 +19,11 @@ struct Fixture {
     groups: Vec<GroupId>,
     members: Vec<MembershipId>,
 }
+// 后续迁移复用已有复杂历史夹具；期望镜像仍由各测试独立采集。
+pub(super) fn token_history_fixture() -> (TempDir, CatalogStore) {
+    let f = migration::history_fixture();
+    (f.dir, f.store)
+}
 fn fixture() -> Fixture {
     let (dir, mut store) = setup();
     let glm = store
@@ -224,7 +229,7 @@ fn c2_pin_scope_noop_replay_and_local_receipt_are_exact() {
             view.target_revision
         ),
         (
-            2,
+            3,
             OperationKind::SetGroupPin,
             OperationPhase::Succeeded,
             0,

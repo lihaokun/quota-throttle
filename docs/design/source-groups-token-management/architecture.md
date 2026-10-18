@@ -2,7 +2,7 @@
 
 2026-10-17 最新决定：用户接受[观测型熔断](subplans/sgm-4-observed-breaker.md)，成功且有 token 活动的有效观测清零同源连续失败计数，包括已锁存时的计数，但不自动解除耗尽。无需修改 NewAPI；下文旧的“最终结果/可信终态”前提由该新细化的去重观测语义替代，不再阻塞独立的 key 管理/三页面开发。
 
-日期：2026-10-15，进度更新：2026-10-18。状态：架构已确认，sgm-1 已完成，sgm-2 的执行/恢复和本地托管预检已实现并分步验证，sgm-3 A/B、C-1 和 C-2 内部管理层已完成验收；sgm-4 A、B1–B3 及 O1–O4 观测持久发布、sgm-5 A原生令牌接口已完成本地验收。尚未接现行服务，运行合流、sgm-5 B/C及sgm-6/7未完成。需求依据：[最新版方案](../../research/source-groups-token-management-research.md)。接口实证：[实现前审核](review.md)。架构确认不包含生产部署授权。
+日期：2026-10-15，进度更新：2026-10-18。状态：架构已确认，sgm-1 已完成，sgm-2 的执行/恢复和本地托管预检已实现并分步验证，sgm-3 A/B、C-1 和 C-2 内部管理层已完成验收；sgm-4 A、B1–B3 及 O1–O4 观测持久发布、sgm-5 A原生令牌接口与B持久操作已完成本地验收。尚未接现行服务，运行合流、sgm-5 C及sgm-6/7未完成。需求依据：[最新版方案](../../research/source-groups-token-management-research.md)。接口实证：[实现前审核](review.md)。架构确认不包含生产部署授权。
 
 ## 目标与边界
 
@@ -47,7 +47,7 @@ sgm-1 已采用 rusqlite 0.40.2（bundled、backup），版本锁入 Cargo.lock�
 
 测试和开发使用独立 state_path；正式库路径在部署时确认，不覆盖生产 one-api.db。schema_version 标识兼容性，旧版本遇到更高 schema 需拒绝写入；备份需使用一致性备份方式，不能忽略 WAL。
 
-版本承接：SGM-1 定义 v1 目录；SGM-2 负责 v1→v2 控制意图、v2→v3 执行记录及打开时的恢复；SGM-3 B 追加 v4 来源/组策略状态；SGM-4 B1 追加 v5 事实、分钟联合用量、账本状态与采集检查点；[O4](subplans/sgm-4-observed-publication.md)追加 v6 待处理观测引用、请求相位、周期历史及来源查询索引；[C2](subplans/sgm-3-source-policies-c2.md)的 v7 扩展原操作表约束，不新增长期表。open 对合法旧应用库先完整校验/备份再逐版本升级，不修补损坏库，也不承诺整链原子回滚。来源/组/成员与各自必需侧表同事务落库；打开库保留未决执行恢复，但不按墙钟清火山额度、重放已有历史错误或自动启动采集。目录快照 wire=1、OperationView wire=2 与数据库 v7 分开。旧迁移审核见[迁移增量核对](../../audits/sgm-1-catalog-store/migration-scope-review.md)，v6 路径见[O4审核](../../audits/sgm-4-facts-analytics/observed-publication-audit.md)，v7 见[C2审核](../../audits/sgm-3-source-policies/c2-audit.md)；不改变 SGM-7 的生产切换授权要求。
+版本承接：SGM-1 定义 v1 目录；SGM-2 负责 v1→v2 控制意图、v2→v3 执行记录及打开时的恢复；SGM-3 B 追加 v4 来源/组策略状态；SGM-4 B1 追加 v5 事实、分钟联合用量、账本状态与采集检查点；[O4](subplans/sgm-4-observed-publication.md)追加 v6 待处理观测引用、请求相位、周期历史及来源查询索引；[C2](subplans/sgm-3-source-policies-c2.md)的 v7 扩展原操作表约束，不新增长期表；[SGM5 B](subplans/sgm-5-token-management-b.md)的v8追加token身份、目标/收据和尝试表，复用原操作phase/error。open 对合法旧应用库先完整校验/备份再逐版本升级，不修补损坏库，也不承诺整链原子回滚。来源/组/成员与各自必需侧表同事务落库；打开库保留未决执行恢复，但不按墙钟清火山额度、重放已有历史错误或自动启动采集。目录快照 wire=1、OperationView wire=3 与数据库 v8 分开，TokenIdentityView单独wire=1。旧迁移审核见[迁移增量核对](../../audits/sgm-1-catalog-store/migration-scope-review.md)，v6 路径见[O4审核](../../audits/sgm-4-facts-analytics/observed-publication-audit.md)，v7 见[C2审核](../../audits/sgm-3-source-policies/c2-audit.md)，v8见[SGM5 B审核](../../audits/sgm-5-token-management/b-audit.md)；不改变 SGM-7 的生产切换授权要求。
 
 ## 核心共享数据结构
 
@@ -385,3 +385,16 @@ C-1 不对未 managed 的目录成员写自动目标，不通过周期操作增�
 | ManagedTokens | 原client/transport → token_service | owner/role、响应ID与有限页严格校验；请求固定expected_user_id及header，重登不能改认账号；相同预算和最终发送guard，写前失败NotSent、写后不确定维持Uncertain |
 
 原生token创建忽略禁用status且不返回ID，因此不能借用渠道的禁用创建承诺；B必须先持久化稳定关联并查回确认，之后才能开放复制。新增接口不写组配置/账号余额，不创建后台任务或持久表，也未挂HTTP。仅专用token单条GET可将固定原生缺失响应解释为None，其他管理响应语义保持不变。A的ACK不代表SGM5整体完成，验收范围见[A记录](../../audits/sgm-5-token-management/a-audit.md)。
+
+## 第五子计划 B 持久令牌操作
+
+[B细化](subplans/sgm-5-token-management-b.md)已完成[本地验收](../../audits/sgm-5-token-management/b-audit.md)。沿同一个CatalogStore增加v8，复用control_operations及OperationId/phase/error；三个侧表分别保存token身份、操作目标/历史收据、执行尝试，不建立第二数据库或HTTP执行器。完整字段与校验见B细化§2及[身份schema](schemas/token-identity.schema.json)。
+
+| 共享接口 | 消费者与约束 |
+| --- | --- |
+| ManagedTokenId / TokenIdentityView | catalog → C/面板；本地ID与原生ID分开，wire1白名单13字段；原生身份/owner和删除历史不重认，无明文/实际状态缓存 |
+| TokenCommand | C → catalog；单组创建、启停、删除；统一操作ID命名空间，当前OperationView wire3扩展token kinds/target，旧收据不改 |
+| TokenWork / TokenTicket | catalog → C；私有版本/证据栅栏，prepare持久化后才产票；不反序列化前端许可 |
+| token_send_allowed | C挂原A最终guard；只读检查本地版本/attempt与创建组/expiry，不能替代A owner或C真实就绪 |
+
+确认创建只证明已唯一绑定的事实（可已过期/耗尽），不代表当前可以复制或调用。C仍负责当前就绪与敏感返回。未知创建不重POST；未知状态写不能凭超时或匹配GET清除，可能保持未决；token操作逐实体串行。原生ID不复用和实例不被不一致替换的前提沿既有恢复边界。B不接运行/面板，不修改GLM、火山、账本或原生HTTP行为；A的两个共享枚举仅补反序列化以供SQL解析复用。

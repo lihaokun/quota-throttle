@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fmt;
 
-pub const OPERATION_SCHEMA_VERSION: i64 = 2;
+pub const OPERATION_SCHEMA_VERSION: i64 = 3;
 macro_rules! control_enum {
     ($name:ident { $($variant:ident => $wire:literal),+ $(,)? }) => {
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -31,11 +31,12 @@ control_enum!(OperationKind {
     EnsureMember=>"ensure_member", SetSourcePaused=>"set_source_paused", RetireMember=>"retire_member",
     RetireSource=>"retire_source", SetGroupPriorities=>"set_group_priorities", SyncSourceModels=>"sync_source_models",
     SetGroupPin=>"set_group_pin", ClearVolcanoError=>"clear_volcano_error",
-    UpdateVolcanoPolicy=>"update_volcano_policy", DiscoverSourceModels=>"discover_source_models"
+    UpdateVolcanoPolicy=>"update_volcano_policy", DiscoverSourceModels=>"discover_source_models",
+    CreateToken=>"create_token", SetTokenEnabled=>"set_token_enabled", DeleteToken=>"delete_token"
 });
 control_enum!(OperationPhase { Queued=>"queued", Applying=>"applying", Waiting=>"waiting", Partial=>"partial",
     Unknown=>"unknown", Succeeded=>"succeeded", Failed=>"failed", Superseded=>"superseded" });
-control_enum!(TargetType { Source=>"source", Group=>"group", Membership=>"membership" });
+control_enum!(TargetType { Source=>"source", Group=>"group", Membership=>"membership", Token=>"token" });
 control_enum!(StatusDirective { Preserve=>"preserve", Enabled=>"enabled", Disabled=>"disabled" });
 control_enum!(CreateState { Never=>"never", MayHaveBeenSent=>"may_have_been_sent", Resolved=>"resolved" });
 
@@ -572,6 +573,7 @@ fn target_revision(conn: &Connection, target: TargetType, id: i64) -> ControlRes
         TargetType::Source => "SELECT config_revision FROM sources WHERE source_id=?1",
         TargetType::Group => "SELECT revision FROM source_groups WHERE group_id=?1",
         TargetType::Membership => "SELECT revision FROM member_control WHERE membership_id=?1",
+        TargetType::Token => "SELECT revision FROM managed_tokens WHERE token_id=?1",
     };
     conn.query_row(sql, [id], |r| r.get(0))
         .optional()?
@@ -598,6 +600,7 @@ fn affected_members(
 ) -> ControlResult<Vec<MemberTarget>> {
     let (_, target, id, _) = command.target();
     let sql=match target {
+        TargetType::Token=>return Err(failure(ControlErrorCode::InvalidInput)),
         TargetType::Source=>{
             let active:bool=tx.query_row("SELECT s.retired_at IS NULL AND c.retire_requested=0 FROM sources s JOIN source_control c USING(source_id) WHERE source_id=?1",[id],|r|r.get(0))?;
             ensure(active,ControlErrorCode::NotReady)?;
@@ -641,13 +644,22 @@ pub(super) fn operation_projection(
     id: &OperationId,
 ) -> ControlResult<OperationView> {
     let row=conn.query_row("SELECT kind,target_type,target_id,phase,target_revision,error_code,updated_at,expected_targets FROM control_operations WHERE operation_id=?1",[id.as_str()],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?,r.get::<_,String>(3)?,r.get::<_,i64>(4)?,r.get::<_,Option<String>>(5)?,r.get::<_,i64>(6)?,r.get::<_,i64>(7)?))).optional()?.ok_or_else(||failure(ControlErrorCode::NotFound))?;
+    let target_type = TargetType::parse(&row.1)?;
+    let counts = if target_type == TargetType::Token {
+        "SELECT count(*),count(confirmed_at) FROM token_operation_targets WHERE operation_id=?1"
+    } else {
+        "SELECT count(*),count(confirmed_at) FROM operation_targets WHERE operation_id=?1"
+    };
     let (total, confirmed): (i64, i64) = conn.query_row(
-        "SELECT count(*),count(confirmed_at) FROM operation_targets WHERE operation_id=?1",
+        counts,
         [id.as_str()],
         |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
     let phase = OperationPhase::parse(&row.3)?;
     let kind = OperationKind::parse(&row.0)?;
+    if target_type == TargetType::Token {
+        ensure(total == 1 && matches!(kind, OperationKind::CreateToken | OperationKind::SetTokenEnabled | OperationKind::DeleteToken), ControlErrorCode::Storage)?;
+    }
     if matches!(
         kind,
         OperationKind::SetGroupPin
@@ -671,7 +683,7 @@ pub(super) fn operation_projection(
         schema_version: OPERATION_SCHEMA_VERSION,
         operation_id: id.clone(),
         kind,
-        target_type: TargetType::parse(&row.1)?,
+        target_type,
         target_id: row.2.to_string(),
         phase,
         target_revision: row.4,
@@ -691,7 +703,7 @@ pub(super) fn verify_control(conn: &Connection) -> super::types::Result<()> {
     require(!bad_targets, ErrorKind::CorruptData)?;
     let missing_identity:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM control_operations o WHERE (target_type='source' AND NOT EXISTS(SELECT 1 FROM sources WHERE source_id=o.target_id)) OR (target_type='group' AND NOT EXISTS(SELECT 1 FROM source_groups WHERE group_id=o.target_id)) OR (target_type='membership' AND NOT EXISTS(SELECT 1 FROM memberships WHERE membership_id=o.target_id)))",[],|r|r.get(0))?;
     require(!missing_identity, ErrorKind::CorruptData)?;
-    let missing_targets:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM control_operations o WHERE o.expected_targets!=(SELECT count(*) FROM operation_targets t WHERE t.operation_id=o.operation_id))",[],|r|r.get(0))?;
+    let missing_targets:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM control_operations o WHERE o.target_type!='token' AND o.expected_targets!=(SELECT count(*) FROM operation_targets t WHERE t.operation_id=o.operation_id))",[],|r|r.get(0))?;
     require(!missing_targets, ErrorKind::CorruptData)?;
     let unconfirmed_success:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM control_operations o JOIN operation_targets t USING(operation_id) WHERE o.phase='succeeded' AND t.confirmed_at IS NULL)",[],|r|r.get(0))?;
     require(!unconfirmed_success, ErrorKind::CorruptData)

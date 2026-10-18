@@ -7,7 +7,7 @@ use super::transport::{
 };
 use crate::catalog::{SecretString, JSON_SAFE};
 use reqwest::Method;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -15,7 +15,7 @@ pub const NATIVE_TOKEN_SCHEMA_VERSION: i64 = 1;
 const PAGE_SIZE: usize = 100;
 const MAX_TOKENS: usize = 10_000;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TokenOwnerScope {
     Issuer,
@@ -33,7 +33,7 @@ pub struct TokenOwnerProfile {
     pub account_group: String,
     pub quota: i64,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TokenStatus {
     Enabled,

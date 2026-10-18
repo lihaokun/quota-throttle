@@ -1,6 +1,6 @@
 # 来源共享功能实施准备计划
 
-日期：2026-10-15，进度更新：2026-10-18。状态：[架构](architecture.md)已确认，sgm-1、sgm-2内部执行/恢复与预检、sgm-3内部策略/管理、sgm-4账本/采集/查询及观测发布、sgm-5 A原生令牌接口已完成各自本地分步验收；sgm-5 B/C、三页面和运行组装/发布未完成，不是授权部署清单。
+日期：2026-10-15，进度更新：2026-10-18。状态：[架构](architecture.md)已确认，sgm-1、sgm-2内部执行/恢复与预检、sgm-3内部策略/管理、sgm-4账本/采集/查询及观测发布、sgm-5 A原生令牌接口与B持久操作已完成各自本地分步验收；sgm-5 C、三页面和运行组装/发布未完成，不是授权部署清单。
 
 ## 当前完成与未完成
 
@@ -21,7 +21,7 @@
 - 2026-10-16 [性能门禁修复](../../fixes/sgm-fix-parallel-performance-gates.md)的历史记录：保留原功能/PBT，六个原预算转为四个串行release入口并由CI显式执行。修改前复现359/1/1，修改后release为360/0/5，独立性能4项、入口回归8项及负向门禁通过，静态独审通过；debug为359/1/5，额外暴露导入后重开AlreadyOpen。失败种子保留，当时只验证锁继承机制并准备[目录锁修正方案](../../fixes/catalog-fix-inherited-lock-release.md)，尚未改锁实现，因此当时不能称整体CI全绿。
 - 2026-10-17 已按用户确认关闭上述[目录锁问题](../../fixes/catalog-fix-inherited-lock-release.md)：仅成功持锁后构造内部guard，在SQLite连接关闭后显式unlock；不改DDL/API/调度。新增8个测试入口，含128-case所有权PBT、实际子进程及关闭顺序回调；旧实现红例和两个错误变异都被捕获。最终本地默认debug/release各368 passed/0 failed/5 ignored，独立性能4项、入口回归8项、clippy/release build和独审通过；旧失败记录保留，远端CI未触发。来源共享功能仍未部署，下一步是已明确边界的SGM-4 A实现。
 - 2026-10-17 SGM-4 A 本地验收完成：A1–A5 白名单解析、批内去重、历史归属、UTC 分钟联合用量和安全加算通过 18 项普通测试（6 项各 128 cases PBT）、10 项变异、机械检查及独立静态审核，3 项审核反馈已关闭。初次 debug 的 385 passed/1 failed/6 ignored 保留在[审核记录](../../audits/sgm-4-facts-analytics/audit-report.md)；用户确认后[单独修正旧认证测试同步](../../fixes/newapi-fix-auth-waiter-test-sync.md)，30 次复测和两项变异通过，未改生产认证。最终默认 debug/release 各 386 passed/0 failed/6 ignored，独立性能 5 项通过（账本最大批次 39 ms），clippy/release build 通过。A 没有接采集或运行服务；下一步是 B 持久化账本与统一采集的细化，确认后才实施。
-- 当前未完成：sgm-2/3/4运行接线、公开管理接口与最终整体验收；sgm-5 B持久操作与C组/身份就绪组合；sgm-6/7三页面UI、生产迁移与发布。sgm-5 A仅完成原生访问key接口。原 C-3/sgm-4 C 的观测事实、周期历史与火山内部发布合流已由 O1–O4 完成，不代表运行服务已启用。
+- 当前未完成：sgm-2/3/4运行接线、公开管理接口与最终整体验收；sgm-5 C组/身份就绪及worker组合；sgm-6/7三页面UI、生产迁移与发布。sgm-5 A/B完成原生访问key接口及持久操作，尚非完整key管理。原 C-3/sgm-4 C 的观测事实、周期历史与火山内部发布合流已由 O1–O4 完成，不代表运行服务已启用。
 - 2026-10-17 B1 本地验收完成，基于 `9595837` 实现应用库 v5 的事务入账；[B 总体细化](subplans/sgm-4-facts-analytics-b.md)、[事前清单](../../audits/sgm-4-facts-analytics/batch-b1-expectations.md)和[B1 审核](../../audits/sgm-4-facts-analytics/batch-b1-audit.md)分别保存契约及证据。新增 24 项入口（21 普通/3 性能），6 项各 128 cases PBT、8 项变异、机械及独审通过；默认 debug/release 各 407 passed/0 failed/9 ignored，8 项串行性能、clippy/release build 通过。复用一个应用库/单写者，规范事实、联合投影和检查点同事务；不增加数据库身份登记或自动跨库合并。下一步 B2 统一采集及 B3 查询/补归属仍须分别细化，未接运行服务。
 - 2026-10-17 B2 设计阶段记录（后续实现进度见下一项）：[统一采集细化](subplans/sgm-4-facts-analytics-b2.md)及[事前十节清单](../../audits/sgm-4-facts-analytics/batch-b2-expectations.md)形成待确认稿，保留 v5/两条检查点，显式同窗重扫、近期回看与全历史循环补采、共享预算/单飞/恢复均有函数契约。固定源码复核发现本地启动仍需确认日志 SQLite 分支，拟用显式 local 启动值作保守只读证据，不新增身份登记。当时尚待确认并执行 B2.0 隔离分页/启动条件探针，未实现采集器或修改任何运行配置。
 - 2026-10-17 B2 已完成 [统一采集细化](subplans/sgm-4-facts-analytics-b2.md)范围内实现和[本地验收](../../audits/sgm-4-facts-analytics/batch-b2-audit.md)：40 项新增入口（38 普通/2 性能）、6 组各 128 cases PBT、15 种变异、机械与三步独审通过；默认 debug/release 各 445 passed/0 failed/11 ignored，10 项独立性能、真实原生组合、clippy/release build 通过。保留 v5/一个写者/共享管理预算，无新增任务表、数据库登记或生产配置修改。下一步是 B3 查询与补归属细化；B2 未接 CLI/面板，不能视为来源分组功能已部署。
@@ -42,6 +42,8 @@
 2026-10-18 C-2 [内部管理验收](../../audits/sgm-3-source-policies/c2-audit.md)通过：GLM组固定/取消、火山撤错/上限及重置设置、按来源模型发现沿原命令/策略/执行链接线。DB v7保留历史操作/成功回执/账本，OperationView wire2区分局部保存与远端确认。新增22普通（4组各128 cases PBT）及1性能入口；默认debug/release各555 passed/0 failed/19 ignored，10种有效编译变异、最终定向/机械/clippy/build及独审通过，17项独立性能通过，万条操作迁移563ms。没有改原GLM/火山算法、NewAPI或现行服务；下一步为SGM-5访问key管理，再接三页面及运行/发布组装。
 
 2026-10-18 SGM-5 A [原生令牌接口验收](../../audits/sgm-5-token-management/a-audit.md)通过：复用原transport/共享预算，固定普通签发与legacy账号，安全分页、精确查回、单组创建、启停、单ID删除和显式复制；新增23普通（3组各128 cases PBT）及1性能入口。默认debug/release各578 passed/0 failed/20 ignored，11类可编译变异、15项隔离原生检查、机械/clippy/release build及独审通过；18项串行性能通过，新最大令牌页15ms。重登principal漂移经红绿修正并复验，不改变旧请求默认行为。原GLM/火山算法、账本/目录DDL、依赖和运行服务未改。下一步为B持久操作、未知创建恢复及幂等，再做C组/签发身份就绪；A不代表完整key管理、页面或部署已完成。
+
+2026-10-18 SGM-5 B [持久操作验收](../../audits/sgm-5-token-management/b-audit.md)通过：同应用库v8保存token身份、目标/收据及执行尝试，复用原幂等操作表；未知创建只查回不重发，ACK不确认，旧回读与旧失败重试不覆盖新版本，重开保留未决证据和成功历史。新增25普通（5组各128 cases PBT）及2性能入口，10类编译变异全部捕获，独审0未关闭问题；最终debug/release各603 passed/0 failed/22 ignored，20项独立性能、机械/clippy/build通过。万条imported身份零操作历史的校验/投影459ms、指定万条旧操作迁移574ms；不泛称任意历史规模都满足该预算。初轮沙箱、版本预期和计时失败及接受的clippy布局提示保留在审核记录。没有改变GLM/火山/账本算法或原生HTTP行为，未重启/部署。下一步是C签发身份/组就绪、引用保护及原worker组合，再接三页面和运行/发布。
 
 ## 分步实施顺序
 

@@ -242,6 +242,11 @@ impl CatalogStore {
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let before = operation_projection(&tx, id)?;
+        if before.target_type == super::control::TargetType::Token {
+            let result = super::tokens::retry_tx(&tx, id, now)?;
+            commit(tx, &mut self.poisoned)?;
+            return Ok(result);
+        }
         if before.phase == OperationPhase::Succeeded {
             return Ok(before);
         }

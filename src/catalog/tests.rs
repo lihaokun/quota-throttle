@@ -20,10 +20,14 @@ mod observed_publication;
 mod policy;
 #[path = "policy_command_tests.rs"]
 mod policy_commands;
+#[path = "token_tests.rs"]
+mod tokens;
 
 const DROP_LEDGER_V5: &str = "DROP TABLE ledger_minute_usage; DROP TABLE ledger_facts; DROP TABLE ledger_checkpoints; DROP TABLE ledger_state;";
 const DROP_OBSERVED_V6: &str = "DROP TABLE IF EXISTS volcano_observation_queue; DROP TABLE IF EXISTS volcano_request_observations; DROP TABLE IF EXISTS volcano_period_history; DROP INDEX IF EXISTS ledger_cell_source_time; DROP INDEX IF EXISTS ledger_fact_source_usage; DROP INDEX IF EXISTS ledger_fact_source_request;";
+const DROP_TOKENS_V8: &str = "DROP TABLE token_execution_attempts; DROP TABLE token_operation_targets; DROP TABLE managed_tokens; DROP INDEX token_pending;";
 fn drop_ledger_for_legacy(conn: &Connection) {
+    conn.execute_batch(DROP_TOKENS_V8).unwrap();
     replace_control_operations(conn, SCHEMA_V2).unwrap();
     conn.execute_batch(DROP_OBSERVED_V6).unwrap();
     conn.execute_batch(DROP_LEDGER_V5).unwrap();
