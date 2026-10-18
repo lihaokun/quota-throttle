@@ -5,7 +5,7 @@ use crate::catalog::glm_publication::PolicyRefreshReport;
 use crate::source_policy::probe::ProbeCycle;
 use crate::source_policy::PolicyError;
 
-fn current_ms() -> ControlResult<i64> {
+pub(super) fn current_ms() -> ControlResult<i64> {
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .ok()
@@ -81,6 +81,11 @@ impl ReconcileWorker {
                 &c.permits,
                 now_ms,
             )?;
+            // Step A1.3: 只有原提交成功后整体替换显示；失败/preview不续旧观察。
+            c.panel_glm = Some(super::panel::GlmDisplayCache::new(
+                cycle,
+                committed.assessments,
+            ));
             c.permits.retain(|id, _| !committed.scope.contains(id));
             c.permits.extend(committed.permits);
             c.last_glm_cycle = Some(committed.report.cycle_id);

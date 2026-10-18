@@ -1,0 +1,1069 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:quota-throttle:panel-snapshot:1",
+  "title": "Panel snapshot version 1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "captured_at_ms",
+    "backend_ready",
+    "catalog",
+    "glm"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "captured_at_ms": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "backend_ready": {
+      "type": "boolean"
+    },
+    "catalog": {
+      "$ref": "#/$defs/catalog"
+    },
+    "glm": {
+      "$ref": "#/$defs/glm"
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]{0,18}$"
+    },
+    "kind": {
+      "enum": [
+        "glm",
+        "volcano"
+      ]
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^\\S(?:[\\s\\S]*\\S)?$",
+      "not": {
+        "pattern": "\u0000"
+      }
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "priority": {
+      "type": "integer",
+      "minimum": -9007199254740991,
+      "maximum": 9007199254740991
+    },
+    "timestamp": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_id",
+        "type",
+        "name",
+        "note",
+        "manual_paused",
+        "retired_at",
+        "config_revision"
+      ],
+      "properties": {
+        "source_id": {
+          "$ref": "#/$defs/id"
+        },
+        "type": {
+          "$ref": "#/$defs/kind"
+        },
+        "name": {
+          "$ref": "#/$defs/name"
+        },
+        "note": {
+          "type": "string",
+          "maxLength": 2048,
+          "not": {
+            "pattern": "\u0000"
+          }
+        },
+        "manual_paused": {
+          "type": "boolean"
+        },
+        "retired_at": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "config_revision": {
+          "$ref": "#/$defs/revision"
+        }
+      }
+    },
+    "group": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "group_id",
+        "newapi_group",
+        "name",
+        "type",
+        "revision",
+        "ready"
+      ],
+      "properties": {
+        "group_id": {
+          "$ref": "#/$defs/id"
+        },
+        "newapi_group": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9_.-]+$",
+          "not": {
+            "const": "auto"
+          }
+        },
+        "name": {
+          "$ref": "#/$defs/name"
+        },
+        "type": {
+          "$ref": "#/$defs/kind"
+        },
+        "revision": {
+          "$ref": "#/$defs/revision"
+        },
+        "ready": {
+          "type": "boolean"
+        }
+      }
+    },
+    "membership": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "membership_id",
+        "source_id",
+        "group_id",
+        "channel_id",
+        "order",
+        "lifecycle",
+        "desired_priority",
+        "observed_status",
+        "observed_priority",
+        "applied_revision",
+        "retired_at"
+      ],
+      "properties": {
+        "membership_id": {
+          "$ref": "#/$defs/id"
+        },
+        "source_id": {
+          "$ref": "#/$defs/id"
+        },
+        "group_id": {
+          "$ref": "#/$defs/id"
+        },
+        "channel_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "order": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "lifecycle": {
+          "enum": [
+            "planned",
+            "imported",
+            "created_disabled",
+            "ready",
+            "retired"
+          ]
+        },
+        "desired_priority": {
+          "$ref": "#/$defs/priority"
+        },
+        "observed_status": {
+          "enum": [
+            null,
+            1,
+            2,
+            3
+          ]
+        },
+        "observed_priority": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/priority"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "applied_revision": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/revision"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "retired_at": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "lifecycle": {
+                "const": "planned"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "channel_id": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "lifecycle": {
+                "enum": [
+                  "imported",
+                  "created_disabled",
+                  "ready"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "channel_id": {
+                "$ref": "#/$defs/id"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "lifecycle": {
+                "const": "retired"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "retired_at": {
+                "$ref": "#/$defs/timestamp"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "retired_at": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "control_error": {
+      "enum": [
+        null,
+        "invalid_input",
+        "not_found",
+        "revision_conflict",
+        "idempotency_conflict",
+        "queue_full",
+        "not_ready",
+        "binding_drift",
+        "ambiguous_create",
+        "auth_failed",
+        "remote_rejected",
+        "invalid_response",
+        "rate_limited",
+        "transport_unknown",
+        "storage"
+      ]
+    },
+    "cycle": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]{0,19}$"
+    },
+    "percentage": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "daily_token_limit",
+        "failure_threshold",
+        "reset_minute",
+        "utc_offset_minutes"
+      ],
+      "properties": {
+        "daily_token_limit": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "failure_threshold": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "reset_minute": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1439
+        },
+        "utc_offset_minutes": {
+          "type": "integer",
+          "minimum": -720,
+          "maximum": 840
+        }
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "revision",
+        "period_id",
+        "period_start",
+        "next_reset_at",
+        "used_input",
+        "used_output",
+        "consecutive_failures",
+        "error_exhausted",
+        "limit_exhausted",
+        "coverage_end"
+      ],
+      "properties": {
+        "revision": {
+          "$ref": "#/$defs/revision"
+        },
+        "period_id": {
+          "$ref": "#/$defs/revision"
+        },
+        "period_start": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "next_reset_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "used_input": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "used_output": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "consecutive_failures": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "error_exhausted": {
+          "type": "boolean"
+        },
+        "limit_exhausted": {
+          "type": "boolean"
+        },
+        "coverage_end": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "volcano": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "policy",
+        "runtime"
+      ],
+      "properties": {
+        "policy": {
+          "$ref": "#/$defs/policy"
+        },
+        "runtime": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/runtime"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "panel_source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "retire_requested",
+        "model_count",
+        "volcano"
+      ],
+      "properties": {
+        "source": {
+          "$ref": "#/$defs/source"
+        },
+        "retire_requested": {
+          "type": "boolean"
+        },
+        "model_count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        },
+        "volcano": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/volcano"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "source": {
+                "properties": {
+                  "type": {
+                    "const": "glm"
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "volcano": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "volcano": {
+                "$ref": "#/$defs/volcano"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "panel_group": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "group",
+        "policy_revision",
+        "selected_member_id",
+        "pinned_member_id",
+        "regime"
+      ],
+      "properties": {
+        "group": {
+          "$ref": "#/$defs/group"
+        },
+        "policy_revision": {
+          "$ref": "#/$defs/revision"
+        },
+        "selected_member_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pinned_member_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "regime": {
+          "enum": [
+            "normal",
+            "degraded",
+            null
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "group": {
+                "properties": {
+                  "type": {
+                    "const": "volcano"
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "pinned_member_id": {
+                "type": "null"
+              },
+              "regime": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "regime": {
+                "enum": [
+                  "normal",
+                  "degraded"
+                ]
+              }
+            }
+          }
+        }
+      ]
+    },
+    "panel_membership": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "membership",
+        "control_revision",
+        "status_directive",
+        "retire_requested",
+        "create_state",
+        "dirty",
+        "next_attempt_at",
+        "error_code"
+      ],
+      "properties": {
+        "membership": {
+          "$ref": "#/$defs/membership"
+        },
+        "control_revision": {
+          "$ref": "#/$defs/revision"
+        },
+        "status_directive": {
+          "enum": [
+            "preserve",
+            "enabled",
+            "disabled"
+          ]
+        },
+        "retire_requested": {
+          "type": "boolean"
+        },
+        "create_state": {
+          "enum": [
+            "never",
+            "may_have_been_sent",
+            "resolved"
+          ]
+        },
+        "dirty": {
+          "type": "boolean"
+        },
+        "next_attempt_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "error_code": {
+          "$ref": "#/$defs/control_error"
+        }
+      }
+    },
+    "catalog": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sources",
+        "groups",
+        "memberships"
+      ],
+      "properties": {
+        "sources": {
+          "type": "array",
+          "maxItems": 1000,
+          "items": {
+            "$ref": "#/$defs/panel_source"
+          }
+        },
+        "groups": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "$ref": "#/$defs/panel_group"
+          }
+        },
+        "memberships": {
+          "type": "array",
+          "maxItems": 10000,
+          "items": {
+            "$ref": "#/$defs/panel_membership"
+          }
+        }
+      }
+    },
+    "window": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "percentage",
+        "reset_at_ms"
+      ],
+      "properties": {
+        "percentage": {
+          "$ref": "#/$defs/percentage"
+        },
+        "reset_at_ms": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "quota": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_id",
+        "source_revision",
+        "observed_at_ms",
+        "state",
+        "five_hour",
+        "weekly",
+        "level"
+      ],
+      "properties": {
+        "source_id": {
+          "$ref": "#/$defs/id"
+        },
+        "source_revision": {
+          "$ref": "#/$defs/revision"
+        },
+        "observed_at_ms": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "state": {
+          "enum": [
+            "unknown",
+            "observed",
+            "unavailable",
+            "stale"
+          ]
+        },
+        "five_hour": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/window"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "weekly": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/window"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "level": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "[^\\u0009-\\u000D\\u0020\\u0085\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000]",
+              "not": {
+                "pattern": "\u0000"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "observed"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "observed_at_ms": {
+                "$ref": "#/$defs/timestamp"
+              }
+            },
+            "anyOf": [
+              {
+                "properties": {
+                  "five_hour": {
+                    "$ref": "#/$defs/window"
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "weekly": {
+                    "$ref": "#/$defs/window"
+                  }
+                }
+              }
+            ]
+          },
+          "else": {
+            "properties": {
+              "five_hour": {
+                "type": "null"
+              },
+              "weekly": {
+                "type": "null"
+              },
+              "level": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "unknown"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "observed_at_ms": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "observed_at_ms": {
+                "$ref": "#/$defs/timestamp"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "pin_release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "membership_id",
+        "pct",
+        "limit"
+      ],
+      "properties": {
+        "membership_id": {
+          "$ref": "#/$defs/id"
+        },
+        "pct": {
+          "$ref": "#/$defs/percentage"
+        },
+        "limit": {
+          "$ref": "#/$defs/percentage"
+        }
+      }
+    },
+    "assessment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "group_id",
+        "cycle_id",
+        "evaluated_at_ms",
+        "current",
+        "imminent_members",
+        "pin_release"
+      ],
+      "properties": {
+        "group_id": {
+          "$ref": "#/$defs/id"
+        },
+        "cycle_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/cycle"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evaluated_at_ms": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "current": {
+          "type": "boolean"
+        },
+        "imminent_members": {
+          "anyOf": [
+            {
+              "type": "array",
+              "maxItems": 10000,
+              "items": {
+                "$ref": "#/$defs/id"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pin_release": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/pin_release"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "current": {
+                "const": true
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "cycle_id": {
+                "$ref": "#/$defs/cycle"
+              },
+              "evaluated_at_ms": {
+                "$ref": "#/$defs/timestamp"
+              },
+              "imminent_members": {
+                "type": "array",
+                "maxItems": 10000,
+                "items": {
+                  "$ref": "#/$defs/id"
+                }
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "imminent_members": {
+                "type": "null"
+              },
+              "pin_release": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "cycle_id": {
+                "type": "null"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "evaluated_at_ms": {
+                "type": "null"
+              },
+              "current": {
+                "const": false
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "evaluated_at_ms": {
+                "$ref": "#/$defs/timestamp"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "glm": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cycle_id",
+        "completed_at_ms",
+        "sources",
+        "groups"
+      ],
+      "properties": {
+        "cycle_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/cycle"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "completed_at_ms": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sources": {
+          "type": "array",
+          "maxItems": 1000,
+          "items": {
+            "$ref": "#/$defs/quota"
+          }
+        },
+        "groups": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "$ref": "#/$defs/assessment"
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "cycle_id": {
+                "type": "null"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "completed_at_ms": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "completed_at_ms": {
+                "$ref": "#/$defs/timestamp"
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

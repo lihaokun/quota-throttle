@@ -543,6 +543,18 @@ fn journal_volcano_enable_is_not_subject_to_glm_one_shot() {
 
 #[test]
 fn journal_group_snapshot_has_bounded_cost() {
+    group_work_snapshot_case();
+}
+
+#[test]
+#[ignore = "独立串行性能门禁：bash scripts/tests/performance-gates.sh"]
+fn performance_gate_group_work_snapshot() {
+    let elapsed = group_work_snapshot_case();
+    println!("GROUP_WORK_SNAPSHOT_MS={}", elapsed.as_millis());
+    assert!(elapsed < Duration::from_secs(3));
+}
+
+fn group_work_snapshot_case() -> Duration {
     let (_dir, mut store, id) = fixture(SourceKind::Glm, true);
     let own = store.load_work(id, false).unwrap();
     for n in 0..128 {
@@ -558,7 +570,7 @@ fn journal_group_snapshot_has_bounded_cost() {
         store.load_group_work(own.group.group_id).unwrap().len(),
         129
     );
-    assert!(started.elapsed() < Duration::from_secs(3));
+    started.elapsed()
 }
 
 #[test]

@@ -49,7 +49,7 @@
 
 2026-10-19 SGM5 C[内部服务验收](../../audits/sgm-5-token-management/c-audit.md)完成：同一worker组合组注册/引用核验、固定owner、正向准入、持久操作执行/回读及显式复制。新增42普通含6组各128 cases PBT、2性能及1原生组合入口；14类编译变异通过，独审0未关闭。首轮旧计时失败按既有方案补齐隔离，原功能断言和5秒不变，另1类零预算变异通过。最终默认debug/release各645 passed/0 failed/26 ignored，23项release性能及大组debug、机械/clippy/build、原生8项组合通过；无算法/DDL/依赖/在线服务变更，未推送/部署。
 
-2026-10-19 用户要求先开始下一阶段，已启动[SGM6三页面与管理接口细化](subplans/sgm-6-three-page-panel.md)：先安全投影/HTTP适配，再三页与统一刷新，最后交互和隔离组合验收。独立前置契约提取完成，[A1安全状态视图](subplans/sgm-6-panel-state-a1.md)处于设计复核，尚未实现。fermat只做过环境只读检查，未安装或启动项目；后续使用独立测试目录/数据库，正式路径为全新初始化，不安排旧数据导入。
+2026-10-19 [SGM6 A1安全状态视图](subplans/sgm-6-panel-state-a1.md)[验收完成](../../audits/sgm-6-three-page-panel/a1-audit.md)：同原Core/只读目录组合安全状态与已提交GLM观察，不新增探针、状态库或策略。新增18普通含3组各128 cases PBT、1性能；8类业务变异、机械和独审通过。退休显示范围红例修正后保留；两轮旧容量计时失败沿原方案补齐隔离，另4种零预算变异通过，原功能/阈值不变。最终默认debug/release各663/0/30 ignored，27项release性能、4个debug入口、clippy/build通过；最大目录103ms。fermat仅私有目录假数据测试，无在线服务变更/部署。下一步A2管理HTTP，再三页面和运行发布；正式fermat为全新初始化，不导入旧配置/数据。
 
 下列 ID 为本 feature 子计划；sgm-1 已完成实现及验收，其余仍待各自进入编码前完成设计，不以此表代替契约。
 

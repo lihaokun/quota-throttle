@@ -21,6 +21,7 @@ pub(crate) struct PolicyRefreshReport {
     pub waiting: usize,
 }
 pub(crate) struct GlmPolicyCommit {
+    pub assessments: Vec<super::panel::CommittedGroupAssessment>,
     pub report: PolicyRefreshReport,
     pub permits: HashMap<MembershipId, RoutingPermit>,
     pub changed_groups: Vec<GroupId>,
@@ -203,6 +204,20 @@ impl CatalogStore {
             .map(|s| s.source_id)
             .collect();
         let result = GlmPolicyCommit {
+            assessments: applied
+                .round
+                .groups
+                .iter()
+                .map(|g| {
+                    super::panel::CommittedGroupAssessment::capture(
+                        &g.group,
+                        g.policy.policy_revision,
+                        &g.work,
+                        &g.decision,
+                        now_ms,
+                    )
+                })
+                .collect(),
             scope: snapshot
                 .memberships
                 .iter()

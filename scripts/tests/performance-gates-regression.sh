@@ -6,6 +6,10 @@ cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.."
 cargo() {
   local tests=(
     catalog::store::tests::control::performance_gate_control_group_priorities
+    catalog::store::tests::performance_gate_import_and_snapshot
+    catalog::store::tests::execution::performance_gate_group_work_snapshot
+    source_policy::tests::performance_gate_glm_pure_capacity
+    catalog::store::tests::panel::performance_gate_panel_maximum_catalog
     catalog::store::tests::glm_round::performance_gate_glm_maximum_catalog
   catalog::store::tests::tokens::migration::performance_gate_token_identity_10k
   catalog::store::tests::tokens::migration::performance_gate_token_v7_migration_10k_operations
@@ -36,7 +40,7 @@ cargo() {
       missing) unset 'tests[3]' ;;
       extra) tests+=(unexpected::performance_gate_extra) ;;
       duplicate) tests+=("${tests[0]}") ;;
-      happy|run_failure|debug_empty|debug_wrong|debug_list_failure|debug_run_failure) ;;
+      happy|run_failure|debug_empty|debug_wrong|debug_list_failure|debug_run_failure|import_debug_empty|import_debug_wrong|import_debug_list_failure|import_debug_run_failure|journal_debug_empty|journal_debug_wrong|journal_debug_list_failure|journal_debug_run_failure|glm_debug_empty|glm_debug_wrong|glm_debug_list_failure|glm_debug_run_failure) ;;
       *) return 47 ;;
     esac
     printf '%s: test\n' "${tests[@]}"
@@ -52,13 +56,40 @@ cargo() {
     esac
   elif [[ "$*" == 'test --locked --bin quota-throttle catalog::store::tests::control::performance_gate_control_group_priorities -- --ignored --exact --test-threads=1 --nocapture' ]]; then
     [[ "$PERFORMANCE_FIXTURE_MODE" != debug_run_failure ]] || return 29
+  elif [[ "$*" == 'test --locked --bin quota-throttle catalog::store::tests::performance_gate_import_and_snapshot -- --ignored --exact --list' ]]; then
+    case "$PERFORMANCE_FIXTURE_MODE" in
+      import_debug_empty) return 0 ;;
+      import_debug_wrong) printf 'wrong::performance_gate_import_and_snapshot: test\n' ;;
+      import_debug_list_failure) return 31 ;;
+      *) printf 'catalog::store::tests::performance_gate_import_and_snapshot: test\n' ;;
+    esac
+  elif [[ "$*" == 'test --locked --bin quota-throttle catalog::store::tests::performance_gate_import_and_snapshot -- --ignored --exact --test-threads=1 --nocapture' ]]; then
+    [[ "$PERFORMANCE_FIXTURE_MODE" != import_debug_run_failure ]] || return 37
+  elif [[ "$*" == 'test --locked --bin quota-throttle catalog::store::tests::execution::performance_gate_group_work_snapshot -- --ignored --exact --list' ]]; then
+    case "$PERFORMANCE_FIXTURE_MODE" in
+      journal_debug_empty) return 0 ;;
+      journal_debug_wrong) printf 'wrong::performance_gate_group_work_snapshot: test\n' ;;
+      journal_debug_list_failure) return 41 ;;
+      *) printf 'catalog::store::tests::execution::performance_gate_group_work_snapshot: test\n' ;;
+    esac
+  elif [[ "$*" == 'test --locked --bin quota-throttle catalog::store::tests::execution::performance_gate_group_work_snapshot -- --ignored --exact --test-threads=1 --nocapture' ]]; then
+    [[ "$PERFORMANCE_FIXTURE_MODE" != journal_debug_run_failure ]] || return 43
+  elif [[ "$*" == 'test --locked --bin quota-throttle source_policy::tests::performance_gate_glm_pure_capacity -- --ignored --exact --list' ]]; then
+    case "$PERFORMANCE_FIXTURE_MODE" in
+      glm_debug_empty) return 0 ;;
+      glm_debug_wrong) printf 'wrong::performance_gate_glm_pure_capacity: test\n' ;;
+      glm_debug_list_failure) return 53 ;;
+      *) printf 'source_policy::tests::performance_gate_glm_pure_capacity: test\n' ;;
+    esac
+  elif [[ "$*" == 'test --locked --bin quota-throttle source_policy::tests::performance_gate_glm_pure_capacity -- --ignored --exact --test-threads=1 --nocapture' ]]; then
+    [[ "$PERFORMANCE_FIXTURE_MODE" != glm_debug_run_failure ]] || return 59
   else
     return 46 # 不能通过改过滤条件、删 ignored 或串行参数使 mock 蒙混过去。
   fi
 }
 export -f cargo
 
-for entry in happy:0 empty:1 missing:1 extra:1 duplicate:1 list_failure:19 run_failure:17 debug_empty:1 debug_wrong:1 debug_list_failure:23 debug_run_failure:29; do
+for entry in happy:0 empty:1 missing:1 extra:1 duplicate:1 list_failure:19 run_failure:17 debug_empty:1 debug_wrong:1 debug_list_failure:23 debug_run_failure:29 import_debug_empty:1 import_debug_wrong:1 import_debug_list_failure:31 import_debug_run_failure:37 journal_debug_empty:1 journal_debug_wrong:1 journal_debug_list_failure:41 journal_debug_run_failure:43 glm_debug_empty:1 glm_debug_wrong:1 glm_debug_list_failure:53 glm_debug_run_failure:59; do
   mode="${entry%:*}"
   expected_status="${entry#*:}"
   status=0
@@ -71,4 +102,4 @@ done
 status=0
 PERFORMANCE_FIXTURE_MODE=happy bash scripts/tests/performance-gates.sh --test-threads=64 >/dev/null 2>&1 || status=$?
 test "$status" -eq 2
-printf 'Performance runner regressions: 12 passed\n'
+printf 'Performance runner regressions: 24 passed\n'

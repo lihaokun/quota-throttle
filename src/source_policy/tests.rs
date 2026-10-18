@@ -405,6 +405,18 @@ fn invalid_snapshots_are_rejected_before_filtering() {
 
 #[test]
 fn capacity_bounds_and_maximum_snapshot_are_finite() {
+    glm_pure_capacity_case();
+}
+
+#[test]
+#[ignore = "独立串行性能门禁：bash scripts/tests/performance-gates.sh"]
+fn performance_gate_glm_pure_capacity() {
+    let elapsed = glm_pure_capacity_case();
+    println!("GLM_PURE_CAPACITY_MS={}", elapsed.as_millis());
+    assert!(elapsed < Duration::from_secs(5));
+}
+
+fn glm_pure_capacity_case() -> Duration {
     let mut members = Vec::new();
     for i in 0..MAX_MEMBERSHIPS {
         let mut w = work((i % MAX_SOURCES + 1) as i64);
@@ -428,7 +440,7 @@ fn capacity_bounds_and_maximum_snapshot_are_finite() {
         .len(),
         MAX_SOURCES
     );
-    assert!(start.elapsed() < Duration::from_secs(5));
+    let elapsed = start.elapsed();
     members.push(work(99999));
     assert_eq!(
         decide_glm_group(
@@ -441,6 +453,7 @@ fn capacity_bounds_and_maximum_snapshot_are_finite() {
         ),
         Err(PolicyError::Capacity)
     );
+    elapsed
 }
 
 #[test]

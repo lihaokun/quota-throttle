@@ -404,3 +404,16 @@ C-1 不对未 managed 的目录成员写自动目标，不通过周期操作增�
 [C细化](subplans/sgm-5-token-management-c.md)已完成[本地验收](../../audits/sgm-5-token-management/c-audit.md)。沿原worker的Core、发布fence、lane和预算组合A/B，不另建调度器或DB版本。GroupCheckReport wire1为本次配置核验的五字段安全报告；GroupReferences wire1为已知本地引用计数，恒known_local_only=true/deletion_authorized=false，零计数不授权删除。字段由[组检查schema](schemas/group-check.schema.json)与[引用schema](schemas/group-references.schema.json)约束，消费者为内部控制面与后续页面。
 
 TokenOwners固定各自可选的issuer/legacy身份、至少配置一方，已配置issuer与原管理员client同实例/同预算；缺issuer不回退管理员签发，也不阻断legacy管理。TokenAdmission仅为一次处理栈上的私有版本/期限证据；都不序列化或持久化。组ready只承接配置引导，正向token发送仍依赖原策略许可和真实当前观察。最终transport guard沿原原子epoch/时间窗口，不在预算锁中取Core或查询SQLite。
+
+## 第六子计划 A1 只读面板共享类型
+
+[A1细化](subplans/sgm-6-panel-state-a1.md)与[面板schema](schemas/panel-snapshot.schema.json)固定安全输出，当前验收进度见[A1审核](../../audits/sgm-6-three-page-panel/a1-audit.md)。DB v8和既有wire保持不变；只增加已提交观察的展示，不接HTTP或运行服务。
+
+| 共享类型 | 消费者与约束 |
+| --- | --- |
+| PanelCatalog / PanelSource / PanelGroup / PanelMembership | catalog → worker；同一只读事务的目录历史、来源共享运行状态、组策略版本/选择与成员控制状态；只含白名单，不含配置、凭据或执行历史 |
+| PanelSnapshot | worker → 后续统一发布者/HTTP；wire1、服务端captured_at_ms、backend_ready、catalog及glm；读取不探测、不推进任何状态，忙为QueueFull，不完整为Storage |
+| GlmPanelView / GlmQuotaView / GlmGroupAssessment | worker → 页面；原已提交整轮、观察时刻与版本；unknown/observed/unavailable/stale是显示状态而非路由资格；过期判断的临期/释放信息为null |
+| CommittedGroupAssessment / GroupInputStamp | catalog → worker的不可序列化内部证据；原全部未退休策略输入的有界stamp，不是新许可/持久版本；不包含已退休目录历史 |
+
+GLM缓存只在原commit成功后随Core整体替换，重开为空；源样本不以轮完成时间续期。组current同时检查完整输入stamp、原评估与相关观察时效以及原临期周重置边界，不重算decide。火山runtime未初始化为null，coverage_end为空时计数不代表已观测零用量；页面必须保留此缺口语义。具体操作结果仍按需读取原OperationView，不能从ready、dirty或applied推断成功。

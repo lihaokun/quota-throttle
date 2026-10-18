@@ -9,6 +9,10 @@ cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.."
 
 expected="$(printf '%s\n' \
   catalog::store::tests::control::performance_gate_control_group_priorities \
+  catalog::store::tests::performance_gate_import_and_snapshot \
+  catalog::store::tests::execution::performance_gate_group_work_snapshot \
+  source_policy::tests::performance_gate_glm_pure_capacity \
+  catalog::store::tests::panel::performance_gate_panel_maximum_catalog \
   catalog::store::tests::glm_round::performance_gate_glm_maximum_catalog \
   catalog::store::tests::tokens::migration::performance_gate_token_identity_10k \
   catalog::store::tests::tokens::migration::performance_gate_token_v7_migration_10k_operations \
@@ -39,12 +43,17 @@ if [[ "$actual" != "$expected" ]]; then
 fi
 cargo test --release --locked --bin quota-throttle performance_gate_ -- --ignored --test-threads=1 --nocapture
 
-# 大组操作原预算也约束debug，不能只移到较快的release后视为同一门禁。
-debug_gate=catalog::store::tests::control::performance_gate_control_group_priorities
-listing="$(cargo test --locked --bin quota-throttle "$debug_gate" -- --ignored --exact --list)"
-actual="$(printf '%s\n' "$listing" | sed -n 's/: test$//p')"
-if [[ "$actual" != "$debug_gate" ]]; then
-  printf 'Debug performance gate mismatch; expected exactly: %s\n' "$debug_gate" >&2
-  exit 1
-fi
-cargo test --locked --bin quota-throttle "$debug_gate" -- --ignored --exact --test-threads=1 --nocapture
+# 旧大组/导入原预算也约束debug，不能只移到release后视为同一门禁。
+for debug_gate in \
+  catalog::store::tests::control::performance_gate_control_group_priorities \
+  catalog::store::tests::performance_gate_import_and_snapshot \
+  catalog::store::tests::execution::performance_gate_group_work_snapshot \
+  source_policy::tests::performance_gate_glm_pure_capacity; do
+  listing="$(cargo test --locked --bin quota-throttle "$debug_gate" -- --ignored --exact --list)"
+  actual="$(printf '%s\n' "$listing" | sed -n 's/: test$//p')"
+  if [[ "$actual" != "$debug_gate" ]]; then
+    printf 'Debug performance gate mismatch; expected exactly: %s\n' "$debug_gate" >&2
+    exit 1
+  fi
+  cargo test --locked --bin quota-throttle "$debug_gate" -- --ignored --exact --test-threads=1 --nocapture
+done

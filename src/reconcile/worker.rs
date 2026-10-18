@@ -20,6 +20,7 @@ use tokio::sync::{watch, Mutex as AsyncMutex, Notify, Semaphore};
 mod analytics;
 mod collection;
 mod management;
+pub(crate) mod panel;
 mod policy;
 pub(crate) mod token_service;
 
@@ -30,6 +31,7 @@ struct Core {
     source_disabled: HashMap<SourceId, bool>,
     permits: HashMap<MembershipId, RoutingPermit>,
     last_glm_cycle: Option<u64>,
+    panel_glm: Option<panel::GlmDisplayCache>,
     observations: HashMap<MembershipId, CachedObservation>,
 }
 enum CachedObservation {
@@ -213,6 +215,7 @@ impl ReconcileWorker {
                 source_disabled: HashMap::new(),
                 permits: HashMap::new(),
                 last_glm_cycle: None,
+                panel_glm: None,
                 observations: HashMap::new(),
             }),
             publication: AtomicU64::new(0),

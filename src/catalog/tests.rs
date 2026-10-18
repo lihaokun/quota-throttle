@@ -20,6 +20,8 @@ mod observed_publication;
 mod policy;
 #[path = "policy_command_tests.rs"]
 mod policy_commands;
+#[path = "panel_tests.rs"]
+mod panel;
 #[path = "token_tests.rs"]
 mod tokens;
 
@@ -1063,15 +1065,32 @@ fn busy_and_commit_unknown_are_not_success() {
 
 #[test]
 fn import_and_snapshot_scale_within_budget() {
+    import_and_snapshot_capacity_case();
+}
+
+#[test]
+#[ignore = "独立串行性能门禁：bash scripts/tests/performance-gates.sh"]
+fn performance_gate_import_and_snapshot() {
+    let (import_elapsed, snapshot_elapsed) = import_and_snapshot_capacity_case();
+    println!(
+        "IMPORT_GATE_MS={} SNAPSHOT_GATE_MS={}",
+        import_elapsed.as_millis(),
+        snapshot_elapsed.as_millis()
+    );
+    assert!(import_elapsed < Duration::from_secs(10));
+    assert!(snapshot_elapsed < Duration::from_secs(10));
+}
+
+fn import_and_snapshot_capacity_case() -> (Duration, Duration) {
     let (_dir, mut store) = setup();
     let (cfg, channels) = legacy(MAX_SOURCES);
     let plan = build_legacy_import(&cfg, &channels).unwrap();
     let start = Instant::now();
     store.import_legacy(&plan).unwrap();
-    assert!(start.elapsed() < Duration::from_secs(10));
+    let import_elapsed = start.elapsed();
     let start = Instant::now();
     assert_eq!(store.snapshot().unwrap().sources.len(), MAX_SOURCES);
-    assert!(start.elapsed() < Duration::from_secs(10));
+    let snapshot_elapsed = start.elapsed();
     expect(
         store.create_source(source("over-capacity", SourceKind::Glm)),
         ErrorKind::InvalidInput,
@@ -1093,6 +1112,7 @@ fn import_and_snapshot_scale_within_budget() {
         ErrorKind::InvalidInput,
     );
     assert_eq!(before, store.snapshot().unwrap());
+    (import_elapsed, snapshot_elapsed)
 }
 
 #[test]

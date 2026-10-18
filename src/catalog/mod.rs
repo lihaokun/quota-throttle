@@ -8,6 +8,7 @@ pub(crate) mod glm_round;
 pub(crate) mod groups;
 pub(crate) mod ledger;
 mod legacy;
+pub(crate) mod panel;
 pub(crate) mod policy;
 pub(crate) mod policy_commands;
 mod store;

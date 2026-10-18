@@ -1,6 +1,6 @@
 # SGM6 A1 安全面板状态投影
 
-2026-10-19，沿[三页面计划](sgm-6-three-page-panel.md)先实现只读状态生产。当前为编码前细化稿，须经独立设计复核后实施。fermat是全新部署目标，允许隔离测试，不导入旧配置或数据；本批不接HTTP、run或在线服务。
+2026-10-19，沿[三页面计划](sgm-6-three-page-panel.md)先实现只读状态生产。编码前独立设计复审通过，基线`999ca41`。fermat是全新部署目标，允许隔离测试，不导入旧配置或数据；本批不接HTTP、run或在线服务。
 
 ## 1 范围和复用
 
@@ -32,6 +32,8 @@ G5由目录/控制版本、共享来源状态及已提交GLM观察共同组成�
 
 私有`GlmDisplayCache`保存一轮有界、安全的来源样本与原决策展示。每个组附输入stamp：group_revision、保存后的policy_revision、完整成员集合的membership/source ID、source config_revision及暂停/退休标记、成员control revision/order/channel_id/lifecycle/退休标记。普通observed/applied/重试时间不参与stamp。它只用于判展示是否过期，不是新fence、许可或调度状态；不持久化，无通用Deserialize。
 
+这里的完整集合精确定义为原`group_work`的`lifecycle!='retired'`输入域；包括暂停、请求退休、未绑定和非临期成员，但不包括已经退休的目录历史。目录输出仍保留全历史。退休转移使旧集合变化、新一轮则可重新current；无当前成员引用的已退休历史元数据不影响该组判定。此callee边界经[退休范围修正](../../../fixes/panel-state-fix-retired-stamp-scope.md)澄清，producer/consumer必须相同。
+
 ## 3 错误与并发
 
 延续ControlError固定码：非法读取时刻InvalidInput，Core忙QueueFull，必需行/类型不一致或存储不可用Storage。没有部分成功快照；公开错误不带SQL、路径、原始配置或供应商正文。已有catalog错误沿原安全映射，不伪造缺失行为。
@@ -56,7 +58,7 @@ GLM展示只在原成功提交/发布临界区整体替换。失败、回滚、p
 
 在commit_glm_round内、commit之前，从apply_glm_round_tx返回的最终groups提取原decision.imminent/pin_release，以及已保存后的g.policy和已刷新目标版本的g.work。转换不重算decide，不改targets/permits/changed列表；所有结果在原commit前准备完毕，commit失败不返回展示。
 
-每组stamp按membership_id规范排序；保留全部组成员，不只记录带标签者。总条数不超过原目录容量。来源名/凭据/模型正文不进入stamp；保留实际决定可影响的身份、版本、顺序和生命周期字段。
+每组stamp按membership_id规范排序；保留原group_work的全部未退休成员，不只记录带标签者。总条数不超过原目录容量。来源名/凭据/模型正文不进入stamp；保留实际决定可影响的身份、版本、顺序和生命周期字段。
 
 论证：原apply的post保证policy/目标为本次事务终态，提取因此对应实际提交而非预期。全组stamp使另一个来源暂停、增加成员或渠道绑定时也会失效；不加入与决策无关的回读字段，避免每次确认使显示闪烁。无新持久状态或策略分支。
 
@@ -67,6 +69,8 @@ apply_glm_cycle保持原dry_run、旧cycle和commit分支。成功后在同一Co
 论证：原提交成功是缓存替换的必要条件，Core互斥禁止观察半轮。下一成功轮整体替换自然移除旧失败数据与旧pin_release事件；失败/取消不会把旧观察包装成新鲜数据。缓存容量由原ProbeCycle/目录上界约束，重启为空不会改变持久路由。
 
 ### A1.4 worker panel_snapshot
+
+样本自带cycle_id不等于缓存整轮cycle_id时也归stale，与原适配层忽略错轮样本一致。火山runtime.coverage_end为null时，used字段即使是初始化0也不是已观测零用量；后续页面须同时展示覆盖状态，不把这些标量单独当完整统计。
 
 获取服务端current_ms；非法时刻先拒绝。尝试取得Core，核Store可用并调用A1.1；取得当前backend lease判断和缓存的安全副本，在该一致状态上投影GLM显示。只有当前GLM来源/组进入结果，不让旧缓存复活已归档身份或火山临期标签。
 
@@ -92,12 +96,16 @@ Source/Group/Member/Volcano字段选择及窗口数字处理集中为小函数�
 
 新增独立release性能夹具为1000来源/100组/10000成员、各一短模型、无执行历史，完整只读投影≤5秒；普通容量测试保留值断言，时间只在串行门禁。既有全部性能继续执行；不承诺任意历史量或超大私有配置同样耗时。schema与完整JSON的输出容量由A2 HTTP边界另行明确，不能静默截断。
 
+全量暴露旧导入10秒、组快照3秒墙钟失败，系统扫描另找到GLM纯容量5秒遗漏，按原批准机制另行[补齐计时隔离](../../../fixes/catalog-fix-import-performance-gate.md)，不改A1或原业务。最终性能集合为27个release入口，另4个debug入口覆盖大组5秒、导入10秒、原快照10秒、组快照3秒、GLM纯决策5秒五个原预算；A1业务测试仍19入口（18普通/1性能）。
+
 SGM5 C尚未退出前只写设计与审核材料；之后先以独立测试目录实施，fermat可用于源码/假数据隔离验证，不上传生产配置或凭据。A1本地验收不代表页面/HTTP/运行接线已完成。
 
 ## 6 退出清单
 
+性能夹具的worker尚无GLM观察缓存，衡量最大目录的完整未知状态投影；不把该数字称为最大已缓存stamp/临期判断的预算。后者在有缓存的组合与PBT中验证正确性，若未来承诺其最大规模耗时需独立固定该夹具。
+
 - [x] 目标、复用、类型、错误、并发、循环上界与非平凡函数论证已列。
 - [x] 独立设计复审通过，移出历史扫描并锁定完整显示谓词/字段/错误分支，0个未关闭设计阻断。
-- [ ] 事前十节expectations与schema就位。
-- [ ] 实现、基本/边界/PBT、变异、默认全量和性能通过。
+- [x] 事前十节[expectations](../../../audits/sgm-6-three-page-panel/a1-expectations.md)与[输出schema](../schemas/panel-snapshot.schema.json)就位。
+- [x] 实现、基本/边界/PBT、变异、默认全量和性能通过；证据见[A1审核](../../../audits/sgm-6-three-page-panel/a1-audit.md)。
 - [ ] 机械、独审及五维度退出，文档/提交同步。
