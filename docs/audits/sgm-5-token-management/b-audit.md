@@ -2,6 +2,8 @@
 
 2026-10-18，基线`ec17fc9`。B本地验收通过：独立设计审及实现复审0个未关闭问题，定向、机械、10类编译变异、clippy/build、最终debug/release全量及20项独立性能均通过。只完成持久操作层，不代表C组合、页面或部署完成。
 
+实现、测试及契约本地提交`58aa5f8`；提交前文档同步后机械检查再次通过。独立收尾复核对照最终日志确认完成声明准确；后续本次回填仅涉及文档，不改已验收源码。
+
 ## 实现范围
 
 同一个CatalogStore追加v8，不另建数据库或操作服务。原control_operations拥有phase/error/幂等ID；三个侧表分别保存身份、目标/历史收据、执行尝试。当前OperationView wire3增加token kind/target，CatalogSnapshot及NativeTokenView不变。原生ID与本地ID明确分开，不保存完整key或原生状态缓存。

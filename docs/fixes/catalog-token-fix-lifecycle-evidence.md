@@ -30,26 +30,26 @@ verify按本地身份核对反向证据：deleted_at必须恰有该token的成�
 
 | 类型 | 用例 | 当前结果 |
 | --- | --- | --- |
-| 回归 | `t5b_reopen_requires_reverse_lifecycle_evidence`：三种不可达历史均须拒绝 | 旧实现0 passed/1 failed，明确接受了[0,1,2]；修正后通过；提交待回填 |
-| 保持 | `t5b_confirmed_prepared_create_and_delete_survive_reopen` | 正常确认/重开不降级，通过 |
-| 新增/强化 | `t5b_pb2_creation_delivery_reopen_and_expired_lookup_model`及`t5b_every_payload_field_participates_in_idempotency` | 独立输入预期及字段冲突通过；丢expiry等10类编译变异均被捕获 |
+| 回归 | `t5b_reopen_requires_reverse_lifecycle_evidence`：三种不可达历史均须拒绝 | 旧实现0 passed/1 failed，明确接受了[0,1,2]；修正后通过；`58aa5f8` |
+| 保持 | `t5b_confirmed_prepared_create_and_delete_survive_reopen` | 正常确认/重开不降级，通过；`58aa5f8` |
+| 新增/强化 | `t5b_pb2_creation_delivery_reopen_and_expired_lookup_model`及`t5b_every_payload_field_participates_in_idempotency` | 独立输入预期及字段冲突通过；丢expiry等10类编译变异均被捕获；`58aa5f8` |
 
 修正后定向25 passed/0 failed；变异源码还原后25 passed/0 failed。最终debug/release各603 passed/0 failed/22 ignored，20项独立性能全部通过；完整证据见[B验收](../audits/sgm-5-token-management/b-audit.md)，不用定向结果替代全量。
 
 ## 七 代码更新
 
-限定catalog/tokens/verify.rs及必要的新v8约束；新增回归在token_migration_tests.rs，PBT/夹具调整在token_tests.rs。保留旧DDL、A请求、策略、账本和运行入口。修正与验证完成后回填本地提交。
+限定catalog/tokens/verify.rs及必要的新v8约束；新增回归在token_migration_tests.rs，PBT/夹具调整在token_tests.rs。保留旧DDL、A请求、策略、账本和运行入口。修正与验证已完成，本地提交`58aa5f8`。
 
 | 文件 | 位置及改动 | 状态 |
 | --- | --- | --- |
-| `src/catalog/tokens/verify.rs` | `check`反向核对删除、创建及逻辑版本链 | 已改，提交待回填 |
-| `src/catalog/schema_v8.sql` | token目标逻辑版本唯一约束 | 已改，提交待回填 |
-| `src/catalog/token_migration_tests.rs` | 三类不可达生命周期回归 | 已加，提交待回填 |
-| `src/catalog/token_tests.rs` | 正常重开、独立创建预期、字段冲突及legacy夹具 | 已同步，提交待回填 |
+| `src/catalog/tokens/verify.rs` | `check`反向核对删除、创建及逻辑版本链 | 已改：`58aa5f8` |
+| `src/catalog/schema_v8.sql` | token目标逻辑版本唯一约束 | 已改：`58aa5f8` |
+| `src/catalog/token_migration_tests.rs` | 三类不可达生命周期回归 | 已加：`58aa5f8` |
+| `src/catalog/token_tests.rs` | 正常重开、独立创建预期、字段冲突及legacy夹具 | 已同步：`58aa5f8` |
 
 ## 八 文档更新
 
-同步B细化的生命周期不变量、b-expectations及b-decisions；新增入口同步机械清单。最终红绿、变异、全量与独立审核结果记录于B验收。本记录在修正代码前建立；2026-10-18上述实现、测试及文档三轨完成，本地验收通过，提交后回填哈希。
+同步B细化的生命周期不变量、b-expectations及b-decisions；新增入口同步机械清单。最终红绿、变异、全量与独立审核结果记录于B验收。本记录在修正代码前建立；2026-10-18上述实现、测试及文档三轨完成，本地验收通过，以下文档/入口同步于`58aa5f8`，本次仅回填提交号。
 
 | 文档或入口 | 更新 | 状态 |
 | --- | --- | --- |
