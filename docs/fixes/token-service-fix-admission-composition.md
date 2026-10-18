@@ -46,10 +46,10 @@ Create追加红例成功编译后0 passed/1 failed，0.57秒，命中当前NotRe
 
 | 文件 | 计划改动 | 状态 |
 | --- | --- | --- |
-| `worker/token_service.rs` | 候选遍历、配置helper、火山字段核验 | 已实施，先提取等价helper跑红例；提交待最终验收 |
-| `worker/token_service/execution.rs`、`catalog/tokens.rs` | 原B只读重放入口与C先后顺序 | 已实施，Create持久owner重放同临界区；提交待最终验收 |
-| `worker/token_service_tests.rs`及其coverage/edges子模块 | 假接口与组合回归 | 已实施，补火山正向门禁/GLM保留原值；提交待最终验收 |
+| `worker/token_service.rs` | 候选遍历、配置helper、火山字段核验 | 已验收，先红后绿；`abaafc4` |
+| `worker/token_service/execution.rs`、`catalog/tokens.rs` | 原B只读重放入口与C先后顺序 | 已验收，Create持久owner重放同临界区；`abaafc4` |
+| `worker/token_service_tests.rs`及其coverage/edges子模块 | 假接口与组合回归 | 已验收，含火山正向门禁/GLM保留原值；`abaafc4` |
 
 ## 八 文档同步
 
-C细化/expectations/c-decisions已同步具体分支、有限候选和配置时效边界；B最终发送校验说明同步为等价的原子栅栏组合。2026-10-19实施、回归/全量及独审验收完成，最终原生组合8项检查通过；源代码提交在本地提交后回填，见[C审核](../audits/sgm-5-token-management/c-audit.md)。
+C细化/expectations/c-decisions已同步具体分支、有限候选和配置时效边界；B最终发送校验说明同步为等价的原子栅栏组合。2026-10-19实施、回归/全量及独审验收完成，最终原生组合8项检查通过；代码与契约提交`abaafc4`，见[C审核](../audits/sgm-5-token-management/c-audit.md)。

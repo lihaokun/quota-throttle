@@ -37,7 +37,7 @@ C首轮默认debug为644 passed/1 failed/25 ignored，1261.87秒；唯一失败�
 
 ## 七 代码同步
 
-只改`src/catalog/control_tests.rs`和两个性能runner脚本；C机械脚本增加该独立测试修正的精确允许范围、两个wrapper精确文本及原control测试归一化对照。不改`src/catalog/control.rs`或任何生产函数。设计独审通过后已实施，提交待验收后回填。
+只改`src/catalog/control_tests.rs`和两个性能runner脚本；C机械脚本增加该独立测试修正的精确允许范围、两个wrapper精确文本及原control测试归一化对照。不改`src/catalog/control.rs`或任何生产函数。设计/实现独审与验收完成，代码提交`abaafc4`。
 
 第二次重复验证仅观察到同一用例再次失败后，核对并停止自己的runner/Cargo/测试进程；没有子进程，保留日志为中止/未完成，不捏造第二轮完整计数，也不启动其后续自动阶段。
 
