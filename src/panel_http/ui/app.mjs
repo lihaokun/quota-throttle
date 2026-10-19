@@ -479,6 +479,7 @@ export class PanelApp {
     const canvas = r.text('canvas', null, 'chart'); canvas.setAttribute('aria-label', '按模型堆叠的 Token 柱形图，精确数值见下方表格'); root.append(canvas);
     const geometry = drawChart(canvas, chart, this.window.devicePixelRatio);
     const tooltip = r.text('p', '移动到柱形查看该桶的精确数值；下表可用键盘读取。'); root.append(tooltip);
+    if (chart.bars.length) root.append(r.text('p', `区间 ${formatTime(chart.bars[0].from, 's', query.utc_offset_minutes)} → ${formatTime(chart.bars[chart.bars.length - 1].to, 's', query.utc_offset_minutes)} · 峰值 ${chart.maximum} Token/桶`, 'chart-axis'));
     canvas.addEventListener('pointermove', event => {
       if (!geometry || !geometry.count) return;
       const index = Math.floor((event.clientX - canvas.getBoundingClientRect().left - geometry.left) / geometry.step), bucket = chart.bars[index];

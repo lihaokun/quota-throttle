@@ -23,7 +23,7 @@ export function drawChart(canvas, chart, devicePixelRatio = 1) {
   context.setTransform(dpr, 0, 0, dpr, 0, 0); context.clearRect(0, 0, width, height);
   const left = Math.min(70, width / 4), right = 8, top = 20, bottom = 36;
   const plotWidth = Math.max(1, width - left - right), plotHeight = height - top - bottom;
-  context.fillStyle = '#536579'; context.font = '12px sans-serif'; context.textAlign = 'left';
+  context.fillStyle = '#8b94a3'; context.font = '12px sans-serif'; context.textAlign = 'left';
   context.fillText(String(chart.maximum), 2, top); context.fillText('0', 2, height - bottom);
   const step = plotWidth / Math.max(1, chart.bars.length), labelStep = Math.max(1, Math.ceil(chart.bars.length / Math.max(1, Math.floor(plotWidth / 90))));
   chart.bars.forEach((bar, index) => {
@@ -33,7 +33,7 @@ export function drawChart(canvas, chart, devicePixelRatio = 1) {
       const y = height - bottom - accumulated - h; context.fillStyle = part.color;
       context.fillRect(left + index * step, y, Math.max(0.1, step * 0.9), h); accumulated += h;
     }
-    if (index % labelStep === 0) { context.fillStyle = '#536579'; const label = formatTime(bar.from, 's', chart.snapshot.query.utc_offset_minutes); context.fillText(label.slice(5, 16), left + index * step, height - 12, 90); }
+    if (index % labelStep === 0) { context.fillStyle = '#8b94a3'; const label = formatTime(bar.from, 's', chart.snapshot.query.utc_offset_minutes); context.fillText(label.slice(5, 16), left + index * step, height - 12, 90); }
   });
   return {width, height, left, step, count: chart.bars.length};
 }
