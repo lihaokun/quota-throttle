@@ -16,6 +16,34 @@ export function createRenderer(document, handlers) {
   const text = (tag, value, cls) => node(document, tag, value, cls);
   const toolbar = (...children) => { const box = text('div', null, 'toolbar'); box.append(...children); return box; };
   const action = (name, title, id, disabled) => button(title, () => handlers.action(name, id), disabled, `${name}:${id ?? ''}`);
+  // 视觉组件：状态药丸 + 占用仪表。动态宽度/颜色只经 CSSOM（el.style），不用内联 style 属性（受 CSP style-src 'self' 限制）。
+  const kfmt = n => typeof n !== 'number' ? String(n ?? '—') : n >= 1e9 ? `${(n / 1e9).toFixed(2)}B` : n >= 1e6 ? `${(n / 1e6).toFixed(2)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : String(n);
+  const pill = (label, kind) => text('span', label, `pill pill-${kind}`);
+  const gauge = (label, pct, sub = '') => {
+    const box = text('div', null, 'gauge'), top = text('div', null, 'gauge-top');
+    top.append(text('span', label, 'gauge-label'));
+    if (pct == null) {
+      top.append(text('span', '未知', 'gauge-pct muted')); box.append(top, text('div', null, 'gauge-track'));
+      if (sub) box.append(text('div', sub, 'gauge-sub')); return box;
+    }
+    const clamped = Math.max(0, Math.min(100, pct)), color = pct >= 90 ? 'var(--bad)' : pct >= 70 ? 'var(--warn)' : 'var(--ok)';
+    const value = text('span', `${pct}%`, 'gauge-pct'); value.style.color = color; top.append(value);
+    const track = text('div', null, 'gauge-track'), fill = text('div', null, 'gauge-fill');
+    fill.style.width = `${clamped}%`; fill.style.background = color; track.append(fill);
+    box.append(top, track); if (sub) box.append(text('div', sub, 'gauge-sub'));
+    return box;
+  };
+  const sourceStatus = (p, s, obs) => {
+    if (s.retired_at !== null || p.retire_requested) return pill('归档', 'idle');
+    if (s.manual_paused) return pill('暂停', 'warn');
+    if (s.type === 'volcano') {
+      const r = p.volcano?.runtime;
+      if (!r) return pill('未初始化', 'idle');
+      return r.error_exhausted || r.limit_exhausted ? pill('耗尽', 'bad') : pill('可用', 'ok');
+    }
+    const st = obs?.state;
+    return st === 'observed' ? pill('观测中', 'ok') : st === 'stale' ? pill('观察过期', 'warn') : st === 'unavailable' ? pill('查询失败', 'bad') : pill('未观测', 'idle');
+  };
   function table(headers, rows) {
     const wrapper = text('div', null, 'table-scroll'), table = text('table'), head = text('thead'), line = text('tr');
     for (const title of headers) { const th = text('th', title); th.scope = 'col'; line.append(th); }
@@ -35,27 +63,39 @@ export function createRenderer(document, handlers) {
     for (const p of all.slice(start, start + 25)) {
       const s = p.source, observation = vm.observation.sourceViews.get(s.source_id), archived = s.retired_at !== null || p.retire_requested;
       const card = text('article', null, vm.observation.fresh ? 'card' : 'card stale');
-      card.append(text('h2', `${s.name} · ${labels[s.type]} · #${s.source_id}`), text('p', s.note, 'muted'));
-      card.append(text('p', `配置版本 ${s.config_revision} · ${p.model_count} 个模型 · 人工配置：${archived ? '归档中或已归档' : s.manual_paused ? '暂停意图' : '启用意图'}（不等于所有远端成员已同步）`));
+      const head = text('div', null, 'card-head');
+      head.append(text('h2', `${s.name} · ${labels[s.type]} · #${s.source_id}`), sourceStatus(p, s, observation));
+      card.append(head);
+      if (s.note) card.append(text('p', s.note, 'muted'));
       const memberships = (vm.snapshot?.catalog.memberships ?? []).filter(m => m.membership.source_id === s.source_id);
       const names = memberships.map(m => vm.snapshot.catalog.groups.find(g => g.group.group_id === m.membership.group_id)?.group.name ?? m.membership.group_id);
-      card.append(text('p', `所属组：${[...new Set(names)].join('、') || '尚未加入组'}`));
       if (s.type === 'glm') {
-        const quota = key => { const w = observation?.[key]; return w ? `${w.percentage}%${w.current ? '' : '（旧观察）'}${w.reset_at_ms === null ? '' : ` · 重置 ${formatTime(w.reset_at_ms, 'ms')}`}` : '未知'; };
-        card.append(text('p', `${labels[observation?.state ?? 'unknown']} · 样本年龄 ${Number.isFinite(observation?.age_ms) ? `${Math.ceil(observation.age_ms)} ms` : '未知'} · 套餐 ${observation?.level ?? '未知'}`), text('p', `5 小时：${quota('five_hour')}`), text('p', `每周：${quota('weekly')}`));
+        const win = key => observation?.[key];
+        const sub = key => { const w = win(key); return w ? `${w.reset_at_ms === null ? '' : `重置 ${formatTime(w.reset_at_ms, 'ms')}`}${w.current ? '' : (w.reset_at_ms === null ? '' : ' · ') + '旧观察'}` : ''; };
+        const grid = text('div', null, 'gauge-grid');
+        grid.append(gauge('5 小时', win('five_hour')?.percentage ?? null, sub('five_hour')), gauge('每周', win('weekly')?.percentage ?? null, sub('weekly')));
+        card.append(grid);
+        card.append(text('p', `套餐 ${observation?.level ?? '未知'} · ${labels[observation?.state ?? 'unknown']} · 样本年龄 ${Number.isFinite(observation?.age_ms) ? `${Math.ceil(observation.age_ms)} ms` : '未知'}`, 'meta'));
       } else {
         const v = p.volcano, r = v.runtime;
-        card.append(text('p', `每日 Token 上界：${v.policy.daily_token_limit ?? '未设置'} · 失败阈值 ${v.policy.failure_threshold} · 重置分钟 ${v.policy.reset_minute} / UTC 偏移 ${v.policy.utc_offset_minutes} 分钟`));
         if (r) {
           let total; try { total = safeAdd(r.used_input, r.used_output); } catch { total = '总数超出安全范围'; }
-          card.append(text('p', `已保存累计输入 ${r.used_input} / 输出 ${r.used_output} / 总计 ${total} · 连续异常 ${r.consecutive_failures}`));
-          card.append(text('p', r.coverage_end === null ? '本周期尚无覆盖记录；累计数不能解释为已观测零用量或完整统计。' : `周期起点 ${formatTime(r.period_start)} · 已记录覆盖末端 ${formatTime(r.coverage_end)}；不保证供应商日志完整。`, r.coverage_end === null ? 'warning' : 'muted'));
-          card.append(text('p', `已保存运行状态：${s.manual_paused ? '停用' : r.error_exhausted || r.limit_exhausted ? '耗尽' : '可用'} · 错误判定 ${r.error_exhausted ? '是' : '否'} · 上界判定 ${r.limit_exhausted ? '是' : '否'}${vm.observation.fresh ? '' : '（已过期）'}`));
-          card.append(text('p', `${observation?.resetPending ? '等待服务端进入新周期 · ' : ''}下次重置 ${formatTime(r.next_reset_at)}`));
+          const limit = v.policy.daily_token_limit;
+          if (limit && typeof total === 'number') {
+            const grid = text('div', null, 'gauge-grid');
+            grid.append(gauge('每日用量', Math.min(100, Math.round(total / limit * 100)), `${kfmt(total)} / ${kfmt(limit)} Token${vm.observation.fresh ? '' : ' · 已过期'}`));
+            card.append(grid);
+          }
+          card.append(text('p', `每日 Token 上界：${limit ?? '未设置'} · 失败阈值 ${v.policy.failure_threshold} · 重置分钟 ${v.policy.reset_minute} / UTC 偏移 ${v.policy.utc_offset_minutes} 分钟`, 'meta'));
+          card.append(text('p', `已保存累计输入 ${r.used_input} / 输出 ${r.used_output} / 总计 ${total} · 连续异常 ${r.consecutive_failures}`, 'meta'));
+          card.append(text('p', r.coverage_end === null ? '本周期尚无覆盖记录；累计数不能解释为已观测零用量或完整统计。' : `周期起点 ${formatTime(r.period_start)} · 已记录覆盖末端 ${formatTime(r.coverage_end)}；不保证供应商日志完整。`, r.coverage_end === null ? 'warning' : 'meta'));
+          card.append(text('p', `已保存运行状态：${s.manual_paused ? '停用' : r.error_exhausted || r.limit_exhausted ? '耗尽' : '可用'} · 错误判定 ${r.error_exhausted ? '是' : '否'} · 上界判定 ${r.limit_exhausted ? '是' : '否'}${vm.observation.fresh ? '' : '（已过期）'}`, 'meta'));
+          card.append(text('p', `${observation?.resetPending ? '等待服务端进入新周期 · ' : ''}下次重置 ${formatTime(r.next_reset_at)}`, 'meta'));
         } else card.append(text('p', '周期尚未初始化，不能视为零用量。', 'warning'));
         card.append(toolbar(action('setVolcanoPolicy', '设置每日策略', s.source_id, vm.readOnly || archived), action('clearError', '撤销错误耗尽判定', s.source_id, vm.readOnly || archived || r === null), button(vm.sourceUsageId === s.source_id ? '收起分模型用量' : '展开分模型用量', () => handlers.sourceUsage(vm.sourceUsageId === s.source_id ? null : s.source_id), false, `sourceUsage:${s.source_id}`)));
         if (vm.sourceUsageId === s.source_id) { const detail = previousDetail?.dataset.sourceId === s.source_id ? previousDetail : text('div'); detail.id = 'source-usage-content'; detail.dataset.sourceId = s.source_id; card.append(detail); }
       }
+      card.append(text('p', `配置版本 ${s.config_revision} · ${p.model_count} 模型 · 所属组：${[...new Set(names)].join('、') || '尚未加入组'} · 人工配置：${archived ? '归档中或已归档' : s.manual_paused ? '暂停意图' : '启用意图'}（不等于所有远端成员已同步）`, 'meta'));
       card.append(toolbar(action('setSourcePaused', s.manual_paused ? '恢复来源' : '暂停来源', s.source_id, vm.readOnly || archived), action('models', archived ? '只读查看历史模型' : '查看或编辑模型', s.source_id, vm.workBusy || !vm.observation.fresh), action('discoverModels', '重新发现模型', s.source_id, vm.readOnly || archived), action('retireSource', '归档来源', s.source_id, vm.readOnly || archived)));
       root.append(card);
     }

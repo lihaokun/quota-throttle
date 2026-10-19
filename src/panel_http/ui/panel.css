@@ -59,6 +59,26 @@ code { font-family: ui-monospace, SFMono-Regular, monospace; color: var(--accent
 .card, #editor, #secret { border: 1px solid var(--line); border-radius: .85rem; padding: 1.1rem 1.2rem; margin: .9rem 0; background: var(--card); box-shadow: 0 1px 3px rgba(0, 0, 0, .35); }
 .card.stale { opacity: .68; }
 .card h2 { color: var(--txt); text-transform: none; letter-spacing: 0; font-size: 1.05rem; margin: 0 0 .4rem; }
+.card-head { display: flex; align-items: center; justify-content: space-between; gap: .6rem; flex-wrap: wrap; margin-bottom: .3rem; }
+.card-head h2 { margin: 0; }
+
+/* 状态药丸 */
+.pill { padding: .15rem .6rem; border-radius: 1rem; font-size: .76rem; font-weight: 700; letter-spacing: .03em; white-space: nowrap; }
+.pill-ok { background: rgba(62, 207, 142, .16); color: var(--ok); }
+.pill-warn { background: rgba(245, 185, 66, .16); color: var(--warn); }
+.pill-bad { background: rgba(242, 85, 90, .18); color: var(--bad); }
+.pill-idle { background: rgba(139, 148, 163, .16); color: #aeb6c2; }
+
+/* 占用仪表（大号百分比 + 进度条） */
+.gauge-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1.1rem 1.6rem; margin: 1rem 0; }
+.gauge { display: flex; flex-direction: column; gap: .4rem; }
+.gauge-top { display: flex; align-items: baseline; justify-content: space-between; gap: .5rem; }
+.gauge-label { color: var(--dim); font-size: .85rem; }
+.gauge-pct { font-size: 1.5rem; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
+.gauge-track { height: 8px; background: #20252f; border-radius: 999px; overflow: hidden; }
+.gauge-fill { height: 100%; border-radius: 999px; transition: width .5s cubic-bezier(.4, 0, .2, 1); }
+.gauge-sub { color: var(--dim); font-size: .78rem; font-variant-numeric: tabular-nums; }
+.meta { color: var(--dim); font-size: .85rem; margin: .3rem 0; line-height: 1.5; font-variant-numeric: tabular-nums; }
 
 /* 工具条 + 状态底色 */
 .toolbar { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; }
