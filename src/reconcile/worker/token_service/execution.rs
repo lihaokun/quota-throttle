@@ -324,6 +324,11 @@ impl ReconcileWorker {
         id: &OperationId,
         stop: &AtomicBool,
     ) -> ControlResult<bool> {
+        // caller已持lane；只保护本项，不冻结整个批次，也不阻止人工撤销。
+        let _automatic = self
+            .automatic_updates
+            .try_write()
+            .map_err(|_| error(ControlErrorCode::QueueFull))?;
         let work = self.token_core(|core| core.store.token_work(id, now()))?;
         if matches!(
             work.phase(),

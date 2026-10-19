@@ -448,3 +448,11 @@ A2.1唯一成功路径为GET `/api/admin/v1/state`，输出原PanelSnapshot wire
 唯一新增共享wire为UiConfig：schema_version=1、dry_run（同一worker不可变配置）、public_api_base_url（可信启动组合显式给出的NewAPI公开根地址或null）。消费者为浏览器启动与接入信息，不是授权或运行健康证据；不暴露上游/owner材料，不从请求Host/Origin猜调用地址。完整范围见[配置schema](schemas/panel-ui-config.schema.json)。实际启动选项由SGM7接线。
 
 浏览器只以原schema字段生成展示/固定请求；lane所有权与结果代次分别维护，取消不证明后端已停。会话恢复只存非敏感opID；状态失败/过期只能降级。模型图来自同份联合统计，保留unknown/零桶，复制明文短时独立持有。无客户端调度算法或第二业务权威。
+
+## 第七子计划：运行交付接线
+
+[SGM7细化](subplans/sgm-7-runtime-release.md)承接已完成的B页面与C真实组合，新增显式`serve <config>`，旧up/run/sync/down保留。启动复用一个CatalogStore/worker/共享ManagementBudget，监督原协调器、统一collector、PanelServer、GLM探针、维护循环五任务；不启旧Orchestrator/status，也不导入旧keys。
+
+新私有RuntimeOptions只由serve解析，包含应用库路径、显式调用根和固定普通issuer身份；没有新公开wire或DB版本。完整预检在同一真实PID/exe/cwd/listener快照中核验原能力、SQLite日志与路由覆盖设置，一次撤销/核验/发布，不暴露中间ready。初始化器仅用于全新目录，管理凭据私有持久，不在常规运行重建账号或重设余额。
+
+运行期自动提交与多步组注册/token操作用worker私有try锁协调；人工控制仍走原fence立即撤销。只保护单操作，不包整个64项round；原未知交付、lease、策略和去重不变。正常关闭广播后等待全部实际任务及usage工作，独立NewAPI不随控制器stop连带退出。实际验收/部署证据见[SGM7报告](../../audits/sgm-7-runtime-release/audit-report.md)，未提供真实供应商Key时不宣称已验证真实上游。

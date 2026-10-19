@@ -8,6 +8,7 @@ mod orchestrator;
 mod panel_http;
 mod quota;
 pub mod reconcile;
+mod runtime;
 pub mod source_policy;
 mod status;
 
@@ -23,6 +24,7 @@ use tracing_subscriber::EnvFilter;
 
 const USAGE: &str = "\
 用法: quota-throttle <子命令> [config.toml]
+  serve  来源分组模式：独立目录、统一采集、组内调度和三页面（不导入旧 keys）
   up     下载/启动 new-api（若配了 manage）→ sync 建渠道 → 进入切换循环
   sync   （确保 new-api 起着）按 key 列表建/对齐渠道并打印 name→channel_id，不进循环
   run    假设 new-api 已在跑，只解析渠道并进入切换循环
@@ -32,24 +34,20 @@ const USAGE: &str = "\
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
         .init();
 
-    let mut args = std::env::args().skip(1);
-    let first = args.next();
-    let (cmd, cfg_path) = match first.as_deref() {
-        Some("up") | Some("down") | Some("sync") | Some("run") => (
-            first.clone().unwrap(),
-            args.next().unwrap_or_else(|| "config.toml".to_string()),
-        ),
-        Some("-h") | Some("--help") => {
-            println!("{USAGE}");
-            return Ok(());
-        }
-        Some(path) => ("run".to_string(), path.to_string()),
-        None => ("run".to_string(), "config.toml".to_string()),
+    let Some((cmd, cfg_path)) = parse_command(std::env::args().skip(1))? else {
+        println!("{USAGE}");
+        return Ok(());
     };
 
+    if cmd == "serve" {
+        // 新目录模式不进入旧配置来源同步、旧调度器或旧面板。
+        return runtime::run_path(&cfg_path).await.map_err(Into::into);
+    }
     let cfg = Config::load(&cfg_path).with_context(|| format!("加载配置失败: {cfg_path}"))?;
 
     match cmd.as_str() {
@@ -61,6 +59,61 @@ async fn main() -> Result<()> {
             println!("{USAGE}");
             Ok(())
         }
+    }
+}
+
+fn parse_command(mut args: impl Iterator<Item = String>) -> Result<Option<(String, String)>> {
+    let first = args.next();
+    let (cmd, cfg_path) = match first.as_deref() {
+        Some("serve") => {
+            let path = args
+                .next()
+                .filter(|p| !p.is_empty())
+                .context("serve 必须指定配置路径")?;
+            anyhow::ensure!(args.next().is_none(), "serve 只接受一个配置路径");
+            ("serve".to_owned(), path)
+        }
+        Some("up") | Some("down") | Some("sync") | Some("run") => (
+            first.clone().unwrap(),
+            args.next().unwrap_or_else(|| "config.toml".to_string()),
+        ),
+        Some("-h") | Some("--help") => {
+            return Ok(None);
+        }
+        Some(path) => ("run".to_string(), path.to_string()),
+        None => ("run".to_string(), "config.toml".to_string()),
+    };
+
+    Ok(Some((cmd, cfg_path)))
+}
+
+#[cfg(test)]
+mod cli_tests {
+    #[test]
+    fn r1_serve_requires_explicit_config_without_changing_legacy_defaults() {
+        let parse = |args: &[&str]| super::parse_command(args.iter().map(|s| (*s).to_owned()));
+        assert!(parse(&["serve"]).is_err());
+        assert!(parse(&["serve", ""]).is_err());
+        assert!(parse(&["serve", "groups.toml", "extra"]).is_err());
+        assert_eq!(
+            parse(&["serve", "groups.toml"]).unwrap(),
+            Some(("serve".into(), "groups.toml".into()))
+        );
+        assert_eq!(
+            parse(&[]).unwrap(),
+            Some(("run".into(), "config.toml".into()))
+        );
+        assert_eq!(
+            parse(&["old.toml"]).unwrap(),
+            Some(("run".into(), "old.toml".into()))
+        );
+        for cmd in ["up", "run", "sync", "down"] {
+            assert_eq!(
+                parse(&[cmd]).unwrap(),
+                Some((cmd.into(), "config.toml".into()))
+            );
+        }
+        assert_eq!(parse(&["--help"]).unwrap(), None);
     }
 }
 
@@ -159,10 +212,7 @@ fn print_downstream_access(cfg: &Config) {
 
 /// 把 config.keys + name→id 映射解析成 orchestrator 用的 ResolvedKey。
 /// 优先用 config 里显式写的 channel_id，否则按 name 从映射里取；
-fn resolve_keys(
-    cfg: &Config,
-    primary: &HashMap<String, i64>,
-) -> Vec<ResolvedKey> {
+fn resolve_keys(cfg: &Config, primary: &HashMap<String, i64>) -> Vec<ResolvedKey> {
     let mut out = Vec::new();
     for k in &cfg.keys {
         match k.channel_id.or_else(|| primary.get(&k.name).copied()) {
@@ -173,7 +223,9 @@ fn resolve_keys(
                 note: k.note.clone(),
                 quota_headers: k.quota_headers.clone(),
             }),
-            None => warn!(name = %k.name, "解析不到 channel_id（既无显式配置也无同名渠道），本 key 跳过"),
+            None => {
+                warn!(name = %k.name, "解析不到 channel_id（既无显式配置也无同名渠道），本 key 跳过")
+            }
         }
     }
     out

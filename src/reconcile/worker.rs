@@ -15,6 +15,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
+use tokio::sync::RwLock;
 use tokio::sync::{watch, Mutex as AsyncMutex, Notify, Semaphore};
 
 mod admin;
@@ -71,6 +72,7 @@ pub struct ReconcileWorker {
     core: Mutex<Core>,
     publication: AtomicU64,
     lane: AsyncMutex<()>,
+    automatic_updates: RwLock<()>,
     commands: Semaphore,
     changed: Notify,
     client: Arc<NewApiClient>,
@@ -221,6 +223,7 @@ impl ReconcileWorker {
             }),
             publication: AtomicU64::new(0),
             lane: AsyncMutex::new(()),
+            automatic_updates: RwLock::new(()),
             commands: Semaphore::new(64),
             changed: Notify::new(),
             client,
@@ -390,6 +393,18 @@ impl ReconcileWorker {
         process: &crate::boot::NewApiProcess,
     ) -> ControlResult<crate::newapi::preflight::BackendCheck> {
         self.refresh_from(self.client.check_local_backend(process))
+            .await
+    }
+    /// 新运行入口将日志/路由前提并入同一次撤销、核验和发布，不暴露中间 ready。
+    pub(crate) async fn refresh_runtime_backend(
+        &self,
+        process: &crate::boot::NewApiProcess,
+    ) -> ControlResult<crate::newapi::preflight::BackendCheck> {
+        let _automatic = self
+            .automatic_updates
+            .try_write()
+            .map_err(|_| error(ControlErrorCode::QueueFull))?;
+        self.refresh_from(self.client.check_runtime_backend(process))
             .await
     }
     async fn refresh_from(
@@ -1035,11 +1050,16 @@ impl ReconcileWorker {
                 _=shutdown.changed()=>{stop.store(true,Ordering::SeqCst);accept_background_round(task.await.map_err(|_|error(ControlErrorCode::Storage))?)?;if *shutdown.borrow() || shutdown.has_changed().is_err() {return Ok(());}}
             }
             let next = {
-                let core = self.core.lock().map_err(|_| error(ControlErrorCode::Storage))?;
+                let core = self
+                    .core
+                    .lock()
+                    .map_err(|_| error(ControlErrorCode::Storage))?;
                 let members = core.store.next_attempt_at()?;
                 let tokens = if self.token_owners.is_some() && !self.policy_config.dry_run {
                     core.store.next_token_attempt_at()?
-                } else { None };
+                } else {
+                    None
+                };
                 match (members, tokens) {
                     (Some(a), Some(b)) => Some(a.min(b)),
                     (a, b) => a.or(b),

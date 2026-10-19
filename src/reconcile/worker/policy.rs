@@ -67,6 +67,10 @@ impl ReconcileWorker {
                 .store
                 .preview_glm_round(&self.policy_config, cycle, now_ms);
         }
+        let _automatic = self
+            .automatic_updates
+            .try_read()
+            .map_err(|_| error(ControlErrorCode::QueueFull))?;
         // 重放不续期，完整提交后才替换整个许可集合；caller 已持命令槽。
         self.publish(|c| {
             if c.last_glm_cycle
@@ -110,6 +114,10 @@ impl ReconcileWorker {
                 .store
                 .preview_volcano_round(&self.policy_config, at);
         }
+        let _automatic = self
+            .automatic_updates
+            .try_read()
+            .map_err(|_| error(ControlErrorCode::QueueFull))?;
         self.publish(|c| {
             let committed =
                 c.store

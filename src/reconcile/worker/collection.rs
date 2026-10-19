@@ -168,6 +168,10 @@ impl ReconcileWorker {
         f: impl FnOnce(&mut CatalogStore) -> LedgerResult<T>,
     ) -> CollectionResult<T> {
         // Step B2.6: 保留内层精确错误；mutate 根据 Store usable 决定是否重新开 gate。
+        let _automatic = self
+            .automatic_updates
+            .try_read()
+            .map_err(|_| CollectionError::Control(ControlErrorCode::QueueFull))?;
         self.mutate(None, |core| Ok(f(&mut core.store)))
             .map_err(|e| CollectionError::Control(e.code))?
             .map_err(Into::into)

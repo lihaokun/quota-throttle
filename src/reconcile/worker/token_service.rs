@@ -322,7 +322,16 @@ impl ReconcileWorker {
             .lane
             .try_lock()
             .map_err(|_| error(ControlErrorCode::QueueFull))?;
+        // 正常后台发布不得拆断多步原生组注册；人工控制仍可通过原fence撤销它。
+        let _automatic = self
+            .automatic_updates
+            .try_write()
+            .map_err(|_| error(ControlErrorCode::QueueFull))?;
         let frame = self.token_frame()?;
+        require(
+            !register || frame.end.saturating_sub(frame.start) >= 30,
+            ControlErrorCode::NotReady,
+        )?;
         let (group, works) = self.token_core(|core| {
             require(
                 self.publication.load(Ordering::SeqCst) == frame.epoch,

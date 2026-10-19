@@ -27,6 +27,10 @@ impl ReconcileWorker {
             .commands
             .try_acquire()
             .map_err(|_| AnalyticsError::Control(ControlErrorCode::QueueFull))?;
+        let _automatic = self
+            .automatic_updates
+            .try_read()
+            .map_err(|_| AnalyticsError::Busy)?;
         let mut cursor = self
             .repair_cursor
             .try_lock()

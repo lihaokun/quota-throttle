@@ -21,6 +21,8 @@ const CHECK_TIMEOUT: Duration = Duration::from_secs(20);
 const KNOWN_LEGACY_SHA256: &str =
     "90c333eb7ace489d46e25cb687767c25c3e28584ce80384f111c03ff5f5b1205";
 
+mod runtime;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BackendIssue {
     LocalBinding,
@@ -29,6 +31,7 @@ pub enum BackendIssue {
     RecoveryUnknown,
     Management(ManagementErrorKind),
     Expired,
+    RuntimePrerequisites,
 }
 pub struct BackendCheck {
     readiness: BackendReadiness,

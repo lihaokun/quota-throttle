@@ -375,7 +375,7 @@ export class PanelApp {
     this.secret?.clear(); this.lanes.invalidate('work'); this.editor = {action: 'createSource', sensitive: true};
     const fields = [explain('整个来源配置仅在本次提交中使用，不持久化到浏览器；隐藏页面会清除表单。'),
       field('type', '来源类型', type, 'select', [['glm', 'GLM'], ['volcano', '火山']]), field('name', '显示名称'), field('note', '备注'), field('credential', '上游凭据', '', 'password'),
-      field('channel_type', 'NewAPI 渠道类型', type === 'glm' ? '8' : '1'), field('base_url', '上游渠道地址', type === 'glm' ? 'https://open.bigmodel.cn/api/coding/paas/v4/chat/completions' : ''),
+      field('channel_type', 'NewAPI 渠道类型', '8', 'select', [['8', 'Custom (8)']]), explain('上游渠道地址请填写完整的 /chat/completions 路径。'), field('base_url', '上游渠道地址', type === 'glm' ? 'https://open.bigmodel.cn/api/coding/paas/v4/chat/completions' : ''),
       field('models_url', '模型发现地址', type === 'glm' ? 'https://open.bigmodel.cn/api/coding/paas/v4/models' : ''), field('discovery_auth', '模型发现鉴权', 'bearer', 'select', [['bearer', 'Bearer'], ['authorization_raw', 'Authorization 原值'], ['x_api_key', 'x-api-key']]),
       field('model_selection', '模型加入方式', 'discover', 'select', [['discover', '自动发现'], ['manual', '手动 JSON 数组'], ['discover_or_manual', '发现失败后使用手动数组']]), field('models', '手动或兜底模型 JSON 数组', '[]', 'textarea')];
     if (type === 'glm') fields.push(field('quota_url', '额度查询地址', 'https://open.bigmodel.cn/api/monitor/usage/quota/limit?type=2'), field('global_headers', '全局额外请求头 JSON 数组', '[]', 'textarea'), field('key_headers', '此 Key 请求头 JSON 数组（组织与项目 selector）', '[]', 'textarea'));

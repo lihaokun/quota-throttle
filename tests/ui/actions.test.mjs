@@ -6,6 +6,17 @@ import { richState, operation, identity } from './fixtures.mjs';
 import { PanelApp } from '../../src/panel_http/ui/app.mjs';
 import { route } from '../../src/panel_http/ui/client.mjs';
 const opId = operation().operation_id;
+test('u6 both provider forms select the supported Custom channel type', () => {
+  const app = Object.create(PanelApp.prototype); let fields;
+  Object.assign(app, {lanes: {invalidate() {}}, paint() {}, renderer: {form(_title, value) { fields = value; }}});
+  for (const kind of ['volcano', 'glm', 'volcano']) {
+    app.openSource(kind);
+    const channel = fields.find(field => field.name === 'channel_type');
+    assert.equal(channel.value, '8');
+    assert.equal(channel.type, 'select');
+    assert.deepEqual(channel.options, [['8', 'Custom (8)']]);
+  }
+});
 function storage() { const values = new Map(); return { getItem: k => values.get(k) ?? null, setItem: (k, v) => values.set(k, v), values }; }
 function cryptoIds() { let counter = 0; return { randomUUID: () => `00000000-0000-4000-8000-${String(++counter).padStart(12, '0')}` }; }
 function begin(pending, crypto = cryptoIds(), binding = { kind: 'set_source_paused', targetId: '1' }) {

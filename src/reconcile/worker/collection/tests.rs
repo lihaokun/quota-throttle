@@ -143,6 +143,59 @@ fn setup(dry_run: bool) -> (tempfile::TempDir, Arc<ReconcileWorker>) {
         ReconcileWorker::new(store, client, Arc::new(config)).unwrap(),
     )
 }
+
+#[tokio::test(start_paused = true)]
+async fn r7_collector_deferred_commit_preserves_checkpoint_and_replays_after_gate() {
+    let (dir, worker) = setup(false);
+    let io = ModelIo::new(vec![row(1, 800)]);
+    let before = worker.ledger_state().unwrap();
+    let epoch = worker.publication.load(Ordering::SeqCst);
+    let held = worker.automatic_updates.try_write().unwrap();
+    assert!(matches!(
+        worker.collect_with(&io).await,
+        Err(CollectionError::Control(ControlErrorCode::QueueFull))
+    ));
+    assert_eq!(worker.publication.load(Ordering::SeqCst), epoch);
+    assert_eq!(worker.ledger_state().unwrap(), before);
+    assert!(persisted(&dir).is_empty());
+    drop(held);
+    next(&worker, &io).await;
+    assert_eq!(persisted(&dir).len(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn r7_received_page_deferred_before_commit_is_replayed_without_duplication() {
+    let (dir, worker) = setup(false);
+    let io = ModelIo::new(vec![row(1, 800)]);
+    io.block.store(4, Ordering::SeqCst);
+    let mut pending = Box::pin(worker.collect_with(&io));
+    std::future::poll_fn(|cx| {
+        assert!(pending.as_mut().poll(cx).is_pending());
+        std::task::Poll::Ready(())
+    })
+    .await;
+    assert_eq!(io.entered.load(Ordering::SeqCst), 4);
+    assert_eq!(io.delivered.lock().unwrap().len(), 1);
+    let before = worker.ledger_state().unwrap();
+    let epoch = worker.publication.load(Ordering::SeqCst);
+    let held = worker.automatic_updates.try_write().unwrap();
+    io.block.store(0, Ordering::SeqCst);
+    io.release.notify_one();
+    assert!(matches!(
+        pending.await,
+        Err(CollectionError::Control(ControlErrorCode::QueueFull))
+    ));
+    assert_eq!(worker.ledger_state().unwrap(), before);
+    assert_eq!(worker.publication.load(Ordering::SeqCst), epoch);
+    assert!(persisted(&dir).is_empty());
+    drop(held);
+    let resumed = next(&worker, &io).await;
+    assert_eq!(resumed.inserted, 1);
+    assert_eq!(persisted(&dir).len(), 1);
+    let repeated = next(&worker, &io).await;
+    assert_eq!(repeated.inserted, 0);
+    assert_eq!(persisted(&dir).len(), 1);
+}
 fn persisted(dir: &tempfile::TempDir) -> Vec<(i64, i64, i64)> {
     let conn = rusqlite::Connection::open_with_flags(
         dir.path().join("catalog.sqlite3"),

@@ -68,6 +68,14 @@ impl ReconcileWorker {
             .commands
             .try_acquire()
             .map_err(|_| error(ControlErrorCode::QueueFull))?;
+        let _lane = self
+            .lane
+            .try_lock()
+            .map_err(|_| error(ControlErrorCode::QueueFull))?;
+        let _automatic = self
+            .automatic_updates
+            .try_write()
+            .map_err(|_| error(ControlErrorCode::QueueFull))?;
         let frame = self.token_frame()?;
         let stop = AtomicBool::new(false);
         let guard = || frame.guard(self, &stop);

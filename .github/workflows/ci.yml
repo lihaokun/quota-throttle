@@ -47,3 +47,40 @@ jobs:
         run: |
           npm run test:ui-performance
           npm run test:browser-performance
+  groups-runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      PLAYWRIGHT_BROWSERS_PATH: /tmp/quota-throttle-sgm7-ci-browsers
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22.21.1'
+          cache: npm
+      - name: Locked dependencies and real browsers
+        run: |
+          npm ci --ignore-scripts
+          npx --no-install playwright install --with-deps chromium firefox
+      - name: Initializer fault injection
+        run: |
+          python3 scripts/tests/groups-initializer-test.py
+          python3 scripts/tests/groups-probe-test.py
+      - name: Build and runtime contract manifest
+        run: |
+          cargo build --release --locked
+          cargo test --locked --no-run
+          python3 scripts/contract_audit/sgm7_check.py
+      - name: Pinned native binary
+        run: |
+          curl --fail --location --retry 2 --max-time 180 \
+            https://github.com/QuantumNous/new-api/releases/download/v1.0.0-rc.20/new-api-v1.0.0-rc.20 \
+            --output /tmp/qt-sgm7-new-api
+          echo '90c333eb7ace489d46e25cb687767c25c3e28584ce80384f111c03ff5f5b1205  /tmp/qt-sgm7-new-api' | sha256sum --check
+          chmod 700 /tmp/qt-sgm7-new-api
+      - name: Real empty-instance combination and four browsers
+        run: |
+          python3 scripts/probes/groups_runtime_probe.py \
+            --newapi-binary /tmp/qt-sgm7-new-api \
+            --app-binary target/release/quota-throttle --browser

@@ -1,4 +1,5 @@
 u5 persistent actions save IDs only and freeze document-local payload before sending
+u6 both provider forms select the supported Custom channel type
 u5 corrupted/unavailable/full storage and missing UUID forbid new persistent actions
 u5 first receipt binds restored ID and create-token learns token target not input group
 u5 same-second phases and retry execution are accepted without invented phase ordering
