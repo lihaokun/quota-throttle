@@ -55,6 +55,8 @@ A1实现提交`b4116ef`；本轮仅本地提交，未推送或部署。
 
 2026-10-19 已按[A2总体接线方案](subplans/sgm-6-admin-http-a2.md)完成[A2.1 HTTP边界/统一状态发布](subplans/sgm-6-http-boundary-a2-1.md)[内部验收](../../audits/sgm-6-three-page-panel/a2-1-audit.md)：33普通/2性能、4组各128 cases PBT、12种编译变异、恢复重编和机械检查通过；Ready截止红例修复及两处测试覆盖补强均保留证据。最终默认debug/release各696/0/32 ignored，29release性能+4debug入口、clippy/build通过，编码80/64/99ms。旧核心及依赖冻结，main只有模块声明，不接现行服务。下一步A2.2逐路由wire与worker薄适配细化，再页面/运行组合；fermat正式部署仍为全新初始化。
 
+A2.1实现提交`66037e8`；本轮仅本地提交，未推送、合并或部署。
+
 下列 ID 为本 feature 子计划；各批实际完成状态以上述验收记录为准，此表列原范围及退出条件，不代替逐批契约。
 
 | 子计划 | 范围 | 主要退出条件 |

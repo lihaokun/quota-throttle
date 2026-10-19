@@ -2,6 +2,8 @@
 
 2026-10-19，分支`research/source-groups-token-management`，实现基线`80ba157`。范围仅HTTP边界、A1统一状态发布及GET state；实现、机械、PBT、变异、最终全量与性能门禁全部通过。A2.1完成不代表整个SGM6或部署已完成。
 
+实现提交`66037e8`；仅本地提交，未推送、合并或部署。
+
 ## 契约与范围
 
 依据[A2.1细化](../../design/source-groups-token-management/subplans/sgm-6-http-boundary-a2-1.md)、[事前十节](a2-1-expectations.md)和workflow§5/6，新增`panel_http`，main只加模块声明。旧HTTP、worker、来源策略、目录DDL、Cargo及A1 schema均冻结；没有CLI接线、管理写路由、真实浏览器或运行服务变更。
@@ -61,6 +63,8 @@
 完整回归不指定测试线程数；CARGO_BUILD_JOBS只限制编译，不降低默认测试并发。本地最终clippy也通过42.31秒，该工具链为8条既有生产和1条既有A1测试风格警告，不混作远端警告数量。32个ignored中29个性能入口已另行执行；3个原有opt-in（大历史SQL趋势、原生渠道契约、原生令牌组合）本批不重跑。没有把假TCP服务称作浏览器交互或真实双协议验收。
 
 一次编排误向无参数的性能runner传入`release`，runner按原契约打印Usage并exit 2，未执行任何性能测试；该调用不算门禁通过或性能失败，也没有修改runner放行。随后使用原无参数入口完整串行执行29个release和4个debug门禁，结果见上表。
+
+远端最终构建日志完成且确认该隔离目录无在跑命令后，本机长SSH客户端仍等待；仅关闭本次客户端，客户端返回255不作为测试结果。各门禁以完整结束日志和独立复核为据，没有停止任何运行服务。
 
 ## 容量证据
 
