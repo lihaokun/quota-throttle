@@ -45,3 +45,5 @@ R1配置；R2私有目录/绑定/单worker；R3监督生命周期；R4 GLM；R5�
 ## Step 5 实施验证
 
 实现增量与caller边界见decisions.md；最终执行清单见audit-report.md。本批无新公开JSON schema，原完整schema及实际报文验证继续执行。R1–R5/精确测试清单/共享类型预算/旧核心冻结机械检查通过；独立R1–R5及脚本审核均为critical 0/unresolved 0。fermat debug/release各768/0，归档种子14/0×2，四个有效编译变异及恢复复验，原性能/容量/Node/浏览器均通过；最终C为15项+4真实浏览器全过并确认自建进程退出。正式部署归属与恢复验收另记录，不用这些测试替代生产安装证据。
+
+正式新部署另已完成实际验收：13000/13001归属正确、用户服务enabled/running、空库不导入、私有权限及二进制匹配；停止/启动仅改变控制器PID，原生PID和catalog身份保持，重启重新ready。详细值见audit-report.md部署段。至此本子计划退出条件满足；真实供应商凭据注册不在未提供key时伪称完成。

@@ -44,8 +44,16 @@ attempt10已通过11项（含双协议普通/流式、隔离、账本、成功�
 
 设计及R1–R5、自动提交协调经独立审查，代码0 critical/0 unresolved；一致性、风格、正确性、性能资源边界、可维护性五维通过。脚本独审指出的误绿/漏项及缓存调用约束按decisions.md收紧，最终独审回执也为critical 0/unresolved 0。测试数量不能代替实际C或部署证明。
 
-待部署的已编译release SHA256：`b60093070a43a87ad12619bc2113758fa08a1cc8e39f8d9e0563bcd882dae666`；部署前后必须再次核对。
+已部署release SHA256：`b60093070a43a87ad12619bc2113758fa08a1cc8e39f8d9e0563bcd882dae666`；安装前及安装后均核对一致。代码提交为`5a2ccfddcfd178863f2b41bbc72c5f2174623188`。
 
 CI新增独立groups-runtime job，保留原Rust、性能和UI jobs；此次等价测试在fermat执行，不声称GitHub Actions已运行。未push、未merge。
 
-正式部署尚未执行。待全部门禁通过后，在`/home/lihaokun/apps/quota-throttle-sgm`安装用户服务，实际核验13000/13001、release SHA、effective KillMode/主PID/原生PID、私有库和停止/重启恢复。新服务为空真实来源/访问Key，用户尚未提供两把火山Key，不能宣称真实供应商推理可用。
+## fermat 全新部署验收
+
+2026-10-19 UTC 12:22完成实际启停恢复验证。目标`/home/lihaokun/apps/quota-throttle-sgm`，用户服务`quota-throttle-sgm.service`为enabled、active/running；用户Linger=yes。面板`127.0.0.1:13001`，NewAPI端口13000（原生实际通配监听，不冒称回环）。没有迁移旧配置/业务库，没有触碰原3000/3001服务。
+
+实际effective unit：FragmentPath为`/home/lihaokun/.config/systemd/user/quota-throttle-sgm.service`，无drop-in，KillMode=process、TimeoutStopUSec=3min、Restart=on-failure、UMask=0077、NoNewPrivileges=yes。目录0700、配置与两数据库0600；进程UID/exe/cwd/listener、原生SQL_DSN/LOG_SQL_DSN=local、SQLITE_PATH以及ERROR_LOG_ENABLED=true均已核验。
+
+只stop/start本次新控制器：MainPID从49666变为57601；NewAPI PID49733保持不变且停止期间继续监听13000；应用库schema8及catalog_instance_id保持。重启后backend_ready=true，首页200及CSP、ui-config调用根、来源/组/访问Key空目录再次验证。第一次只读验证脚本的CSP字符串受SSH外层引号影响而断言失败；检查到实际响应头正确后，改为本地quoted heredoc原样传Python并完整复验通过，没有因此更改服务配置或放宽CSP。
+
+SGM7实现、完整隔离验收、独审、正式新部署及恢复门禁均完成。新服务为空真实来源/访问Key，用户尚未提供两把火山Key；真实NewAPI+模拟上游的组合通过不等于真实供应商推理已验收。后续注册用户提供的来源并以实际model list核验，不能擅取旧服务或历史聊天中的密钥。
