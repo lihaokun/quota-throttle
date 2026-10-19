@@ -267,7 +267,8 @@ def _initialize_fresh(target, native_binary, app_binary, api_port, panel_port, r
         with defer_cancellation():
             with os.fdopen(log_fd, "wb") as log:
                 process = subprocess.Popen([str(native)], cwd=target / "native", env=env,
-                    stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
+                    stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True,
+                    umask=0o077)
             private_write(target / "native" / "new-api.pid", str(process.pid))
         guard = lambda: own_process(process, native, target / "native", api_port)
         root = Native(api_port, guard)

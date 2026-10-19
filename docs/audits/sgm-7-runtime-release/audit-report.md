@@ -17,7 +17,7 @@
 | 归档PBT种子 | 首次源码白名单未包含5个已跟踪种子文件，后补齐并对全部对应14项用同一冻结debug/release二进制重放，分别14/0（180.69秒）、14/0（83.31秒）；regression-seeds.log |
 | 新runtime/协调回归 | 精确清单25项（含1项原planner），三组128-case PBT；group-token-cooperation-tests.log，完整debug覆盖 |
 | 机械冻结 | 本地sgm7_check.py --freeze通过，R1–R5/共享类型预算/精确可运行清单/旧核心零diff；仅核C声明清单，不替代C执行 |
-| initializer / C清理夹具 | fermat各10/0；initializer-tests.log、probe-harness-tests.log |
+| initializer / C清理夹具 | fermat 11/0及10/0；initializer-tests.log、probe-harness-tests.log；含末次Native子进程umask回归 |
 | Node | 52/0，原8组PBT保留；node-contract-tests.log |
 | B真实浏览器 | Chromium/Firefox×桌面/移动共72/72；browser-suite.log；API fixture套件不是完整原生C |
 | full Schema | 3316实际合成报文、18请求+13响应、60根反例、28错误码；2000实际响应过前端；32 UI生成报文及URI反例；wire.qHCjDV/uiwire.YKP7YV |
@@ -49,6 +49,8 @@ attempt10已通过11项（含双协议普通/流式、隔离、账本、成功�
 CI新增独立groups-runtime job，保留原Rust、性能和UI jobs；此次等价测试在fermat执行，不声称GitHub Actions已运行。未push、未merge。
 
 ## fermat 全新部署验收
+
+末次权限复核发现首次Native初始化继承外层umask，使one-api.db为0644，但其0700父目录始终阻止其他用户进入，并无公开读取路径。已仅收紧本次部署数据库为0600、内部logs目录为0700，运行进程及内容不变；安装器Popen增加仅对子进程生效的umask=0077，不改父进程全局值。fermat初始化器11/0，独审critical 0/unresolved 0，真实全新初始化烟测`/tmp/quota-throttle-sgm7-permission-smoke-rglrcvys`证明数据库0600/日志目录0700并停止自建进程。随后正式服务三份私有文件权限及backend_ready重新核验通过，Native PID49733未变。此补强不改Rust源码或已部署二进制，因此完整程序验收仍对应原SHA。
 
 2026-10-19 UTC 12:22完成实际启停恢复验证。目标`/home/lihaokun/apps/quota-throttle-sgm`，用户服务`quota-throttle-sgm.service`为enabled、active/running；用户Linger=yes。面板`127.0.0.1:13001`，NewAPI端口13000（原生实际通配监听，不冒称回环）。没有迁移旧配置/业务库，没有触碰原3000/3001服务。
 

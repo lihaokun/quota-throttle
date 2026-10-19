@@ -91,6 +91,12 @@ class InitializerTests(unittest.TestCase):
         self.assertEqual((self.target / "config.toml").stat().st_mode & 0o777, 0o600)
         self.assertEqual(FakeNative.calls.count(("POST", "/api/user/")), 1)
 
+    def test_native_child_uses_private_umask(self):
+        def spawn(*_args, **kwargs):
+            self.assertEqual(kwargs["umask"], 0o077)
+            return self.process
+        self.assertTrue(self.initialize(spawn)["initialized"])
+
     def test_lost_create_ack_is_never_reposted_and_keeps_recovery_material(self):
         FakeNative.fail_create = True
         with self.assertRaises(setup.BootstrapError): self.initialize()
