@@ -2,6 +2,8 @@
 
 2026-10-19，分支 `research/source-groups-token-management`，实现基线 `bcb5700`。已确认的26个新管理动作与原state接口组合完成内部验收：机械、六组PBT、默认双profile、性能、16种有效编译变异、恢复重编和最终独审全部通过。A2.2完成不代表B/C页面、SGM7运行组合或部署完成。
 
+实现提交 `a09cc78`，仅本地提交；本次提交号回填不改变已验收源码，未推送、合并或部署。
+
 ## 实现范围
 
 HTTP使用逐路由DTO、固定错误码和白名单响应，不开放通用ControlCommand或任意NewAPI patch。目录、操作恢复、模型发现、token身份及查询继续调用原worker；没有第二调度器、第二写库连接、持久HTTP任务表、新依赖或DDL。GET state保留原唯一publisher与缓存字节读取。
@@ -59,7 +61,7 @@ schema校验去掉根anyOf，按路由专属$defs验证；六份嵌入旧schema�
 - [x] 原29加新增2个release性能、原4个debug性能。
 - [x] 最终clippy all-targets与release build，无新增警告。
 - [x] 独审critical=0、unresolved=0，五维度全部通过。
-- [ ] 本地提交及提交号回填；不推送、合并或部署。
+- [x] 本地实现提交 `a09cc78` 及提交号回填；不推送、合并或部署。
 
 最终159份src/Cargo/config.example文件的SHA256清单在 `/tmp/quota-throttle-sgm6-a22-final-source.sha256`，之后未改这159份编译输入；审核文档与脚本另行维护。默认773项回归及其余门禁均基于该冻结源码。clippy完整日志 `/tmp/quota-throttle-sgm6-a22-final-clippy.log`。
 

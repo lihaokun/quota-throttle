@@ -48,3 +48,5 @@ Selection::Discover与Filter::Any/Unknown改为空struct variant，继续同tag�
 A2.2细化与十节继续维持原严格形状/未知字段拒绝契约，不放宽schema。实施审核保留此Serde陷阱、锁定源码和两轮红例。helper是现有H2.1解码实现细节，不增可见类型或产品选择。
 
 最终回填：原6条回归保留；M05重复键Value覆盖、M13对象数组、M14标量enum对象、M15unit额外字段四种有效编译变异均命中原断言。恢复重编1分20秒后44/0/2；完整debug/release各739/0/34、机械schema、性能、lint/build及最终独审全部通过，证据见[A2.2实施审核](../audits/sgm-6-three-page-panel/a2-2-audit.md)。
+
+代码及回归测试已随实现提交 `a09cc78` 本地保存；未切换在线服务。
