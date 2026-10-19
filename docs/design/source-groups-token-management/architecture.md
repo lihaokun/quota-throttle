@@ -425,3 +425,18 @@ GLM缓存只在原commit成功后随Core整体替换，重开为空；源样本�
 A2.1唯一成功路径为GET `/api/admin/v1/state`，输出原PanelSnapshot wire1；新增HttpErrorBody wire1仅含schema_version与固定error枚举，由[错误schema](schemas/panel-http-error.schema.json)约束。成功响应的X-QT-Snapshot-Age-Ms是保守展示年龄，不修改原观察时间；后续B只能使展示过期，不能将采集时backend_ready/current当作当前路由或写授权。
 
 管理面信任可信本机/SSH隧道，硬性回环监听、固定单一Host/Origin、自定义头和JSON写入保护，不是本机用户隔离认证，不增登录会话。唯一server监督循环持有一个在途blocking投影，过期不提前移走句柄；正常shutdown+join实际回收，强制abort不承诺释放不可抢占任务。HTTP只读已发布完整bytes，不每请求跑SQL或网络。旧status/CLI及在线服务保持不动，实际运行接线属于SGM7。
+
+### A2.2业务wire增量
+
+[A2.2细化](subplans/sgm-6-admin-business-a2-2.md)为待确认方案，尚未实现。业务HTTP沿原worker管理能力，不改变上文GET state缓存边界；新共享输出供后续三页面使用，私有请求/执行交接不成为业务权威。
+
+| 共享类型 | 字段和来源 |
+| --- | --- |
+| SourceCreated / GroupCreated / MemberPlanned | wire1包装原目录视图；来源附本次model_origin，不持久化探测出处；201只表示目录保存 |
+| SourceModelsView | wire1、source_id、source_revision(原config_revision)、完整models；同记录只读，不返回settings/凭据，允许历史退休来源 |
+| TokenIdentityPage / NativeTokenPageView | 前者原本地身份items及after/next_after，后者owner_scope/page/page_size/total及原生items；分别分页，不虚构同刻全景 |
+| TokenReveal | wire1、本地token_id、显式复制的短时key；不进普通cache/操作/日志，不给内部RevealedToken通用Serialize/Debug |
+| UsageSnapshotView | wire1、规范query、原ledger进展及nullable usage；同份总计/原生token/模型/时间桶联合分项，时间为秒，未知不变零 |
+| AdminError | wire1、固定error、仅duplicate_source可带existing_source_id；独立于H1错误schema，控制错误码直接复用，不能回显输入或底层错误 |
+
+完整字段/类型/默认/范围/关系见A2.2§3–5及请求/响应schema。新增4槽handoff只负责有界运输请求和保留实际blocking句柄，业务ID、幂等、写者和状态转移仍来自原worker/store。正常关闭须在全部wrapper之后等待原usage读槽；前提是所有查询调用方已停止准入且runtime仍驱动，不新增查询任务表或关闭原semaphore。

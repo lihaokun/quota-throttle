@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:quota-throttle:panel-admin-requests:1",
+  "title": "Panel admin request schemas version 1",
+  "description": "机械校验须按路由选定$defs，不能只用总anyOf验证错误路由。JSON Schema不替代原始重复键、数字词法、字节数、归一化及关系校验。",
+  "anyOf": [
+    {
+      "$ref": "#/$defs/CreateSource"
+    },
+    {
+      "$ref": "#/$defs/VersionOnly"
+    },
+    {
+      "$ref": "#/$defs/OperationRevision"
+    },
+    {
+      "$ref": "#/$defs/SetSourcePaused"
+    },
+    {
+      "$ref": "#/$defs/SetModels"
+    },
+    {
+      "$ref": "#/$defs/ClearVolcanoError"
+    },
+    {
+      "$ref": "#/$defs/UpdateVolcanoPolicy"
+    },
+    {
+      "$ref": "#/$defs/CreateGroup"
+    },
+    {
+      "$ref": "#/$defs/CheckGroup"
+    },
+    {
+      "$ref": "#/$defs/SetGroupPin"
+    },
+    {
+      "$ref": "#/$defs/PlanMembership"
+    },
+    {
+      "$ref": "#/$defs/CreateToken"
+    },
+    {
+      "$ref": "#/$defs/SetTokenEnabled"
+    },
+    {
+      "$ref": "#/$defs/RevealToken"
+    },
+    {
+      "$ref": "#/$defs/RegisterToken"
+    },
+    {
+      "$ref": "#/$defs/UsageQuery"
+    }
+  ],
+  "$defs": {
+    "id": {"type":"string","pattern":"^[1-9][0-9]{0,18}$","description":"还须按i64正整数解析，不接受溢出；schema模式不替代数值检查。"},
+    "revision": {"type":"integer","minimum":1,"maximum":9007199254740991},
+    "runtimeRevision": {"type":"integer","minimum":0,"maximum":9007199254740991},
+    "timestamp": {"type":"integer","minimum":0,"maximum":9007199254740991},
+    "operationId": {"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9_-]{15,63}$"},
+    "sourceKind": {"enum":["glm","volcano"]},
+    "ownerScope": {"enum":["issuer","legacy_admin"]},
+    "name": {"type":"string","minLength":1,"not":{"pattern":"\\u0000"},"description":"原始字符串trim后1..128字符；归一化与1MiB报文限制由parser验证。"},
+    "note": {"type":"string","maxLength":2048,"not":{"pattern":"\\u0000"},"default":""},
+    "secret": {"type":"string","minLength":1,"not":{"pattern":"[\\r\\n\\u0000]"},"description":"必须首尾无空白；仅请求body，不得Debug/Serialize或反射。"},
+    "url": {"type":"string","minLength":1,"maxLength":8192,"description":"另验UTF-8<=8192字节、http/https、无userinfo/fragment；仅quota URL允许query。"},
+    "model": {"type":"string","minLength":1,"not":{"pattern":"[,\\u0000]"},"description":"原模型规则trim/去重/最终非空；总请求仍受1MiB限制。"},
+    "header": {"type":"object","additionalProperties":false,"required":["key","value"],"properties":{"key":{"type":"string","minLength":1},"value":{"type":"string","not":{"pattern":"[\\r\\n\\u0000]"}}}},
+    "modelDiscovery": {"type":"object","additionalProperties":false,"required":["url"],"properties":{"url":{"$ref":"#/$defs/url"},"auth":{"enum":["bearer","authorization_raw","x_api_key"],"default":"bearer"}}},
+    "models": {"type":"array","minItems":1,"maxItems":1000,"items":{"$ref":"#/$defs/model"}},
+    "policy": {"type":"object","additionalProperties":false,"required":["daily_token_limit","failure_threshold","reset_minute","utc_offset_minutes"],"properties":{"daily_token_limit":{"anyOf":[{"$ref":"#/$defs/revision"},{"type":"null"}]},"failure_threshold":{"type":"integer","minimum":1,"maximum":100},"reset_minute":{"type":"integer","minimum":0,"maximum":1439},"utc_offset_minutes":{"type":"integer","minimum":-720,"maximum":840}}},
+    "upstream": {"type":"object","additionalProperties":false,"required":["channel_type","base_url"],"properties":{"channel_type":{"$ref":"#/$defs/revision"},"base_url":{"$ref":"#/$defs/url"},"model_discovery":{"anyOf":[{"$ref":"#/$defs/modelDiscovery"},{"type":"null"}]}}},
+    "quota": {"type":"object","additionalProperties":false,"required":["quota_url"],"properties":{"quota_url":{"$ref":"#/$defs/url"},"global_headers":{"type":"array","minItems":0,"maxItems":64,"items":{"$ref":"#/$defs/header"},"default":[]},"key_headers":{"type":"array","minItems":0,"maxItems":64,"items":{"$ref":"#/$defs/header"},"default":[]}}},
+    "settings": {"oneOf":[{"type":"object","additionalProperties":false,"required":["type","upstream","quota"],"properties":{"type":{"const":"glm"},"upstream":{"$ref":"#/$defs/upstream"},"quota":{"$ref":"#/$defs/quota"}}},{"type":"object","additionalProperties":false,"required":["type","upstream"],"properties":{"type":{"const":"volcano"},"upstream":{"$ref":"#/$defs/upstream"},"policy":{"$ref":"#/$defs/policy"}}}]},
+    "modelSelection": {"oneOf":[{"type":"object","additionalProperties":false,"required":["mode"],"properties":{"mode":{"const":"discover"}}},{"type":"object","additionalProperties":false,"required":["mode","manual_models"],"properties":{"mode":{"const":"manual"},"manual_models":{"$ref":"#/$defs/models"}}},{"type":"object","additionalProperties":false,"required":["mode","manual_models"],"properties":{"mode":{"const":"discover_or_manual"},"manual_models":{"$ref":"#/$defs/models"}}}],"default":{"mode":"discover"}},
+    "CreateSource": {"type":"object","additionalProperties":false,"required":["schema_version","name","credential","settings"],"properties":{"schema_version":{"const":1},"name":{"$ref":"#/$defs/name"},"note":{"$ref":"#/$defs/note"},"credential":{"$ref":"#/$defs/secret"},"settings":{"$ref":"#/$defs/settings"},"model_selection":{"$ref":"#/$defs/modelSelection"}},"allOf":[{"if":{"anyOf":[{"not":{"required":["model_selection"]}},{"required":["model_selection"],"properties":{"model_selection":{"properties":{"mode":{"enum":["discover","discover_or_manual"]}},"required":["mode"]}}}]},"then":{"properties":{"settings":{"properties":{"upstream":{"required":["model_discovery"],"properties":{"model_discovery":{"$ref":"#/$defs/modelDiscovery"}}}}}}}}]},
+    "VersionOnly": {"type":"object","additionalProperties":false,"required":["schema_version"],"properties":{"schema_version":{"const":1}}},
+    "OperationRevision": {"type":"object","additionalProperties":false,"required":["schema_version","operation_id","expected_revision"],"properties":{"schema_version":{"const":1},"operation_id":{"$ref":"#/$defs/operationId"},"expected_revision":{"$ref":"#/$defs/revision"}}},
+    "SetSourcePaused": {"type":"object","additionalProperties":false,"required":["schema_version","operation_id","expected_revision","paused"],"properties":{"schema_version":{"const":1},"operation_id":{"$ref":"#/$defs/operationId"},"expected_revision":{"$ref":"#/$defs/revision"},"paused":{"type":"boolean"}}},
+    "SetModels": {"type":"object","additionalProperties":false,"required":["schema_version","operation_id","expected_revision","models"],"properties":{"schema_version":{"const":1},"operation_id":{"$ref":"#/$defs/operationId"},"expected_revision":{"$ref":"#/$defs/revision"},"models":{"$ref":"#/$defs/models"}}},
+    "ClearVolcanoError": {"type":"object","additionalProperties":false,"required":["schema_version","operation_id","expected_revision","expected_runtime_revision"],"properties":{"schema_version":{"const":1},"operation_id":{"$ref":"#/$defs/operationId"},"expected_revision":{"$ref":"#/$defs/revision"},"expected_runtime_revision":{"$ref":"#/$defs/revision"}}},
+    "UpdateVolcanoPolicy": {"type":"object","additionalProperties":false,"required":["schema_version","operation_id","expected_revision","expected_runtime_revision","policy"],"properties":{"schema_version":{"const":1},"operation_id":{"$ref":"#/$defs/operationId"},"expected_revision":{"$ref":"#/$defs/revision"},"expected_runtime_revision":{"$ref":"#/$defs/runtimeRevision"},"policy":{"$ref":"#/$defs/policy"}}},
+    "CreateGroup": {"type":"object","additionalProperties":false,"required":["schema_version","name","newapi_group","type"],"properties":{"schema_version":{"const":1},"name":{"$ref":"#/$defs/name"},"newapi_group":{"type":"string","minLength":1,"maxLength":64,"pattern":"^[A-Za-z0-9_.-]+$","not":{"const":"auto"}},"type":{"$ref":"#/$defs/sourceKind"}}},
+    "CheckGroup": {"type":"object","additionalProperties":false,"required":["schema_version","expected_revision","register"],"properties":{"schema_version":{"const":1},"expected_revision":{"$ref":"#/$defs/revision"},"register":{"type":"boolean"}}},
+    "SetGroupPin": {"type":"object","additionalProperties":false,"required":["schema_version","operation_id","expected_revision","expected_policy_revision","membership_id"],"properties":{"schema_version":{"const":1},"operation_id":{"$ref":"#/$defs/operationId"},"expected_revision":{"$ref":"#/$defs/revision"},"expected_policy_revision":{"$ref":"#/$defs/revision"},"membership_id":{"anyOf":[{"$ref":"#/$defs/id"},{"type":"null"}]}}},
+    "PlanMembership": {"type":"object","additionalProperties":false,"required":["schema_version","source_id","group_id"],"properties":{"schema_version":{"const":1},"source_id":{"$ref":"#/$defs/id"},"group_id":{"$ref":"#/$defs/id"}}},
+    "tokenLabel": {"type":"string","minLength":1,"maxLength":256,"description":"原token规则：UTF-8<=256字节、trim不变、无Unicode控制字符。","not":{"pattern":"[\\u0000-\\u001f\\u007f-\\u009f]"}},
+    "CreateToken": {"type":"object","additionalProperties":false,"required":["schema_version","operation_id","group_id","expected_group_revision","display_name","expires_at"],"properties":{"schema_version":{"const":1},"operation_id":{"$ref":"#/$defs/operationId"},"group_id":{"$ref":"#/$defs/id"},"expected_group_revision":{"$ref":"#/$defs/revision"},"display_name":{"$ref":"#/$defs/tokenLabel"},"expires_at":{"anyOf":[{"$ref":"#/$defs/timestamp"},{"type":"null"}]}}},
+    "SetTokenEnabled": {"type":"object","additionalProperties":false,"required":["schema_version","operation_id","expected_revision","enabled"],"properties":{"schema_version":{"const":1},"operation_id":{"$ref":"#/$defs/operationId"},"expected_revision":{"$ref":"#/$defs/revision"},"enabled":{"type":"boolean"}}},
+    "RevealToken": {"type":"object","additionalProperties":false,"required":["schema_version","expected_revision"],"properties":{"schema_version":{"const":1},"expected_revision":{"$ref":"#/$defs/revision"}}},
+    "RegisterToken": {"type":"object","additionalProperties":false,"required":["schema_version","owner_scope","native_token_id","display_name"],"properties":{"schema_version":{"const":1},"owner_scope":{"$ref":"#/$defs/ownerScope"},"native_token_id":{"$ref":"#/$defs/id"},"display_name":{"$ref":"#/$defs/tokenLabel"}}},
+    "IdentityQuery": {"type":"object","additionalProperties":false,"required":[],"properties":{"after":{"$ref":"#/$defs/id"}}},
+    "NativeTokenQuery": {"type":"object","additionalProperties":false,"required":["owner_scope"],"properties":{"owner_scope":{"$ref":"#/$defs/ownerScope"},"page":{"type":"integer","minimum":1,"maximum":100,"default":1}}},
+    "IdFilter": {"oneOf":[{"type":"object","additionalProperties":false,"required":["mode"],"properties":{"mode":{"const":"any"}}},{"type":"object","additionalProperties":false,"required":["mode"],"properties":{"mode":{"const":"unknown"}}},{"type":"object","additionalProperties":false,"required":["mode","value"],"properties":{"mode":{"const":"exact"},"value":{"$ref":"#/$defs/id"}}}]},
+    "ModelFilter": {"oneOf":[{"type":"object","additionalProperties":false,"required":["mode"],"properties":{"mode":{"const":"any"}}},{"type":"object","additionalProperties":false,"required":["mode"],"properties":{"mode":{"const":"unknown"}}},{"type":"object","additionalProperties":false,"required":["mode","value"],"properties":{"mode":{"const":"exact"},"value":{"type":"string","minLength":1,"maxLength":256,"not":{"pattern":"[\\u0000-\\u001f\\u007f-\\u009f]"},"description":"原valid_label：UTF-8<=256字节且无Unicode控制字符；不要求trim不变。"}}}]},
+    "Filters": {"type":"object","additionalProperties":false,"required":[],"properties":{"source_id":{"$ref":"#/$defs/IdFilter"},"group_id":{"$ref":"#/$defs/IdFilter"},"native_token_id":{"$ref":"#/$defs/IdFilter"},"model":{"$ref":"#/$defs/ModelFilter"}}},
+    "UsageQuery": {"type":"object","additionalProperties":false,"required":["schema_version","from","to","utc_offset_minutes","grain"],"properties":{"schema_version":{"const":1},"from":{"$ref":"#/$defs/timestamp"},"to":{"$ref":"#/$defs/timestamp"},"utc_offset_minutes":{"type":"integer","minimum":-720,"maximum":840},"grain":{"enum":["hour","day"]},"filter":{"$ref":"#/$defs/Filters"}},"description":"from < to 且 to-from <= 31天由原UsageQuery::new校验；filter省略维度为any。"}
+  }
+}
