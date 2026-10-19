@@ -1,6 +1,6 @@
 # SGM6 A2.2 管理业务接口细化
 
-2026-10-19，基线65a4235，分支research/source-groups-token-management。本稿是待确认的函数级方案，不是实现完成。A2.1的解析、安全边界和统一状态发布已验收；本批只补管理业务适配，不接CLI、旧status或现行服务。
+2026-10-19，设计基线65a4235，实现基线bcb5700，分支research/source-groups-token-management。本函数级方案经用户确认后已完成[实现验收](../../../audits/sgm-6-three-page-panel/a2-2-audit.md)。本批只补管理业务适配，不接CLI、旧status或现行服务。
 
 ## 1 范围与架构对应
 
@@ -275,4 +275,4 @@ Response保留H1固定安全headers、字节Content-Length、HEAD不发body和�
 - [x] 非平凡函数列出callee前提、成功/失败/取消与副作用，有限循环及所有权论证明确。
 - [x] 新增共享类型归属、ID/版本/时间、dry_run和目录/持久操作语义分别声明。
 - [x] 独立§4.4设计复审及schema静态验证完成：0个未关闭设计阻断，65正例/44负例、6份旧schema规范化一致，见[设计审核](../../../audits/sgm-6-three-page-panel/a2-2-design-audit.md)。
-- [ ] 用户确认本细化后才编码；设计审核不代表PBT/全量/部署已完成。
+- [x] 用户确认本细化后开始编码；设计审核不代表PBT/全量/部署已完成。实现门禁见[实施审核](../../../audits/sgm-6-three-page-panel/a2-2-audit.md)。

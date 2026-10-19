@@ -49,11 +49,14 @@ impl Write for BoundedWriter {
 }
 pub(super) fn encode_panel(snapshot: &PanelSnapshot) -> Result<Arc<[u8]>, PublishError> {
     // Step H1.4: 只编码A1 DTO；先限制每次写入，再冻结完整bytes供所有请求共享。
+    encode_bounded(snapshot)
+}
+pub(super) fn encode_bounded<T: serde::Serialize>(value: &T) -> Result<Arc<[u8]>, PublishError> {
     let mut writer = BoundedWriter {
         bytes: Vec::new(),
         limit: MAX_RESPONSE,
     };
-    serde_json::to_writer(&mut writer, snapshot).map_err(|_| PublishError)?;
+    serde_json::to_writer(&mut writer, value).map_err(|_| PublishError)?;
     Ok(writer.bytes.into())
 }
 pub(super) struct PublishedPanel {

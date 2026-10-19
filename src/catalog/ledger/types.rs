@@ -37,7 +37,7 @@ macro_rules! stored_enum {
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         pub(crate) enum $name { $($variant),+ }
         impl $name {
-            pub(super) fn as_str(self) -> &'static str { match self { $(Self::$variant => $value),+ } }
+            pub(crate) fn as_str(self) -> &'static str { match self { $(Self::$variant => $value),+ } }
             pub(super) fn parse(s: &str) -> LedgerResult<Self> {
                 match s { $($value => Ok(Self::$variant)),+, _ => Err(super::corrupt()) }
             }

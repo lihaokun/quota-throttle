@@ -10,6 +10,9 @@ mod coverage;
 mod edges;
 #[path = "token_service_tests/native.rs"]
 mod native;
+// 复用原生token假后端，只从新增HTTP入口驱动，避免复制身份/渠道夹具。
+#[path = "../../panel_http/admin/tests/tokens.rs"]
+mod panel_admin;
 
 const ACCESS_KEY: &str = "PrivateFakeAccessKey0123456789abcdef0123456789ab";
 fn ok(value: Value) -> Reply {

@@ -17,6 +17,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 use tokio::sync::{watch, Mutex as AsyncMutex, Notify, Semaphore};
 
+mod admin;
 mod analytics;
 mod collection;
 mod management;

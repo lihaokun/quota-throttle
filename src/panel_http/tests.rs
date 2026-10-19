@@ -5,6 +5,22 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+impl PanelServer {
+    // H1用自定义publisher做故障注入；业务层仍使用真实临时worker，测试结束才释放目录。
+    async fn serve_with(
+        self,
+        reader: SnapshotReader,
+        shutdown: watch::Receiver<bool>,
+    ) -> Result<(), HttpErrorCode> {
+        let fixture = admin::tests::support::fixture(false);
+        let result = self
+            .serve_with_worker(reader, fixture.worker.clone(), shutdown)
+            .await;
+        drop(fixture);
+        result
+    }
+}
+
 pub(crate) fn empty(at: i64) -> PanelSnapshot {
     PanelSnapshot {
         schema_version: 1,
@@ -60,11 +76,14 @@ async fn one_request(bytes: Vec<u8>, cache: Arc<PanelCache>) -> Vec<u8> {
     let client = tokio::spawn(async move { exchange(addr, &bytes).await });
     let (stream, _) = listener.accept().await.unwrap();
     let sem = Arc::new(Semaphore::new(1));
+    let fixture = admin::tests::support::fixture(false);
+    let (business, _supervisor) = admin::Supervisor::new(fixture.worker.clone());
     serve_connection(
         stream,
         sem.acquire_owned().await.unwrap(),
         Arc::new(PanelOrigin::parse("http://localhost:13001").unwrap()),
         cache,
+        business,
         Instant::now(),
     )
     .await;

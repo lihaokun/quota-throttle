@@ -101,3 +101,7 @@ sgm-3 的 token 上限及错误规则以 sgm-4 的事实接口为依赖；先定
 ## 交付判定
 
 只有完成全部必要子计划、无未解决的阻断项、隔离端到端与 GLM 回归通过，才能称为功能实现完成。此准备计划和当前探针通过不等于可以合并或部署。
+
+## SGM6 A2.2 实施进展
+
+2026-10-19，[A2.2管理业务HTTP](subplans/sgm-6-admin-business-a2-2.md)完成[内部验收](../../audits/sgm-6-three-page-panel/a2-2-audit.md)：26新管理动作沿原worker；默认debug/release各739/0/34，80/4精确清单、六组各128 cases PBT、16有效编译变异和恢复重编、31release+4debug性能、clippy/build及独审五维度全部通过。没有修改旧策略、DDL、依赖或运行服务。新管理HTTP仍未接CLI；剩余B/C三页界面、组合测试与SGM7启动发布，fermat正式为全新初始化。

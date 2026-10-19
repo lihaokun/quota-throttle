@@ -330,7 +330,7 @@ pub enum ImportOutcome {
     AlreadyApplied(ImportReceipt),
 }
 
-pub(super) fn valid_name(name: &str) -> bool {
+pub(crate) fn valid_name(name: &str) -> bool {
     !name.is_empty() && name.trim() == name && name.chars().count() <= 128 && !name.contains('\0')
 }
 pub(crate) fn valid_group(group: &str) -> bool {
@@ -351,7 +351,7 @@ pub(super) fn valid_timestamp(value: Option<i64>) -> bool {
     value.is_none_or(|v| (0..=JSON_SAFE).contains(&v))
 }
 
-fn validate_url(text: &str, allow_query: bool) -> Result<()> {
+pub(crate) fn validate_url(text: &str, allow_query: bool) -> Result<()> {
     let url = reqwest::Url::parse(text).map_err(|_| error(ErrorKind::InvalidInput))?;
     require(
         text.trim() == text

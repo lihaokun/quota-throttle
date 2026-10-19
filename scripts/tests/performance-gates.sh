@@ -11,6 +11,8 @@ expected="$(printf '%s\n' \
   catalog::store::tests::control::performance_gate_control_group_priorities \
   panel_http::publication::tests::capacity::performance_gate_panel_http_encoding \
   panel_http::publication::tests::capacity::performance_gate_panel_http_body \
+  panel_http::admin::tests::performance_gate_admin_request_decode \
+  panel_http::admin::output::tests::performance_gate_admin_usage_encoding \
   catalog::store::tests::performance_gate_import_and_snapshot \
   catalog::store::tests::execution::performance_gate_group_work_snapshot \
   source_policy::tests::performance_gate_glm_pure_capacity \

@@ -65,3 +65,7 @@ route/schema/错误状态/worker原语义逐项一致；local/native ID、三类
 设计阶段必须schema静态正负例、路由/错误映射/冻结检查及独立§4.4复审通过，用户确认后才编码。实施阶段再跑精确测试清单、至少12种有效编译变异、恢复重编、默认debug/release、全部性能、clippy/build及五维度。设计样例不是真实实现输出，也不计PBT或运行验收。
 
 本轮设计验证已完成：独立§4.4复审0个未关闭设计阻断；65正/44负静态样例、6份旧schema规范化一致、28业务code与状态表、实现冻结检查通过。原页码/ledger revision及三类标签域已按callee修正，见[设计审核](a2-2-design-audit.md)和[处置](a2-2-decisions.md)。仍待用户确认和实现阶段动态验收。
+
+用户随后已确认并进入实施，原十节约束保持。当前证据和剩余退出门禁见[实施审核](a2-2-audit.md)；静态样例不替代真实wire或运行测试。
+
+实施退出：80/4精确清单、14 Step、真实wire专属schema、六组128 cases PBT、16种有效编译变异和恢复重编、默认debug/release各739/0/34、31release+4debug性能、clippy/build全部通过。独立审核五维度通过，0 critical / 0 unresolved。严格对象/标量形状、Ready竞争、真实query尾部及H1正文冻结的补强均保留；详见实施审核，不将本批扩大为B/C页面或SGM7完成。

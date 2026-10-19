@@ -322,7 +322,7 @@ impl ControlCommand {
     }
 }
 
-fn canonical_models(models: &mut Vec<String>) -> ControlResult<()> {
+pub(crate) fn canonical_models(models: &mut Vec<String>) -> ControlResult<()> {
     ensure(
         !models.is_empty()
             && models.len() <= 1000

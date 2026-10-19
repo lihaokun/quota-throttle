@@ -4,6 +4,8 @@ use serde_json::json;
 use std::os::unix::fs::PermissionsExt;
 use std::sync::mpsc;
 mod attribution_tests;
+#[path = "../../../panel_http/admin/tests/query_tail.rs"]
+mod panel_admin;
 
 fn setup() -> (tempfile::TempDir, Arc<ReconcileWorker>) {
     setup_with(false)

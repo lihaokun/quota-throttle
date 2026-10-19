@@ -420,7 +420,7 @@ GLM缓存只在原commit成功后随Core整体替换，重开为空；源样本�
 
 ## 第六子计划 A2 HTTP接线设计
 
-[A2总体](subplans/sgm-6-admin-http-a2.md)分为[A2.1本地入口与统一发布](subplans/sgm-6-http-boundary-a2-1.md)、A2.2业务wire/worker薄适配。A2.1已完成[内部验收](../../audits/sgm-6-three-page-panel/a2-1-audit.md)，仅main模块声明，没有接入现行服务；A2.2仍须逐路由细化，之后才编码。
+[A2总体](subplans/sgm-6-admin-http-a2.md)分为[A2.1本地入口与统一发布](subplans/sgm-6-http-boundary-a2-1.md)、[A2.2业务wire/worker薄适配](subplans/sgm-6-admin-business-a2-2.md)。两批已分别完成内部验收；main仍只有模块声明，没有接入现行服务。B/C页面及SGM7运行组合仍待完成。
 
 A2.1唯一成功路径为GET `/api/admin/v1/state`，输出原PanelSnapshot wire1；新增HttpErrorBody wire1仅含schema_version与固定error枚举，由[错误schema](schemas/panel-http-error.schema.json)约束。成功响应的X-QT-Snapshot-Age-Ms是保守展示年龄，不修改原观察时间；后续B只能使展示过期，不能将采集时backend_ready/current当作当前路由或写授权。
 
@@ -428,7 +428,7 @@ A2.1唯一成功路径为GET `/api/admin/v1/state`，输出原PanelSnapshot wire
 
 ### A2.2业务wire增量
 
-[A2.2细化](subplans/sgm-6-admin-business-a2-2.md)为待确认方案，尚未实现。业务HTTP沿原worker管理能力，不改变上文GET state缓存边界；新共享输出供后续三页面使用，私有请求/执行交接不成为业务权威。
+[A2.2细化](subplans/sgm-6-admin-business-a2-2.md)已确认并完成[实现验收](../../audits/sgm-6-three-page-panel/a2-2-audit.md)。业务HTTP沿原worker管理能力，不改变上文GET state缓存边界；新共享输出供后续三页面使用，私有请求/执行交接不成为业务权威。
 
 | 共享类型 | 字段和来源 |
 | --- | --- |

@@ -1,6 +1,6 @@
 # SGM6 A2 本地管理 HTTP 接线方案
 
-2026-10-19，原设计基线`ea7cf33`。本阶段把既有worker能力接到本地管理面，不新增调度器、写库连接或HTTP任务库。A1与[A2.1](sgm-6-http-boundary-a2-1.md)已验收；业务适配的[A2.2逐路由wire与函数细化](sgm-6-admin-business-a2-2.md)已形成待确认稿，确认后才编码。
+2026-10-19，原设计基线`ea7cf33`。本阶段把既有worker能力接到本地管理面，不新增调度器、写库连接或HTTP任务库。A1、[A2.1](sgm-6-http-boundary-a2-1.md)及[A2.2](sgm-6-admin-business-a2-2.md)均已完成内部实现验收；[A2.2证据](../../../audits/sgm-6-three-page-panel/a2-2-audit.md)不代表页面或现行服务已经接线。
 
 ## 1 范围与复用
 
@@ -27,7 +27,7 @@ Host必须匹配启动时固定的唯一浏览器authority。所有新API要求�
 
 ## 3 A2.2业务接线清单
 
-下表锁定职责和结果语义，不冒充逐路由DTO/schema已完成。内部ControlCommand不能直接反序列化为前端通用指令。
+下表仅概览职责和结果语义；已实现的逐路由DTO/schema和函数契约见A2.2。内部ControlCommand不能直接反序列化为前端通用指令。
 
 | 能力 | 既有入口或必要薄适配 | 成功/恢复语义 |
 | --- | --- | --- |
