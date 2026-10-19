@@ -46,6 +46,9 @@ impl ProjectionBudget {
 }
 pub(crate) struct SourceProjection {
     pub(crate) runtime: Option<VolcanoRuntime>,
+    /// 组选择器输入门：账本已初始化、周期已开始、type8；不含观测新鲜度/待处理队列等采集瞬态。暂停/耗尽由选择器自身判定。
+    pub(crate) selectable: bool,
+    /// 正向许可前提：selectable 再加观测新鲜、队列已消费完、未停用。
     pub(crate) ready: bool,
     pub(crate) disabled: bool,
     pub(crate) pending: bool,
@@ -183,6 +186,7 @@ pub(crate) fn project_source(
     if source.retired_at.is_some() || retiring {
         return Ok(SourceProjection {
             runtime: old,
+            selectable: false,
             ready: false,
             disabled: true,
             pending: false,
@@ -203,6 +207,7 @@ pub(crate) fn project_source(
         None => {
             return Ok(SourceProjection {
                 runtime: None,
+                selectable: false,
                 ready: false,
                 disabled: source.manual_paused,
                 pending: false,
@@ -266,14 +271,11 @@ pub(crate) fn project_source(
         write_runtime(tx, &next)?;
     }
     let disabled = source.manual_paused || next.state(false) == VolcanoState::Exhausted;
+    let selectable = initialized && usable_time && upstream.channel_type == 8;
     Ok(SourceProjection {
         runtime: Some(next),
-        ready: initialized
-            && usable_time
-            && fresh
-            && !pending
-            && upstream.channel_type == 8
-            && !disabled,
+        selectable,
+        ready: selectable && fresh && !pending && !disabled,
         disabled,
         pending,
         consumed,

@@ -109,3 +109,5 @@ sgm-3 的 token 上限及错误规则以 sgm-4 的事实接口为依赖；先定
 实现提交 `a09cc78`；仅本地保存，未推送、合并或部署。
 
 2026-10-19，下一批[B三页界面细化](subplans/sgm-6-browser-panel-b.md)及[独立设计审核](../../audits/sgm-6-three-page-panel/b-design-audit.md)完成，5个初审阻断和4项补明均关闭。UiConfig静态7正/23负通过；本批尚未编码、安装前端测试依赖或运行浏览器，待用户确认细化后实施。源树及在线服务保持不变。
+
+2026-10-20，fermat 运行中发现火山两健康成员约每 5.4 分钟无故互换首选（`Updated channel` 成对出现）。根因：组选择器把观测新鲜度/待处理队列这类采集瞬态当成来源不可用，采集 `begin_scan` 空窗即清空首选、恢复时轮换，偏离"首选可用则保持、ready 只挡正向许可"的设计。按 [修正方案](../../fixes/volcano-policy-fix-stale-ledger-preferred-churn.md) 新增 `SourceProjection.selectable` 供选择器使用，`ready` 逐位不变；4 条回归修复前红、修复后绿，选择闸改回旧口径的变异恰好使其全红；同步 O4:61 与 B 选择器输入措辞。`QueueFull` 警告经独立复核属后端检查持锁的独立问题，与本修复无关，另立。

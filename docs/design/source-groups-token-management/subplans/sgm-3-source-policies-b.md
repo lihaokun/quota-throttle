@@ -136,7 +136,7 @@ insert_source 在原事务追加火山未初始化行；insert_group 在原事�
 
 ### 5.5 组内稳定首选
 
-`select_volcano_group(cfg: &Config, group: &GroupView, members: &[WorkSnapshot], shared_states: &BTreeMap<SourceId, Option<VolcanoRuntime>>, previous: &VolcanoGroupState) -> Result<VolcanoGroupDecision>`。pre：完整同组 WorkSnapshot、SourceId 唯一的共享火山状态；容量沿用 MAX_SOURCES/MAX_MEMBERSHIPS。配置 priority 须安全且 active>standby≥exhausted，非法返回 InvalidInput，不改变旧 GLM 的配置校验行为。先核对组/来源类型、身份/版本及未 retired source/group 唯一性；所需来源缺 map 项为非法，显式 None 才表示未初始化；有 Runtime 时其 source_id 必须与 map 键一致。再过滤暂停/退休/退役意图/未绑定成员和未初始化/耗尽来源，不能先过滤后掩盖重复身份。
+`select_volcano_group(cfg: &Config, group: &GroupView, members: &[WorkSnapshot], shared_states: &BTreeMap<SourceId, Option<VolcanoRuntime>>, previous: &VolcanoGroupState) -> Result<VolcanoGroupDecision>`。pre：完整同组 WorkSnapshot、SourceId 唯一的共享火山状态；容量沿用 MAX_SOURCES/MAX_MEMBERSHIPS。配置 priority 须安全且 active>standby≥exhausted，非法返回 InvalidInput，不改变旧 GLM 的配置校验行为。先核对组/来源类型、身份/版本及未 retired source/group 唯一性；所需来源缺 map 项为非法，显式 None 才表示未初始化；调用方不得把观测新鲜度、待处理队列等采集瞬态折叠成 None（2026-10-20 修正）；有 Runtime 时其 source_id 必须与 map 键一致。再过滤暂停/退休/退役意图/未绑定成员和未初始化/耗尽来源，不能先过滤后掩盖重复身份。
 
 按 (order,MembershipId) 排序。preferred 仍在可用集则保持；否则从 cursor 后的第一个可用成员选择，尾部无候选则回绕到第一个；首次无 cursor 就选第一个。全员不可用返回 preferred=None，但保留 cursor。新选中时更新 cursor；返回来源恢复不抢占仍可用首选。
 

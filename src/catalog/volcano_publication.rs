@@ -163,12 +163,13 @@ impl CatalogStore {
                 )?,
             );
         }
+        // 选择器只看来源可承载性；观测新鲜度/待处理队列只挡正向许可（下方 source.ready），不得清空首选。
         let states = sources
             .iter()
             .map(|(id, s)| {
                 (
                     *id,
-                    if s.ready
+                    if s.selectable
                         || s.runtime
                             .as_ref()
                             .is_some_and(|r| r.state(false) == VolcanoState::Exhausted)

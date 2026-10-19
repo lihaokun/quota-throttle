@@ -58,7 +58,7 @@ VolcanoEvidence.from_cursor 取原 Runtime，to_cursor 为新的逻辑批次号�
 
 正向许可前提（O4.4）：原 BackendReadiness 有效、组 ready、成员已接管/已绑定且未暂停/退役、来源 type8 且 Runtime Available、该源本地队列已消费完、recent 页近期成功。recent 允许 scanning/scanned 且 last_observed_at 存在、无 fault、不是未来、距 now<30秒；不把正常分页称为上游完整证明，也不从 idle/stalled 伪造健康。lease 截止取 backend、last_observed_at+30、now+30 最小值。
 
-各 Volcano 组调用原 select_volcano_group，来源状态跨组复用，未知状态传 None、优先级 Keep 不填0。只改变 managed/已绑定、未暂停/退休/退役成员的必要目标；已知耗尽令本源所有可管理成员 Disabled，健康且门禁满足才准备 Enabled，未知保留旧 status/priority。暂停/退役由原控制意图优先，不自动接管成员、改来源 manual_paused 或创建控制操作。
+各 Volcano 组调用原 select_volcano_group，来源状态跨组复用；只有来源不可承载首选（退休/退役、Runtime 未初始化、账本未初始化、周期未开始、非 type8）才传 None（耗尽仍传 Runtime），优先级 Keep 不填0。观测新鲜度与本源待处理队列只限正向许可，不得折叠成 None 进入组选择器，否则采集空窗会清空首选、恢复时轮换（2026-10-20 修正，见 [fixes 记录](../../../fixes/volcano-policy-fix-stale-ledger-preferred-churn.md)）。只改变 managed/已绑定、未暂停/退休/退役成员的必要目标；已知耗尽令本源所有可管理成员 Disabled，健康且门禁满足才准备 Enabled，未知保留旧 status/priority。暂停/退役由原控制意图优先，不自动接管成员、改来源 manual_paused 或创建控制操作。
 
 保存组状态、必要 priority/status 目标与新许可在本事务中完成。目标变化才增 member revision、清 applied、标 dirty、supersede 未完成旧收据；旧成功回执/执行记录保留。从非 Enabled 进入 Enabled 时按原格式增 enable_epoch、设 enable_requested_revision、清 consumed；无变化不反复补授权。GLM 授权规则完全不变。回读最终成员后构造许可，沿原下调/回读/晋升屏障执行，不绕过 unknown write。
 

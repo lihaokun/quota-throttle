@@ -483,6 +483,144 @@ fn observed_publication_batches_stale_data_and_preview_do_not_grant_permission()
     assert_eq!(stale.report.permitted, 0);
 }
 
+fn preferred_of(f: &Fixture) -> Vec<Option<MembershipId>> {
+    f.groups
+        .iter()
+        .map(|g| match f.store.load_group_policy(*g).unwrap().state {
+            GroupPolicyState::Volcano(s) => s.preferred,
+            _ => unreachable!(),
+        })
+        .collect()
+}
+fn targets_of(f: &mut Fixture) -> Vec<(i64, i64)> {
+    let members = f.members.clone();
+    members
+        .into_iter()
+        .map(|m| {
+            let w = f.store.load_work(m, false).unwrap();
+            (w.target.desired_priority, w.target.revision)
+        })
+        .collect()
+}
+fn assert_selection_unchanged(
+    f: &mut Fixture,
+    before: &(Vec<Option<MembershipId>>, Vec<(i64, i64)>),
+    rounds: &[&crate::catalog::volcano_publication::VolcanoPolicyCommit],
+) {
+    assert_eq!(preferred_of(f), before.0);
+    assert_eq!(targets_of(f), before.1);
+    assert_eq!(rounds.iter().map(|r| r.report.changed_groups).sum::<usize>(), 0);
+    assert_eq!(rounds.iter().map(|r| r.report.changed_members).sum::<usize>(), 0);
+}
+
+#[test]
+fn observed_publication_stale_ledger_window_keeps_volcano_preferred() {
+    // 两源都健康，只有账本观测跨过 OBSERVATION_MAX_AGE_SECS 后恢复：不许发许可，但首选、期望优先级和控制版本都不得变化。
+    let mut f = fixture();
+    let before = (preferred_of(&f), targets_of(&mut f));
+    assert!(before.0.iter().all(Option::is_some));
+    let stale_at = NOW + crate::reconcile::planner::OBSERVATION_MAX_AGE_SECS;
+    let stale = round(&mut f, stale_at);
+    assert_eq!(stale.report.permitted, 0);
+    ingest(&mut f.store, &[], stale_at + 5);
+    let fresh = round(&mut f, stale_at + 5);
+    assert!(fresh.report.permitted > 0);
+    assert_selection_unchanged(&mut f, &before, &[&stale, &fresh]);
+}
+
+#[test]
+fn observed_publication_recent_scan_gap_keeps_volcano_preferred() {
+    // 生产主触发：采集器 begin_scan 把 last_observed_at 清空，页提交前的空窗内恰好跑到火山轮次。
+    let mut f = fixture();
+    let before = (preferred_of(&f), targets_of(&mut f));
+    let lane = f
+        .store
+        .load_ledger_state()
+        .unwrap()
+        .scans
+        .into_iter()
+        .find(|s| s.lane == ScanLane::Recent)
+        .unwrap();
+    let ticket = f
+        .store
+        .begin_scan(
+            ScanLane::Recent,
+            lane.generation,
+            ScanWindow { from: 0, to: NOW + 1 },
+            NOW + 1,
+        )
+        .unwrap();
+    let gap = round(&mut f, NOW + 1);
+    assert_eq!(gap.report.permitted, 0);
+    f.store
+        .commit_fact_page(&ticket, &[], PageEnd::ReachedEnd, NOW + 1)
+        .unwrap();
+    let fresh = round(&mut f, NOW + 2);
+    assert!(fresh.report.permitted > 0);
+    assert_selection_unchanged(&mut f, &before, &[&gap, &fresh]);
+}
+
+#[test]
+fn observed_publication_pending_backlog_keeps_volcano_preferred() {
+    // 首选源流量最大、最容易积压：积压只挡该源正向许可（O4:59/109），不得让组改选。
+    let mut f = fixture();
+    let before = (preferred_of(&f), targets_of(&mut f));
+    ingest(
+        &mut f.store,
+        &(1..=17)
+            .map(|id| event(id, 1001, &format!("busy-{id}"), true, NOW - 1))
+            .collect::<Vec<_>>(),
+        NOW,
+    );
+    let backlog = round(&mut f, NOW);
+    assert_eq!(backlog.report.pending_sources, 1);
+    assert!(!backlog.permits.contains_key(&f.members[0]));
+    let drained = round(&mut f, NOW);
+    assert_eq!(queue(&f.store), 0);
+    assert!(drained.permits.contains_key(&f.members[0]));
+    assert_selection_unchanged(&mut f, &before, &[&backlog, &drained]);
+}
+
+#[test]
+fn observed_publication_pause_during_stale_window_still_rotates_preferred() {
+    // 安全停止不依赖日志新鲜（O4:41）：过期窗口内经控制命令暂停首选来源，组选择仍立即换到健康成员；
+    // 暂停源成员的目标由控制意图负责（O4:61），过期轮次不得覆盖，也不发正向许可。
+    let mut f = fixture();
+    let source = f.store.load_work(f.members[0], false).unwrap().source;
+    f.store
+        .submit_operation(
+            OperationId::new(format!("o4-pause-{:016}", 1)).unwrap(),
+            ControlCommand::SetSourcePaused {
+                source_id: source.source_id,
+                expected_revision: source.config_revision,
+                paused: true,
+            },
+            NOW,
+        )
+        .unwrap();
+    let paused = |f: &mut Fixture| {
+        [0, 2].map(|i| {
+            let w = f.store.load_work(f.members[i], false).unwrap();
+            (
+                w.target.status_directive,
+                w.target.desired_priority,
+                w.target.revision,
+            )
+        })
+    };
+    let before = paused(&mut f);
+    let stale = round(
+        &mut f,
+        NOW + crate::reconcile::planner::OBSERVATION_MAX_AGE_SECS,
+    );
+    assert_eq!(stale.report.permitted, 0);
+    assert_eq!(
+        preferred_of(&f),
+        vec![Some(f.members[1]), Some(f.members[3])]
+    );
+    assert_eq!(paused(&mut f), before);
+}
+
 #[test]
 fn observed_publication_faults_roll_back_every_semantic_table() {
     for table in [
