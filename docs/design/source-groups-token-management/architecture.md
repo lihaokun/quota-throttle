@@ -420,7 +420,7 @@ GLM缓存只在原commit成功后随Core整体替换，重开为空；源样本�
 
 ## 第六子计划 A2 HTTP接线设计
 
-[A2总体](subplans/sgm-6-admin-http-a2.md)分为[A2.1本地入口与统一发布](subplans/sgm-6-http-boundary-a2-1.md)、A2.2业务wire/worker薄适配。本节记录设计边界，不表示接口已实现；A2.2仍须逐路由细化，之后才编码。
+[A2总体](subplans/sgm-6-admin-http-a2.md)分为[A2.1本地入口与统一发布](subplans/sgm-6-http-boundary-a2-1.md)、A2.2业务wire/worker薄适配。A2.1已完成[内部验收](../../audits/sgm-6-three-page-panel/a2-1-audit.md)，仅main模块声明，没有接入现行服务；A2.2仍须逐路由细化，之后才编码。
 
 A2.1唯一成功路径为GET `/api/admin/v1/state`，输出原PanelSnapshot wire1；新增HttpErrorBody wire1仅含schema_version与固定error枚举，由[错误schema](schemas/panel-http-error.schema.json)约束。成功响应的X-QT-Snapshot-Age-Ms是保守展示年龄，不修改原观察时间；后续B只能使展示过期，不能将采集时backend_ready/current当作当前路由或写授权。
 

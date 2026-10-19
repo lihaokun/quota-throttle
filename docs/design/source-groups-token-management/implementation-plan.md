@@ -53,7 +53,7 @@
 
 A1实现提交`b4116ef`；本轮仅本地提交，未推送或部署。
 
-2026-10-19 已完成[A2总体接线方案](subplans/sgm-6-admin-http-a2.md)及[A2.1 HTTP边界/统一状态发布细化](subplans/sgm-6-http-boundary-a2-1.md)；事前十节和错误schema就位，独立§4.4复审通过，0未关闭设计问题。下一步实施A2.1；本轮仅文档与schema静态检查，未改src/依赖/运行服务，A2.2全部业务wire及页面/部署仍待后续。
+2026-10-19 已按[A2总体接线方案](subplans/sgm-6-admin-http-a2.md)完成[A2.1 HTTP边界/统一状态发布](subplans/sgm-6-http-boundary-a2-1.md)[内部验收](../../audits/sgm-6-three-page-panel/a2-1-audit.md)：33普通/2性能、4组各128 cases PBT、12种编译变异、恢复重编和机械检查通过；Ready截止红例修复及两处测试覆盖补强均保留证据。最终默认debug/release各696/0/32 ignored，29release性能+4debug入口、clippy/build通过，编码80/64/99ms。旧核心及依赖冻结，main只有模块声明，不接现行服务。下一步A2.2逐路由wire与worker薄适配细化，再页面/运行组合；fermat正式部署仍为全新初始化。
 
 下列 ID 为本 feature 子计划；各批实际完成状态以上述验收记录为准，此表列原范围及退出条件，不代替逐批契约。
 
@@ -92,7 +92,7 @@ sgm-3 的 token 上限及错误规则以 sgm-4 的事实接口为依赖；先定
 
 生产前预检需要确认 ErrorLogEnabled 不是无效的管理 option，而是当前版本实际启动环境 ERROR_LOG_ENABLED=true；已运行 NewAPI 如需变更必须经过部署窗口确认。本轮没有改环境或重启生产。
 
-发布先备份敏感配置和两套数据库的一致性快照，记录渠道/来源映射；迁移保留原 token、URL 和 default 渠道。回退先停止新成员可路由状态，再回退程序和兼容配置，不自动删除用户新建来源或访问 key。
+本次fermat发布为全新初始化，不导入旧配置/数据，不迁移旧token、URL或default渠道，也不替换现行本地服务。旧部署的兼容/导入能力保留，但不是本次发布步骤；正式发布与回退细节归SGM7，不自动删除用户新建来源或访问key。
 
 ## 交付判定
 

@@ -90,7 +90,7 @@ H1唯一成功路由为`GET /api/admin/v1/state`，禁止query（含空问号）
 
 ### H1.2 read_head与parse_head
 
-`read_head(stream, accepted_at) -> Result<(RequestHead, Vec<u8>), HttpFailure>`使用固定4KiB读块，在accept+5秒内累计不超过head上限加一个块的暂存。每次先找终止符，找到后仍核终止位置≤16KiB，不能因同包包含终止符绕过上限；保存终止符后的有限剩余字节供body使用。无终止符且超过上限431，EOF400，读IO错误只关闭；成功交parse_head。
+`read_head(stream, accepted_at) -> Result<(RequestHead, Vec<u8>, Instant), HttpFailure>`使用固定4KiB读块，在accept+5秒内累计不超过head上限加一个块的暂存。每次先找终止符，找到后仍核终止位置≤16KiB，不能因同包包含终止符绕过上限；保存终止符后的有限剩余字节供body使用，并返回本次head完成Instant。无终止符且超过上限431，EOF400，读IO错误只关闭；成功交parse_head。按[Ready截止修正](../../../fixes/panel-http-fix-ready-deadline.md)，应用层读前、每次读返回及完整解析返回均显式核同一deadline，不能只靠timeout_at。
 
 `parse_head(&[u8])`按§3逐项验证request line、target、字段数/字节、重复头、framing、版本，返回固定错误码。循环上限来自16KiB和64字段；Content-Length用checked解析，不从失败解析补0。方法/路径未知但语法合法交后续路由，不执行任何回调。
 
@@ -100,7 +100,7 @@ H1唯一成功路由为`GET /api/admin/v1/state`，禁止query（含空问号）
 
 `authorize(head, origin) -> Result<(), HttpFailure>`只读校验固定Host、可空Origin、方法对应JSON/自定义头和Fetch Metadata。安全相关校验完成后才读声明body并分发。H1只读路由本应无body；`read_body`作为A2.2共用的有限读取函数仍需独立测试，不假装已有业务写handler。
 
-`read_body(stream, buffered, content_length, deadline)`仅消费所需n字节；n≤1MiB由head保证。优先消费已有字节，再在绝对期限内读剩余数量，EOF拒绝，收满后验证UTF-8；额外字节不作第二请求。未完成不返回成功body。它不解析业务JSON、不新建operation。
+`read_body(stream, buffered, content_length, deadline)`仅消费所需n字节；n≤1MiB由head保证。deadline固定为head完成Instant+10秒并受整连接期限约束，不能从authorize结束重起表。优先消费已有字节，再读剩余数量，EOF拒绝，收满后验证UTF-8；额外字节不作第二请求。已缓冲/零长度路径、每次读前后及返回成功前都显式核期限。它不解析业务JSON、不新建operation。
 
 论证：跨源不能抵达业务调用，也不以body内字段授权；内容边界唯一，分片不改变n。每轮至少消费字节或退出/等待有界IO，期限不能由慢速分块续期；无副作用/无敏感日志。
 
@@ -126,7 +126,7 @@ H1唯一成功路由为`GET /api/admin/v1/state`，禁止query（含空问号）
 
 `serve_connection(stream, permit, context)`持16槽之一直到socket生命周期结束；按H1.2→H1.3→路由→缓存取值→respond，不绕过校验fallback。H1仅GET state；query拒400，未实现路径404，已知路径方法不符405。合法HEAD错误响应仅头；响应头长度由固定模板和有界数字形成。
 
-`respond`先组装小header，再write_all header及Arc bytes（HEAD除外），全程用同一绝对写期限。任意partial write、IO错误、超时或整连接到期只关闭，不再拼错误响应；header成功不算body成功。任务任何退出释放stream和permit，跨await不持cache/Core锁。H1没有不可取消的请求级blocking任务；A2.2必须另行处理同步worker调用，不能直接往这个async函数塞阻塞锁/SQL。
+`respond`先组装小header，再以正进度写循环发送header及Arc bytes（HEAD除外），全程用同一绝对写期限；写前、每次进度后、header/body/flush切换及完成返回都显式检查。zero-write、IO错误、超时或整连接到期只关闭，不再拼错误响应；返回bool仅表示传输是否在期限内完整结束，不是操作成功收据。无法撤回已开始操作发送的字节，不宣称内核调用硬实时抢占。任务退出释放stream和permit，跨await不持cache/Core锁。H1没有请求级blocking任务；A2.2必须另行处理同步worker调用。
 
 论证：一个连接最多分发一次，第二请求不会执行；固定响应模板与bytes长度消除反射/截断后成功。有限并发加header/body/写入deadline限制慢客户端占用。丢响应不意味着业务回滚，这一点在未来写路由仍成立。
 
@@ -154,7 +154,7 @@ H1唯一成功路由为`GET /api/admin/v1/state`，禁止query（含空问号）
 
 至少4组各128 cases PBT：任意分片/唯一framing；随机Host/Origin/头名重复/路径变体的拒绝及零分发；缓存时刻/失败/迟到/读取轨迹不续期；完整白名单JSON编码与大小边界。固定测试补TE+CL、oversize head同包终止符、无CL、溢出CL、提前EOF、无效UTF-8、null Origin、同站不同端口、空query/控制字节、HEAD无body、第二请求不执行、慢读/慢写、满连接直接关闭、正常shutdown仍等待blocking、blocking panic及迟到丢弃。不能把强制abort当作实际回收测试。
 
-普通测试不得夹墙钟性能断言；新增独立release门禁测最坏合法A1 DTO编码≤2秒、满1MiB body解析≤1秒（固定分块模式），保留既有27项release与4个debug入口。另验证16连接/1publisher及32MiB响应的资源界限，不把IO调度等待当纯函数性能证明。
+普通测试不得夹墙钟性能断言；新增独立release门禁测固定最大关联目录的三种来源组合（最长转义文本、长数值与固定成员）编码≤2秒、满1MiB body解析≤1秒（固定分块模式），保留既有27项release与4个debug入口。32MiB证明另含逐字段宽度包络，覆盖最长枚举、负优先级、退休/固定/释放等可选结构；互斥字段最大值可保守叠加，但包络不作为合法快照、schema正例或性能输入。不得仅凭普通大目录就宣称穷尽最坏合法状态；也不把IO等待当纯函数性能证明。
 
 至少8类有效编译变异：漏重复Host/CL、非法长度当0、提前EOF当成功、忽略Origin、header溢出同包绕过、从完成时刻续TTL、超时提前移除active、失败/迟到仍发布、处理第二请求。明确实际分发计数/公开输出，不用编译失败或空测试当捕获。
 
@@ -166,4 +166,4 @@ H1唯一成功路由为`GET /api/admin/v1/state`，禁止query（含空问号）
 - [x] 非平凡函数的前置、分支/退出、callee、循环/资源与正确性论证已列。
 - [x] 与A1兼容：原wire、采集时刻、算法与持久状态不变；新增缓存仅展示。
 - [x] 独立§4.4复审通过，未关闭设计问题为零；[处置记录](../../../audits/sgm-6-three-page-panel/a2-1-decisions.md)保留原问题及修订。
-- [ ] 编码与动态验收；本稿不标为实现完成。
+- [x] 编码与动态验收完成；精确35入口、4组PBT、12变异、最终默认全量/性能及构建证据见[实现审核](../../../audits/sgm-6-three-page-panel/a2-1-audit.md)。未接CLI或现行服务，A2.2及页面/部署仍待后续。

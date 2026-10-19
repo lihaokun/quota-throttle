@@ -5,6 +5,7 @@ mod ledger;
 mod model_catalog;
 pub mod newapi;
 mod orchestrator;
+mod panel_http;
 mod quota;
 pub mod reconcile;
 pub mod source_policy;
