@@ -1,6 +1,6 @@
 # SGM6 B 三页管理界面细化设计
 
-2026-10-19，基线b3a5fe6，分支research/source-groups-token-management。A1/A2已验收；本稿覆盖三页浏览器界面、同一listener的静态资源及必要的安全界面配置，待设计独审和用户确认后编码。不接现行CLI/run，不部署，不修改GLM/火山策略、账本、NewAPI传输或DDL。
+2026-10-19，设计基线b3a5fe6，实施基线f206984，分支research/source-groups-token-management。A1/A2已验收；本稿覆盖三页浏览器界面、同一listener的静态资源及必要的安全界面配置，已在设计独审和用户确认后完成实施验收，见§13。不接现行CLI/run，不部署，不修改GLM/火山策略、账本、NewAPI传输或DDL。
 
 ## 1 范围和复用
 
@@ -10,7 +10,7 @@
 
 实现文件拟为src/panel_http/ui.rs与ui/中的index.html、panel.css、app.mjs、client.mjs、core.mjs、render.mjs、charts.mjs、contract.mjs。core承载纯状态/投影，client只做有界HTTP，app拥有一个生命周期和副作用，render/charts仅消费投影。contract.mjs从已有schema机械生成枚举/版本/容量常量，不再手抄第二份枚举；生成器不进入运行服务，不造通用schema解释器。JS只校验并白名单投影实际消费字段，完整wire另以原schema交叉验证。
 
-测试拟使用Node 22的内置test runner，dev-only fast-check 4.10.2及@playwright/test 1.64.1；实施时生成并提交精确package-lock，npm ci复现。生产资源不导入npm包，不需要Node运行或打包服务；Cargo依赖保持不变。版本依据为[fast-check发行记录](https://github.com/dubzzz/fast-check/releases/tag/v4.10.2)及[Playwright发布包元数据](https://registry.npmjs.org/@playwright/test/1.64.1)。本轮不安装依赖或浏览器。
+测试使用Node 22的内置test runner，dev-only fast-check 4.10.2及@playwright/test 1.64.1；实施纳入精确package-lock，npm ci复现。生产资源不导入npm包，不需要Node运行或打包服务；Cargo依赖保持不变。版本依据为[fast-check发行记录](https://github.com/dubzzz/fast-check/releases/tag/v4.10.2)及[Playwright发布包元数据](https://registry.npmjs.org/@playwright/test/1.64.1)。设计阶段未安装依赖或浏览器；确认后的实施验证见§13。
 
 ## 2 界面和动作边界
 
@@ -218,4 +218,12 @@ Rust HTTP组合保留原80/4清单全部断言，新增静态GET/HEAD、MIME/CSP
 - [x] 范围、现有接口和字段来源已核对。
 - [x] 私有状态、错误/取消/副作用、逐函数callee与有限循环已列。
 - [x] 独立§4.4审核0个未关闭设计阻断；UiConfig metaschema、7正例/23负例通过，见[设计审核](../../../audits/sgm-6-three-page-panel/b-design-audit.md)。
-- [ ] 用户确认本细化后才实现；本轮不改生产源码、运行配置或服务。
+- [x] 用户于2026-10-19确认f206984后开始实现；不改运行配置或正在服务的实例。
+
+实施及逐模块审核记录见[B实施审核](../../../audits/sgm-6-three-page-panel/b-implementation-audit.md)。设计退出不等于实施退出；最终回归、浏览器、性能和变异证据分别记录。
+
+## 13 实施退出
+
+2026-10-19，U1–U10 已完成，默认 Rust debug/release 各 744 passed、0 failed、35 ignored；Node 51 项及八组各 128 PBT、Chromium/Firefox 四项目 72 项交互、全部原/新增性能和 17 个有效变异通过。机械 schema/字段/枚举/清单、核心及旧断言冻结、格式/default clippy/build 和最终源码 SHA 核验通过。两位独审分组/交叉复核，最终 critical 0、unresolved 0，workflow 五维度通过，见[实现审核](../../../audits/sgm-6-three-page-panel/b-audit-report.md)。
+
+依赖与浏览器已仅为实施测试安装，生产仍无 Node/框架/CDN。上述是 B 内部验收，不代表 C 的真实 NewAPI 双协议/统计全链路或 SGM7 运行部署已完成；本地现网保持不变。

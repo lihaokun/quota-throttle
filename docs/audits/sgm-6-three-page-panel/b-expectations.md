@@ -1,6 +1,6 @@
 # SGM6 B 事前契约清单
 
-2026-10-19，基线b3a5fe6。先依据既定架构、三页计划和A1/A2已验收契约独立抽取；本轮尚无B实现，不从代码现状回填预期。独审者先只读这些契约提供了以下十节边界，主设计在[细化](../../design/source-groups-token-management/subplans/sgm-6-browser-panel-b.md)补固定参数。
+2026-10-19，事前提取基线b3a5fe6。以下清单先依据既定架构、三页计划和A1/A2已验收契约独立抽取，不从后来代码现状回填预期。独审者先只读这些契约提供十节边界，主设计在[细化](../../design/source-groups-token-management/subplans/sgm-6-browser-panel-b.md)补固定参数。用户确认f206984后进入实施，实际证据见[B实施审核](b-implementation-audit.md)。
 
 ## 1 契约源
 
@@ -44,4 +44,6 @@ H1/H2连接/截止/四槽及原usage单槽不放宽。单浏览器state/work两l
 
 ## 10 跨实现和退出
 
-字段/枚举生成、UiConfig schema、旧schema原样、Step与精确非空清单、核心冻结机械核对。Rust普通回归、Node基本/PBT、真实Chromium/Firefox及性能/变异分别记录；B的API mock不冒充C的真实worker/NewAPI双协议链路。实际可执行变异至少12，恢复重编/重载及独审五维度通过才实施退出。当前仅设计阶段，设计审核不算实现完成。
+字段/枚举生成、UiConfig schema、旧schema原样、Step与精确非空清单、核心冻结机械核对。Rust普通回归、Node基本/PBT、真实Chromium/Firefox及性能/变异分别记录；B的API mock不冒充C的真实worker/NewAPI双协议链路。实际可执行变异至少12，恢复重编/重载及独审五维度通过才实施退出；设计审核不算实现完成。
+
+Step 5 验证记录（不修改上述事前预期）：2026-10-19 全部门禁通过，默认 Rust debug/release 各 744/0/35，Node 51/0、8×128 PBT，浏览器 72/72，17 个有效变异与全部性能通过；253 文件最终 SHA 一致。独审 critical 0、unresolved 0，五维度通过，见[最终审核](b-audit-report.md)与[逐轮证据](b-implementation-audit.md)。C/SGM7 未完成，未操作现网。

@@ -84,6 +84,7 @@ async fn one_request(bytes: Vec<u8>, cache: Arc<PanelCache>) -> Vec<u8> {
         Arc::new(PanelOrigin::parse("http://localhost:13001").unwrap()),
         cache,
         business,
+        Arc::new(ui::UiBundle::new(UiOptions::default(), false).unwrap()),
         Instant::now(),
     )
     .await;

@@ -6,3 +6,6 @@ config.toml
 # 源材料压缩包，不入库
 files.zip
 files_extracted/
+/node_modules/
+/test-results/
+/playwright-report/

@@ -1,0 +1,17 @@
+{
+  "name": "quota-throttle-panel-tests",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22 <23" },
+  "scripts": {
+    "test:ui": "node --test --experimental-test-isolation=none tests/ui/*.test.mjs",
+    "test:browser": "node scripts/tests/ui-browser.mjs",
+    "check:ui": "node scripts/contract_audit/sgm6_b_check.mjs",
+    "test:ui-performance": "node scripts/tests/ui-performance.mjs",
+    "test:browser-performance": "node scripts/tests/ui-browser.mjs --config=playwright.performance.config.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.1",
+    "fast-check": "4.10.2"
+  }
+}

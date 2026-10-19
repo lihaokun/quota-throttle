@@ -57,6 +57,7 @@ fn response<T: Serialize>(status: &'static str, value: &T) -> Result<Response, A
             .map_err(|_| AdminError::extra(ExtraCode::ResponseTooLarge))?,
         age_ms: None,
         allow: None,
+        content_type: super::super::ContentType::Json,
     })
 }
 pub(super) fn encode(reply: AdminReply) -> Result<Response, AdminError> {

@@ -175,6 +175,7 @@ impl AdminFailure {
                     body: bytes.into(),
                     age_ms: None,
                     allow: None,
+                    content_type: super::ContentType::Json,
                 },
                 Err(_) => Response::error(HttpErrorCode::Internal),
             },

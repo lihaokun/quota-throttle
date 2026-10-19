@@ -16,8 +16,10 @@ mod admin;
 pub(crate) use admin::tests::support::Running as AdminTestServer;
 mod publication;
 mod request;
+mod ui;
 use publication::{wall_ms, ActivePublication, PanelCache, SnapshotReader, PUBLICATION_TTL};
 use request::{PanelOrigin, RequestError};
+pub(crate) use ui::UiOptions;
 
 const MAX_CONNECTIONS: usize = 16;
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(45);
@@ -62,12 +64,31 @@ pub(crate) enum StartupError {
     InvalidAddress,
     InvalidOrigin,
     BindFailed,
+    InvalidUiConfig,
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ContentType {
+    Json,
+    Html,
+    Css,
+    JavaScript,
+}
+impl ContentType {
+    fn header(self) -> &'static str {
+        match self {
+            Self::Json => "application/json; charset=utf-8",
+            Self::Html => "text/html; charset=utf-8",
+            Self::Css => "text/css; charset=utf-8",
+            Self::JavaScript => "text/javascript; charset=utf-8",
+        }
+    }
 }
 struct Response {
     status: &'static str,
     body: Arc<[u8]>,
     age_ms: Option<u64>,
     allow: Option<&'static str>,
+    content_type: ContentType,
 }
 impl Response {
     fn error(error: HttpErrorCode) -> Self {
@@ -81,6 +102,7 @@ impl Response {
             body: body.into(),
             age_ms: None,
             allow: (error == HttpErrorCode::MethodNotAllowed).then_some("GET"),
+            content_type: ContentType::Json,
         }
     }
 }
@@ -125,14 +147,23 @@ impl PanelServer {
         worker: Arc<ReconcileWorker>,
         shutdown: watch::Receiver<bool>,
     ) -> Result<(), HttpErrorCode> {
+        self.serve_ui(worker, UiOptions::default(), shutdown).await
+    }
+    pub(crate) async fn serve_ui(
+        self,
+        worker: Arc<ReconcileWorker>,
+        options: UiOptions,
+        shutdown: watch::Receiver<bool>,
+    ) -> Result<(), HttpErrorCode> {
         let publisher_worker = worker.clone();
-        self.serve_with_worker(
+        self.serve_with_ui(
             Arc::new(move || {
                 publisher_worker
                     .panel_snapshot()
                     .map_err(|_| publication::PublishError)
             }),
             worker,
+            options,
             shutdown,
         )
         .await
@@ -141,8 +172,19 @@ impl PanelServer {
         self,
         reader: SnapshotReader,
         worker: Arc<ReconcileWorker>,
+        shutdown: watch::Receiver<bool>,
+    ) -> Result<(), HttpErrorCode> {
+        self.serve_with_ui(reader, worker, UiOptions::default(), shutdown)
+            .await
+    }
+    async fn serve_with_ui(
+        self,
+        reader: SnapshotReader,
+        worker: Arc<ReconcileWorker>,
+        options: UiOptions,
         mut shutdown: watch::Receiver<bool>,
     ) -> Result<(), HttpErrorCode> {
+        let ui = Arc::new(ui::UiBundle::new(options, worker.is_dry_run())?);
         // Step H1.7: 唯一supervisor保留每个blocking句柄，timeout不提前腾出active。
         let mut active: Option<ActivePublication> = None;
         let mut clients = JoinSet::new();
@@ -200,8 +242,9 @@ impl PanelServer {
                             if let Ok(permit) = self.connections.clone().try_acquire_owned() {
                                 let (origin, cache) = (self.origin.clone(), self.cache.clone());
                                 let business_client = business_client.clone();
+                                let ui = ui.clone();
                                 clients.spawn(async move {
-                                    let _ = timeout_at(accepted_at + CONNECTION_TIMEOUT, serve_connection(stream, permit, origin, cache, business_client, accepted_at)).await;
+                                    let _ = timeout_at(accepted_at + CONNECTION_TIMEOUT, serve_connection(stream, permit, origin, cache, business_client, ui, accepted_at)).await;
                                 });
                             }
                         }
@@ -245,6 +288,7 @@ async fn serve_connection(
     origin: Arc<PanelOrigin>,
     cache: Arc<PanelCache>,
     business: admin::Client,
+    ui: Arc<ui::UiBundle>,
     accepted_at: Instant,
 ) {
     // Step H1.6: 每连接仅首条请求，错误不反射输入，发送失败不追加第二响应。
@@ -283,7 +327,9 @@ async fn serve_connection(
                     if Instant::now() >= connection_end {
                         return;
                     }
-                    if head.path != STATE_PATH {
+                    if let Some(response) = ui.response(&head) {
+                        response
+                    } else if head.path != STATE_PATH {
                         business.call(&head, body, connection_end).await
                     } else if head.query.is_some() {
                         Response::error(HttpErrorCode::BadRequest)
@@ -296,6 +342,7 @@ async fn serve_connection(
                                 body,
                                 age_ms: Some(age_ms),
                                 allow: None,
+                                content_type: ContentType::Json,
                             },
                             Err(code) => Response::error(code),
                         }
@@ -316,7 +363,10 @@ async fn respond<W: AsyncWrite + Unpin>(
     if Instant::now() >= deadline {
         return false;
     }
-    let mut header = format!("HTTP/1.1 {}\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nCross-Origin-Resource-Policy: same-origin\r\nReferrer-Policy: no-referrer\r\nX-Frame-Options: DENY\r\n", response.status, response.body.len());
+    let mut header = format!("HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nCross-Origin-Resource-Policy: same-origin\r\nReferrer-Policy: no-referrer\r\nX-Frame-Options: DENY\r\n", response.status, response.content_type.header(), response.body.len());
+    if response.content_type == ContentType::Html {
+        header.push_str(ui::CSP_HEADER);
+    }
     if let Some(allow) = response.allow {
         header.push_str(&format!("Allow: {allow}\r\n"));
     }

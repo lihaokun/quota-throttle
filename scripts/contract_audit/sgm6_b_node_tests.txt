@@ -1,0 +1,51 @@
+u5 persistent actions save IDs only and freeze document-local payload before sending
+u5 corrupted/unavailable/full storage and missing UUID forbid new persistent actions
+u5 first receipt binds restored ID and create-token learns token target not input group
+u5 same-second phases and retry execution are accepted without invented phase ordering
+u5 polling is bounded, round-robin, pauses at 60 seconds and dismiss never cancels backend
+u5 retry with a lost response polls the original ID despite the old failed receipt
+u5 application retry and resubmit send the original ID and unchanged body
+u6 source/member/pin bodies use separate frozen revision categories
+u6 source creation uses explicit discovery settings and excludes unrelated privileged fields
+u6 model JSON arrays preserve long/newline labels and membership planning does not Ensure
+u6 volcano policy is runtime-version guarded without blocking config-only pause on usage refresh
+u7 token creation uses group revision without owner override; reveal uses local ID revision
+pbt5 operation storage/reload/phase sequences keep IDs and immutable payload bindings
+u2 route builder permits only fixed same-origin routes and canonical path IDs
+u2 every route status matches the original HTTP response matrix including retry 200
+u2 fetch policy is fixed and response fields are projected without raw private fields
+u2 fixed error families never echo arbitrary backend bodies
+u2 malformed UTF8 and response byte overflow reject whole response and cancel reader
+u2 deadline and generation checked after fetch and body completion
+u2 deadline after serialization forbids sending and rejected headers cancel the unused body
+u2 abort does not orphan fetch or let replacement own lane before settlement
+u2 JSON write method/headers and accepted status retain original operation phase
+u2 field consumption declarations match original schema fields
+u2 canonical ids, distinct model domains and safe arithmetic
+u2 projection strips unknown fields and rejects missing or ill-typed observations
+u4 refresh failure at age 4s expires old publication and same publication cannot revive
+u4 group assessment downgrades when relevant 29.5s sample ages past 30s
+u4 reset passage only expires observations, never resets usage or synthesizes group policy
+u4 a causally new publication after clock rollback is accepted and server stale samples stay stale
+u4 never-observed and absent source samples remain unknown, not invented stale observations
+u3 invalidation retains owner until settle; old finally never releases new owner; hidden writes keep receipt
+u7 native and local pages retain exact owner, cursor and large IDs
+pbt1 age bound is header + full RTT + elapsed and only degrades
+pbt2 lane generation traces conserve actual ownership and reject stale receipts
+pbt4 catalog identity and typed revisions do not coerce strings or overflow IDs
+u7 missing native pages never remove local historical identities or turn pending into Any
+pbt6 owner-page omissions preserve identity and only exact native tuple matches
+u3 single pump start/hide/show/offline/destroy are idempotent
+pbt3 lifecycle traces never own more than one timer and never catch up hidden work
+u3 queue-full cooldown retains only latest desired read for at least five seconds
+u8 same volcano period ID crossing display-age boundary blocks start and late acceptance
+u3 explicit usage shares the latest desired slot and takes precedence over operation polling
+u10 browser gate rejects empty, skipped, missing-project and viewport-drift runs
+u9 clipboard rejection uses the same short-lived key and no network retry
+u9 hidden, expired, changed identity and late clipboard completion cannot restore secret
+pbt8 malicious text and secret lifecycle never publish after clearing or expiry
+u8 all consumed usage fields match schemas and nullable model identity stays distinct
+u8 fixed offset ranges, day drilling, empty futures and volcano reset boundaries
+u8 uninitialized, empty and zero-token consumption retain distinct branches and zero buckets
+u8 query mismatch, overflow and model marginal drift reject the entire report
+pbt7 model/bucket/native-token conservation uses independent integer totals and stable colors

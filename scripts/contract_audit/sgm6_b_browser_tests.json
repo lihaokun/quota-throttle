@@ -1,0 +1,29 @@
+{
+  "projects": [
+    {"name":"chromium-desktop","browserName":"chromium","viewport":{"width":1280,"height":900}},
+    {"name":"chromium-mobile","browserName":"chromium","viewport":{"width":390,"height":844}},
+    {"name":"firefox-desktop","browserName":"firefox","viewport":{"width":1280,"height":900}},
+    {"name":"firefox-mobile","browserName":"firefox","viewport":{"width":390,"height":844}}
+  ],
+  "normal": [
+    "real Rust listener serves HTML modules CSP and fresh empty catalog without API mocks",
+    "API fixture navigation, safe text and shared protocol key controls",
+    "API fixture source pause is single explicit write with frozen revision and stable operation ID",
+    "API fixture source form is cleared on pagehide and does not enter storage",
+    "API fixture refresh marks frozen source draft conflict without replacing user input",
+    "API fixture native page failure retains local identity and operation reload queries same ID",
+    "API fixture usage renders distinct unknown/string models, exact totals and matching legend colors",
+    "API fixture slow usage survives a new five-second state publication",
+    "API fixture clipboard denial reuses one reveal and changing identity clears the manual key",
+    "API fixture late clipboard completion cannot recreate key after hiding",
+    "missing browser capability shows safe reload screen without calling old or new API",
+    "API fixture rapid model filter changes never display the late old report under the new title",
+    "API fixture unchanged volcano period crossing display age labels the old chart and blocks new query",
+    "API fixture fulfilled clipboard promise clears the slot only after confirmed success",
+    "initialization exception cleans partial listeners and leaves explicit readonly reload",
+    "API fixture source filters header refresh and collapsible operation progress remain usable",
+    "API fixture retired source exposes complete readonly models without a write action",
+    "real browser cross-origin preflight and simple POST cannot mutate the isolated Rust catalog"
+  ],
+  "performance": ["serial full chart and 100-row DOM budgets including expanded source detail reuse"]
+}
