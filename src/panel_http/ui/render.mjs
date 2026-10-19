@@ -44,6 +44,25 @@ export function createRenderer(document, handlers) {
     const st = obs?.state;
     return st === 'observed' ? pill('观测中', 'ok') : st === 'stale' ? pill('观察过期', 'warn') : st === 'unavailable' ? pill('查询失败', 'bad') : pill('未观测', 'idle');
   };
+  // 右上角 ⋯ 分类操作菜单（浮层）。开合用 classList，不用内联 style（守 CSP）。
+  const collapse = pop => { for (const m of document.querySelectorAll('.menu.open')) if (m !== pop) { m.classList.remove('open'); m.querySelector('.menu-btn')?.setAttribute('aria-expanded', 'false'); } };
+  const menu = groups => {
+    const wrap = text('div', null, 'menu');
+    const trigger = text('button', '⋯', 'menu-btn'); trigger.type = 'button';
+    trigger.setAttribute('aria-haspopup', 'true'); trigger.setAttribute('aria-expanded', 'false'); trigger.setAttribute('aria-label', '操作菜单');
+    const pop = text('div', null, 'menu-pop');
+    for (const g of groups) {
+      const items = g.items.filter(Boolean);
+      if (!items.length) continue;
+      pop.append(text('div', g.label, 'menu-group'));
+      for (const item of items) { item.classList.add('menu-item'); item.addEventListener('click', () => { wrap.classList.remove('open'); trigger.setAttribute('aria-expanded', 'false'); }); pop.append(item); }
+    }
+    trigger.addEventListener('click', event => { event.stopPropagation(); collapse(wrap); trigger.setAttribute('aria-expanded', String(wrap.classList.toggle('open'))); });
+    wrap.append(trigger, pop);
+    return wrap;
+  };
+  document.addEventListener('click', event => collapse(event.target.closest?.('.menu') ?? null));
+  document.addEventListener('keydown', event => { if (event.key === 'Escape') collapse(null); });
   function table(headers, rows) {
     const wrapper = text('div', null, 'table-scroll'), table = text('table'), head = text('thead'), line = text('tr');
     for (const title of headers) { const th = text('th', title); th.scope = 'col'; line.append(th); }
@@ -56,7 +75,12 @@ export function createRenderer(document, handlers) {
     return toolbar(button('上一页', () => change(Math.max(0, current - 1)), current === 0, `${key}:previous`), text('span', `${current + 1} / ${total} · ${count} 项`), button('下一页', () => change(current + 1), current + 1 >= total, `${key}:next`));
   }
   function sources(vm) {
-    const root = byId('sources-content'), previousDetail = byId('source-usage-content'); root.replaceChildren();
+    const root = byId('sources-content');
+    // 仅当有意义的数据变化才重建列表（排除逐帧跳动的"样本年龄"），避免每 5 秒把整列表拆了重搭、进度条重闪。
+    const stamp = JSON.stringify([vm.snapshot?.catalog, [...(vm.observation.sourceViews ?? new Map())].map(([k, o]) => [k, o?.five_hour?.percentage ?? null, o?.weekly?.percentage ?? null, o?.state ?? null, o?.level ?? null, o?.five_hour?.current ?? null, o?.weekly?.current ?? null, o?.five_hour?.reset_at_ms ?? null, o?.weekly?.reset_at_ms ?? null]), vm.observation.fresh, vm.sourceFilter, vm.sourcesPage, vm.sourceUsageId, vm.readOnly, vm.workBusy]);
+    if (root.dataset.srcStamp === stamp) return;
+    root.dataset.srcStamp = stamp;
+    const previousDetail = byId('source-usage-content'); root.replaceChildren();
     root.append(toolbar(action('createSource', '添加来源', null, vm.readOnly)));
     const all = (vm.snapshot?.catalog.sources ?? []).filter(p => (!vm.sourceFilter.type || p.source.type === vm.sourceFilter.type) && p.source.name.includes(vm.sourceFilter.name)), start = Math.min(vm.sourcesPage, Math.max(0, Math.ceil(all.length / 25) - 1)) * 25;
     root.append(pager(vm.sourcesPage, all.length, 25, handlers.sourcePage, 'sources'));
@@ -67,8 +91,14 @@ export function createRenderer(document, handlers) {
       head.append(text('h2', `${s.name} · ${labels[s.type]} · #${s.source_id}`), sourceStatus(p, s, observation));
       card.append(head);
       if (s.note) card.append(text('p', s.note, 'muted'));
-      const memberships = (vm.snapshot?.catalog.memberships ?? []).filter(m => m.membership.source_id === s.source_id);
-      const names = memberships.map(m => vm.snapshot.catalog.groups.find(g => g.group.group_id === m.membership.group_id)?.group.name ?? m.membership.group_id);
+      const names = (vm.snapshot?.catalog.memberships ?? []).filter(m => m.membership.source_id === s.source_id).map(m => vm.snapshot.catalog.groups.find(g => g.group.group_id === m.membership.group_id)?.group.name ?? m.membership.group_id);
+      const groupLabel = [...new Set(names)].join('、') || '尚未加入组';
+      const intent = archived ? '归档中或已归档' : s.manual_paused ? '暂停意图' : '启用意图';
+      const act = { usage: [], config: [], run: [], archive: [] };
+      act.config.push(action('models', archived ? '只读查看历史模型' : '查看或编辑模型', s.source_id, vm.workBusy || !vm.observation.fresh), action('discoverModels', '重新发现模型', s.source_id, vm.readOnly || archived));
+      act.run.push(action('setSourcePaused', s.manual_paused ? '恢复来源' : '暂停来源', s.source_id, vm.readOnly || archived));
+      act.archive.push(action('retireSource', '归档来源', s.source_id, vm.readOnly || archived));
+      const more = text('details', null, 'more'); more.append(text('summary', '详情'));
       if (s.type === 'glm') {
         const win = key => observation?.[key];
         const sub = key => { const w = win(key); return w ? `${w.reset_at_ms === null ? '' : `重置 ${formatTime(w.reset_at_ms, 'ms')}`}${w.current ? '' : (w.reset_at_ms === null ? '' : ' · ') + '旧观察'}` : ''; };
@@ -76,27 +106,30 @@ export function createRenderer(document, handlers) {
         grid.append(gauge('5 小时', win('five_hour')?.percentage ?? null, sub('five_hour')), gauge('每周', win('weekly')?.percentage ?? null, sub('weekly')));
         card.append(grid);
         card.append(text('p', `套餐 ${observation?.level ?? '未知'} · ${labels[observation?.state ?? 'unknown']} · 样本年龄 ${Number.isFinite(observation?.age_ms) ? `${Math.ceil(observation.age_ms)} ms` : '未知'}`, 'meta'));
+        more.append(text('p', `配置版本 ${s.config_revision} · ${p.model_count} 模型 · 所属组：${groupLabel} · 人工配置：${intent}（不等于所有远端成员已同步）`, 'meta'));
+        card.append(more);
       } else {
         const v = p.volcano, r = v.runtime;
         if (r) {
+          act.usage.push(button(vm.sourceUsageId === s.source_id ? '收起分模型用量' : '展开分模型用量', () => handlers.sourceUsage(vm.sourceUsageId === s.source_id ? null : s.source_id), false, `sourceUsage:${s.source_id}`));
+          act.config.push(action('setVolcanoPolicy', '设置每日策略', s.source_id, vm.readOnly || archived));
+          act.run.push(action('clearError', '撤销错误耗尽判定', s.source_id, vm.readOnly || archived));
           let total; try { total = safeAdd(r.used_input, r.used_output); } catch { total = '总数超出安全范围'; }
           const limit = v.policy.daily_token_limit;
-          if (limit && typeof total === 'number') {
-            const grid = text('div', null, 'gauge-grid');
-            grid.append(gauge('每日用量', Math.min(100, Math.round(total / limit * 100)), `${kfmt(total)} / ${kfmt(limit)} Token${vm.observation.fresh ? '' : ' · 已过期'}`));
-            card.append(grid);
-          }
-          card.append(text('p', `每日 Token 上界：${limit ?? '未设置'} · 失败阈值 ${v.policy.failure_threshold} · 重置分钟 ${v.policy.reset_minute} / UTC 偏移 ${v.policy.utc_offset_minutes} 分钟`, 'meta'));
-          card.append(text('p', `已保存累计输入 ${r.used_input} / 输出 ${r.used_output} / 总计 ${total} · 连续异常 ${r.consecutive_failures}`, 'meta'));
-          card.append(text('p', r.coverage_end === null ? '本周期尚无覆盖记录；累计数不能解释为已观测零用量或完整统计。' : `周期起点 ${formatTime(r.period_start)} · 已记录覆盖末端 ${formatTime(r.coverage_end)}；不保证供应商日志完整。`, r.coverage_end === null ? 'warning' : 'meta'));
-          card.append(text('p', `已保存运行状态：${s.manual_paused ? '停用' : r.error_exhausted || r.limit_exhausted ? '耗尽' : '可用'} · 错误判定 ${r.error_exhausted ? '是' : '否'} · 上界判定 ${r.limit_exhausted ? '是' : '否'}${vm.observation.fresh ? '' : '（已过期）'}`, 'meta'));
-          card.append(text('p', `${observation?.resetPending ? '等待服务端进入新周期 · ' : ''}下次重置 ${formatTime(r.next_reset_at)}`, 'meta'));
+          if (limit && typeof total === 'number') { const grid = text('div', null, 'gauge-grid'); grid.append(gauge('每日用量', Math.min(100, Math.round(total / limit * 100)), `${kfmt(total)} / ${kfmt(limit)} Token${vm.observation.fresh ? '' : ' · 已过期'}`)); card.append(grid); }
+          card.append(text('p', `${p.model_count} 模型 · 所属组：${groupLabel} · 连续异常 ${r.consecutive_failures} · 下次重置 ${formatTime(r.next_reset_at)}${observation?.resetPending ? '（等待新周期）' : ''}`, 'meta'));
+          if (r.coverage_end === null) card.append(text('p', '本周期尚无覆盖记录；累计数不能解释为已观测零用量或完整统计。', 'warning'));
+          more.append(
+            text('p', `每日 Token 上界：${limit ?? '未设置'} · 失败阈值 ${v.policy.failure_threshold} · 重置分钟 ${v.policy.reset_minute} / UTC 偏移 ${v.policy.utc_offset_minutes} 分钟`, 'meta'),
+            text('p', `已保存累计输入 ${r.used_input} / 输出 ${r.used_output} / 总计 ${total}`, 'meta'),
+            text('p', r.coverage_end === null ? '尚无覆盖记录。' : `周期起点 ${formatTime(r.period_start)} · 已记录覆盖末端 ${formatTime(r.coverage_end)}；不保证供应商日志完整。`, 'meta'),
+            text('p', `错误判定 ${r.error_exhausted ? '是' : '否'} · 上界判定 ${r.limit_exhausted ? '是' : '否'}${vm.observation.fresh ? '' : '（已过期）'} · 配置版本 ${s.config_revision} · 人工配置：${intent}`, 'meta'),
+          );
+          card.append(more);
         } else card.append(text('p', '周期尚未初始化，不能视为零用量。', 'warning'));
-        card.append(toolbar(action('setVolcanoPolicy', '设置每日策略', s.source_id, vm.readOnly || archived), action('clearError', '撤销错误耗尽判定', s.source_id, vm.readOnly || archived || r === null), button(vm.sourceUsageId === s.source_id ? '收起分模型用量' : '展开分模型用量', () => handlers.sourceUsage(vm.sourceUsageId === s.source_id ? null : s.source_id), false, `sourceUsage:${s.source_id}`)));
         if (vm.sourceUsageId === s.source_id) { const detail = previousDetail?.dataset.sourceId === s.source_id ? previousDetail : text('div'); detail.id = 'source-usage-content'; detail.dataset.sourceId = s.source_id; card.append(detail); }
       }
-      card.append(text('p', `配置版本 ${s.config_revision} · ${p.model_count} 模型 · 所属组：${[...new Set(names)].join('、') || '尚未加入组'} · 人工配置：${archived ? '归档中或已归档' : s.manual_paused ? '暂停意图' : '启用意图'}（不等于所有远端成员已同步）`, 'meta'));
-      card.append(toolbar(action('setSourcePaused', s.manual_paused ? '恢复来源' : '暂停来源', s.source_id, vm.readOnly || archived), action('models', archived ? '只读查看历史模型' : '查看或编辑模型', s.source_id, vm.workBusy || !vm.observation.fresh), action('discoverModels', '重新发现模型', s.source_id, vm.readOnly || archived), action('retireSource', '归档来源', s.source_id, vm.readOnly || archived)));
+      head.append(menu([{ label: '用量', items: act.usage }, { label: '配置', items: act.config }, { label: '运行', items: act.run }, { label: '归档', items: act.archive }]));
       root.append(card);
     }
     if (!all.length) root.append(text('p', vm.snapshot ? (vm.snapshot.catalog.sources.length ? '没有匹配此类型/名称的来源。' : '还没有来源，请添加。') : '等待目录快照。', 'muted'));
@@ -106,42 +139,55 @@ export function createRenderer(document, handlers) {
     root.append(toolbar(action('createGroup', '创建组', null, vm.readOnly), action('planMember', '把来源加入组', vm.selectedGroup, vm.readOnly || !vm.selectedGroup)));
     const all = vm.snapshot?.catalog.groups ?? [], start = Math.min(vm.groupsPage, Math.max(0, Math.ceil(all.length / 50) - 1)) * 50;
     root.append(pager(vm.groupsPage, all.length, 50, handlers.groupPage, 'groups'));
-    root.append(table(['组', '类型与配置', '原策略观察', '操作'], all.slice(start, start + 50).map(p => {
-      const g = p.group, a = vm.observation.groupViews.get(g.group_id);
-      const policy = g.type === 'glm' ? `首选 ${p.selected_member_id ?? '无'} / 固定 ${p.pinned_member_id ?? '无'} · ${a?.current ? '当前观察' : '评估已过期或未知'}${a?.current ? ` · 临期成员 ${a.imminent_members.join('、') || '无'}${a.pin_release ? ` · 原固定释放 ${a.pin_release.membership_id} (${a.pin_release.pct}/${a.pin_release.limit})` : ''}` : ''}` : `首选成员 ${p.selected_member_id ?? '无'}`;
-      return [button(`${g.name} (#${g.group_id})`, () => handlers.selectGroup(g.group_id), false, `group:${g.group_id}`), `${labels[g.type]} · ${g.newapi_group} · 版本 ${g.revision} · ${g.ready ? '采样时已配置' : '待核验'}`, policy,
-        toolbar(action('checkGroup', '核验配置', g.group_id, vm.readOnly), action('registerGroup', '注册并核验', g.group_id, vm.readOnly), action('createToken', '生成访问 Key', g.group_id, vm.readOnly), action('groupReferences', '本地引用', g.group_id, vm.workBusy))];
-    })));
+    for (const p of all.slice(start, start + 50)) {
+      const g = p.group, a = vm.observation.groupViews.get(g.group_id), selected = vm.selectedGroup === g.group_id;
+      const card = text('article', null, selected ? 'card card-sel' : 'card');
+      const head = text('div', null, 'card-head');
+      const title = button(`${g.name} · #${g.group_id}`, () => handlers.selectGroup(g.group_id), false, `group:${g.group_id}`); title.classList.add('title-btn');
+      head.append(title, pill(g.ready ? '已配置' : '待核验', g.ready ? 'ok' : 'warn'), menu([{ label: '核验', items: [action('checkGroup', '核验配置', g.group_id, vm.readOnly), action('registerGroup', '注册并核验', g.group_id, vm.readOnly)] }, { label: '访问 Key', items: [action('createToken', '生成访问 Key', g.group_id, vm.readOnly)] }, { label: '引用', items: [action('groupReferences', '本地引用', g.group_id, vm.workBusy)] }]));
+      card.append(head);
+      const policy = g.type === 'glm' ? `首选 ${p.selected_member_id ?? '无'} · 固定 ${p.pinned_member_id ?? '无'}${a?.current ? ` · 临期成员 ${a.imminent_members.join('、') || '无'}${a.pin_release ? ` · 原固定释放 ${a.pin_release.membership_id} (${a.pin_release.pct}/${a.pin_release.limit})` : ''}` : ' · 评估已过期或未知'}` : `首选成员 ${p.selected_member_id ?? '无'}`;
+      card.append(text('p', `${labels[g.type]} · ${g.newapi_group} · 版本 ${g.revision} · ${g.ready ? '采样时已配置' : '待核验'}`, 'meta'), text('p', policy, 'meta'));
+      root.append(card);
+    }
     if (vm.selectedGroup) {
       const members = (vm.snapshot?.catalog.memberships ?? []).filter(p => p.membership.group_id === vm.selectedGroup);
+      const currentGroup = all.find(p => p.group.group_id === vm.selectedGroup);
       root.append(text('h2', `组 #${vm.selectedGroup} 的成员`));
       root.append(pager(vm.membersPage, members.length, 50, handlers.memberPage, 'members'));
-      const currentGroup = all.find(p => p.group.group_id === vm.selectedGroup);
       const memberStart = Math.min(vm.membersPage, Math.max(0, Math.ceil(members.length / 50) - 1)) * 50;
-      root.append(table(['成员 / 来源', '同步观察', '操作'], members.slice(memberStart, memberStart + 50).map(p => {
+      for (const p of members.slice(memberStart, memberStart + 50)) {
         const m = p.membership, retired = m.retired_at !== null || p.retire_requested;
         const source = vm.snapshot.catalog.sources.find(s => s.source.source_id === m.source_id)?.source;
-        const actions = [action('ensureMember', '显式启用 / Ensure', m.membership_id, vm.readOnly || retired), action('retireMember', '移除成员', m.membership_id, vm.readOnly || retired)];
-        if (currentGroup?.group.type === 'glm') actions.push(action('setGroupPin', '固定该成员', m.membership_id, vm.readOnly || retired));
-        return [`#${m.membership_id} · ${source?.name ?? m.source_id} · channel ${m.channel_id ?? '未创建'}`, `生命周期 ${m.lifecycle} · 期望优先级 ${m.desired_priority} / 观察 ${m.observed_priority ?? '未知'} · 观察状态 ${m.observed_status ?? '未知'} · ${p.dirty ? '待同步' : '已记录'} · 错误 ${p.error_code ?? '无'}${vm.observation.fresh ? '' : '（旧快照）'}`, toolbar(...actions)];
-      })));
-      if (currentGroup?.group.type === 'glm') root.append(action('unpin', '取消固定', vm.selectedGroup, vm.readOnly));
+        const card = text('article', null, 'card compact');
+        const head = text('div', null, 'card-head');
+        const acts = [action('ensureMember', '显式启用 / Ensure', m.membership_id, vm.readOnly || retired), action('retireMember', '移除成员', m.membership_id, vm.readOnly || retired)];
+        if (currentGroup?.group.type === 'glm') acts.push(action('setGroupPin', '固定该成员', m.membership_id, vm.readOnly || retired));
+        head.append(text('h2', `#${m.membership_id} · ${source?.name ?? m.source_id}`), pill(retired ? '已退休' : p.dirty ? '待同步' : '已记录', retired ? 'idle' : p.dirty ? 'warn' : 'ok'), menu([{ label: '成员操作', items: acts }]));
+        card.append(head, text('p', `channel ${m.channel_id ?? '未创建'} · 生命周期 ${m.lifecycle} · 期望优先级 ${m.desired_priority} / 观察 ${m.observed_priority ?? '未知'} · 观察状态 ${m.observed_status ?? '未知'} · 错误 ${p.error_code ?? '无'}${vm.observation.fresh ? '' : '（旧快照）'}`, 'meta'));
+        root.append(card);
+      }
+      if (currentGroup?.group.type === 'glm') root.append(toolbar(action('unpin', '取消固定', vm.selectedGroup, vm.readOnly)));
     }
     root.append(text('h2', '访问 Key · 本地身份'));
     root.append(text('p', '每个访问 Key 同时支持 OpenAI 兼容格式与 Claude Messages 格式。生成固定使用发行人账号；历史管理员身份不迁移。', 'muted'));
     if (vm.config?.public_api_base_url) {
       const base = vm.config.public_api_base_url;
-      root.append(text('p', `OpenAI 兼容 base：${base}/v1`), text('p', `Claude ANTHROPIC_BASE_URL：${base}`));
-      root.append(toolbar(button('复制 OpenAI 兼容地址', () => handlers.copyAddress(`${base}/v1`)), button('复制 Claude 地址', () => handlers.copyAddress(base))));
+      const addr = text('div', null, 'card compact');
+      addr.append(text('p', `OpenAI 兼容 base：${base}/v1`, 'meta'), text('p', `Claude ANTHROPIC_BASE_URL：${base}`, 'meta'), toolbar(button('复制 OpenAI 兼容地址', () => handlers.copyAddress(`${base}/v1`)), button('复制 Claude 地址', () => handlers.copyAddress(base))));
+      root.append(addr);
     } else root.append(text('p', '调用地址未配置；管理面板地址不是调用地址。', 'warning'));
     const page = vm.identities.data;
     root.append(toolbar(button('刷新本地身份', () => handlers.identities(vm.identities.after), vm.workBusy, 'identities:refresh'), button('第一页', () => handlers.identities(null), vm.workBusy, 'identities:first'), button('下一页', () => handlers.identities(page.next_after), vm.workBusy || !page?.next_after, 'identities:next'), action('registerToken', '登记已有 Key', null, vm.readOnly)));
     if (vm.identities.error) root.append(text('p', vm.identities.error, 'warning'));
-    if (page) root.append(table(['本地身份 / 原生 ID', '组与状态', '操作'], page.items.map(i => {
-      const native = matchNative(i, [...vm.nativePages.values()].map(p => p.data));
-      return [`${i.display_name} · local #${i.token_id} / native ${i.native_token_id ?? '待创建'} · ${i.owner_scope} / owner ${i.owner_user_id}`, `${i.explicit_group} · ${i.deleted_at !== null ? '历史已删除身份（统计保留）' : native ? `原生页观察：${native.status}` : '该原生页未加载或绑定需核验'} · 本地版本 ${i.revision}`,
-        toolbar(action('reveal', '复制访问 Key', i.token_id, vm.readOnly || i.deleted_at !== null || i.native_token_id === null), action('enableToken', '启用', i.token_id, vm.readOnly || i.deleted_at !== null), action('disableToken', '停用', i.token_id, vm.readOnly || i.deleted_at !== null), action('deleteToken', '删除', i.token_id, vm.readOnly || i.deleted_at !== null), button('查看用量', () => handlers.identityUsage(i), i.native_token_id === null, `usage:${i.token_id}`))];
-    })));
+    if (page) for (const i of page.items) {
+      const native = matchNative(i, [...vm.nativePages.values()].map(p => p.data)), deleted = i.deleted_at !== null;
+      const card = text('article', null, 'card compact');
+      const head = text('div', null, 'card-head');
+      head.append(text('h2', i.display_name), pill(deleted ? '历史已删除' : native ? `原生 ${native.status}` : '需核验', deleted ? 'idle' : native ? 'ok' : 'warn'), menu([{ label: '访问', items: [action('reveal', '复制访问 Key', i.token_id, vm.readOnly || deleted || i.native_token_id === null), button('查看用量', () => handlers.identityUsage(i), i.native_token_id === null, `usage:${i.token_id}`)] }, { label: '状态', items: [action('enableToken', '启用', i.token_id, vm.readOnly || deleted), action('disableToken', '停用', i.token_id, vm.readOnly || deleted)] }, { label: '危险', items: [action('deleteToken', '删除', i.token_id, vm.readOnly || deleted)] }]));
+      card.append(head, text('p', `local #${i.token_id} / native ${i.native_token_id ?? '待创建'} · ${i.explicit_group} · ${i.owner_scope} / owner ${i.owner_user_id} · 本地版本 ${i.revision}`, 'meta'));
+      root.append(card);
+    }
     for (const scope of ['issuer', 'legacy_admin']) {
       const p = vm.nativePages.get(scope), data = p?.data;
       root.append(text('h2', `原生 Key 页 · ${scope}`));

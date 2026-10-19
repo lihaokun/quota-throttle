@@ -59,8 +59,28 @@ code { font-family: ui-monospace, SFMono-Regular, monospace; color: var(--accent
 .card, #editor, #secret { border: 1px solid var(--line); border-radius: .85rem; padding: 1.1rem 1.2rem; margin: .9rem 0; background: var(--card); box-shadow: 0 1px 3px rgba(0, 0, 0, .35); }
 .card.stale { opacity: .68; }
 .card h2 { color: var(--txt); text-transform: none; letter-spacing: 0; font-size: 1.05rem; margin: 0 0 .4rem; }
-.card-head { display: flex; align-items: center; justify-content: space-between; gap: .6rem; flex-wrap: wrap; margin-bottom: .3rem; }
-.card-head h2 { margin: 0; }
+.card-head { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; margin-bottom: .3rem; }
+.card-head h2 { margin: 0; margin-right: auto; }
+
+/* 右上角 ⋯ 分类操作菜单 */
+.menu { position: relative; }
+.menu-btn { padding: 0 .5rem; background: transparent; border: 1px solid transparent; color: var(--dim); font-size: 1.3rem; line-height: 1.4; border-radius: .4rem; }
+.menu-btn:hover:not(:disabled) { color: var(--txt); border-color: var(--line); }
+.menu.open .menu-btn { color: var(--txt); border-color: var(--line); background: var(--field); }
+.menu-pop { position: absolute; right: 0; top: calc(100% + .35rem); z-index: 30; min-width: 230px; background: var(--card); border: 1px solid var(--line); border-radius: .6rem; box-shadow: 0 12px 34px rgba(0, 0, 0, .6); padding: .35rem; display: none; }
+.menu.open .menu-pop { display: block; }
+.menu-group { color: var(--dim); font-size: .7rem; text-transform: uppercase; letter-spacing: .07em; padding: .55rem .55rem .2rem; }
+.menu-group:first-child { padding-top: .2rem; }
+.menu-item { display: block; width: 100%; text-align: left; white-space: nowrap; background: transparent; border: 1px solid transparent; border-radius: .4rem; padding: .45rem .55rem; color: var(--txt); font-size: .9rem; }
+.menu-item:hover:not(:disabled) { background: rgba(91, 140, 255, .14); border-color: transparent; }
+.menu-item:disabled { opacity: .38; cursor: not-allowed; }
+
+/* 可点的卡标题（组名）/ 选中高亮 / 紧凑卡（成员、访问 Key） */
+.title-btn { background: transparent; border: 0; padding: 0; margin-right: auto; font-size: 1.05rem; font-weight: 650; color: var(--txt); cursor: pointer; text-align: left; }
+.title-btn:hover:not(:disabled) { color: var(--accent); border: 0; background: transparent; }
+.card-sel { border-color: var(--accent); box-shadow: 0 0 0 1px rgba(91, 140, 255, .35), 0 1px 3px rgba(0, 0, 0, .4); }
+.card.compact { padding: .75rem .95rem; margin: .55rem 0; }
+.card.compact h2 { font-size: .98rem; }
 
 /* 状态药丸 */
 .pill { padding: .15rem .6rem; border-radius: 1rem; font-size: .76rem; font-weight: 700; letter-spacing: .03em; white-space: nowrap; }
@@ -79,6 +99,14 @@ code { font-family: ui-monospace, SFMono-Regular, monospace; color: var(--accent
 .gauge-fill { height: 100%; border-radius: 999px; transition: width .5s cubic-bezier(.4, 0, .2, 1); }
 .gauge-sub { color: var(--dim); font-size: .78rem; font-variant-numeric: tabular-nums; }
 .meta { color: var(--dim); font-size: .85rem; margin: .3rem 0; line-height: 1.5; font-variant-numeric: tabular-nums; }
+
+/* 可折叠「详情」：默认收起，保持卡片清爽 */
+.more { margin: .1rem 0 .2rem; }
+.more > summary { cursor: pointer; color: var(--accent); font-size: .82rem; width: fit-content; list-style: none; user-select: none; }
+.more > summary::-webkit-details-marker { display: none; }
+.more > summary::before { content: "▸ "; }
+.more[open] > summary::before { content: "▾ "; }
+.more[open] > summary { margin-bottom: .2rem; }
 
 /* 工具条 + 状态底色 */
 .toolbar { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; }
