@@ -440,3 +440,11 @@ A2.1唯一成功路径为GET `/api/admin/v1/state`，输出原PanelSnapshot wire
 | AdminError | wire1、固定error、仅duplicate_source可带existing_source_id；独立于H1错误schema，控制错误码直接复用，不能回显输入或底层错误 |
 
 完整字段/类型/默认/范围/关系见A2.2§3–5及请求/响应schema。新增4槽handoff只负责有界运输请求和保留实际blocking句柄，业务ID、幂等、写者和状态转移仍来自原worker/store。正常关闭须在全部wrapper之后等待原usage读槽；前提是所有查询调用方已停止准入且runtime仍驱动，不新增查询任务表或关闭原semaphore。
+
+## 第六子计划 B 浏览器设计增量
+
+[B函数细化](subplans/sgm-6-browser-panel-b.md)已通过[设计审核](../../audits/sgm-6-three-page-panel/b-design-audit.md)，待用户确认后实现。三页共用一个document生命周期和刷新所有者，静态资源仍由原PanelServer提供，不改H1业务授权、不接旧CLI/run。
+
+唯一新增共享wire为UiConfig：schema_version=1、dry_run（同一worker不可变配置）、public_api_base_url（可信启动组合显式给出的NewAPI公开根地址或null）。消费者为浏览器启动与接入信息，不是授权或运行健康证据；不暴露上游/owner材料，不从请求Host/Origin猜调用地址。完整范围见[配置schema](schemas/panel-ui-config.schema.json)。实际启动选项由SGM7接线。
+
+浏览器只以原schema字段生成展示/固定请求；lane所有权与结果代次分别维护，取消不证明后端已停。会话恢复只存非敏感opID；状态失败/过期只能降级。模型图来自同份联合统计，保留unknown/零桶，复制明文短时独立持有。无客户端调度算法或第二业务权威。
