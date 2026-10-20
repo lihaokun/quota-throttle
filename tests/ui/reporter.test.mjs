@@ -6,7 +6,7 @@ test('u10 browser gate rejects empty, skipped, missing-project and viewport-drif
   const manifest = JSON.parse(readFileSync(new URL('../../scripts/contract_audit/sgm6_b_browser_tests.json', import.meta.url), 'utf8'));
   const registered = manifest.projects.flatMap(project => manifest.normal.map(title => ({project, title})));
   const results = registered.map(t => ({...t, status: 'passed', expectedStatus: 'passed', retry: 0}));
-  assert.equal(verifyBrowserResults(registered, results).passed, 72);
+  assert.equal(verifyBrowserResults(registered, results).passed, 88);
   assert.throws(() => verifyBrowserResults([], []));
   assert.throws(() => verifyBrowserResults(registered.slice(1), results.slice(1)));
   assert.throws(() => verifyBrowserResults(registered, results.map((r, i) => i === 0 ? {...r, status: 'skipped'} : r)));

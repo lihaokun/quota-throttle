@@ -33,7 +33,7 @@ const limits = {
   models: rd.SourceModels.properties.models.maxItems, identities: rd.IdentityPage.properties.items.maxItems,
   nativePage: rd.NativePage.properties.page_size.const, nativePages: rd.NativePage.properties.page.maximum,
   nativeTotal: rd.NativePage.properties.total.maximum, usageModels: rd.UsageReport.properties.models.maxItems,
-  usageTokens: rd.UsageReport.properties.tokens.maxItems, usageBuckets: rd.UsageReport.properties.buckets.maxItems,
+  usageTokens: rd.UsageReport.properties.tokens.maxItems, usageGroups: rd.UsageReport.properties.groups.maxItems, usageBuckets: rd.UsageReport.properties.buckets.maxItems,
   bucketModels: rd.UsageBucket.properties.models.maxItems, operationTargets: operation.properties.total_targets.maximum,
   bucketModelItems: Number(bucketModelCapacity[1]),
   failureThreshold: pd.policy.properties.failure_threshold.maximum, resetMinute: pd.policy.properties.reset_minute.maximum,
@@ -49,7 +49,7 @@ const shapes = {
   sourceModels: rd.SourceModels, identities: rd.IdentityPage, nativePage: rd.NativePage,
   reveal: rd.TokenReveal, usageSnapshot: rd.UsageSnapshot, resolvedQuery: rd.ResolvedQuery,
   resolvedFilter: rd.ResolvedFilter, ledger: rd.Ledger, scan: rd.ScanProgress, scanWindow: rd.ScanWindow,
-  totals: rd.Totals, modelUsage: rd.ModelUsage, tokenUsage: rd.TokenUsage,
+  totals: rd.Totals, modelUsage: rd.ModelUsage, tokenUsage: rd.TokenUsage, groupUsage: rd.GroupUsage,
   bucket: rd.UsageBucket, usageReport: rd.UsageReport, httpError: http, adminError: rd.AdminError, requestHeader: request.$defs.header,
 };
 const fields = Object.fromEntries(Object.entries(shapes).map(([k, v]) => [k, Object.keys(v.properties)]));

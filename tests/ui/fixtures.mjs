@@ -38,15 +38,16 @@ export function usageSnapshot(query, rows = [], initialized = true) {
   const grain = query.grain === 'hour' ? 3600 : 86400, shift = query.utc_offset_minutes * 60;
   const buckets = []; let cursor = query.from;
   while (cursor < query.to) { const to = Math.min(query.to, Math.floor((cursor + shift) / grain) * grain + grain - shift); buckets.push({from: cursor, to, total: zero(), models: new Map()}); cursor = to; }
-  const models = new Map(), tokens = new Map(); let total = zero();
+  const models = new Map(), tokens = new Map(), groups = new Map(); let total = zero();
   for (const row of rows) {
     const amount = {input: row.input, output: row.output, total: row.input + row.output, consumption_rows: 1};
     const bucket = buckets.find(b => row.at >= b.from && row.at < b.to); if (!bucket) throw new Error('fixture fact outside query');
     total = sum(total, amount); bucket.total = sum(bucket.total, amount);
     models.set(row.model, sum(models.get(row.model) ?? zero(), amount)); tokens.set(row.token, sum(tokens.get(row.token) ?? zero(), amount));
+    const group = row.group ?? null; groups.set(group, sum(groups.get(group) ?? zero(), amount));
     bucket.models.set(row.model, sum(bucket.models.get(row.model) ?? zero(), amount));
   }
-  snapshot.usage = {total, models: [...models].map(([model, usage]) => ({model, usage})), tokens: [...tokens].map(([native_token_id, usage]) => ({native_token_id, usage})), buckets: buckets.map(b => ({...b, models: [...b.models].map(([model, usage]) => ({model, usage}))}))};
+  snapshot.usage = {total, models: [...models].map(([model, usage]) => ({model, usage})), tokens: [...tokens].map(([native_token_id, usage]) => ({native_token_id, usage})), groups: [...groups].map(([group_id, usage]) => ({group_id, usage})), buckets: buckets.map(b => ({...b, models: [...b.models].map(([model, usage]) => ({model, usage}))}))};
   return snapshot;
 }
 export function volcanoState(at = 100000) {

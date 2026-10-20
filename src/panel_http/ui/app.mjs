@@ -1,7 +1,7 @@
-import { Lanes, SnapshotAge, observations, backoff, PendingOperations, freezeDraft, buildAction, draftConflict, ActionError, ProtocolError, identityUsageFilter, operationId, decimal, id, modelLabel, modelFilter, allFilters, makeUsageQuery, volcanoUsageQuery, formatTime } from './core.mjs';
+import { Lanes, SnapshotAge, observations, backoff, PendingOperations, freezeDraft, buildAction, draftConflict, ActionError, ProtocolError, identityUsageFilter, operationId, decimal, id, modelLabel, modelFilter, allFilters, makeUsageQuery, volcanoUsageQuery, validateQuery, validateUsage, formatTime } from './core.mjs';
 import { route, requestJson, ClientError } from './client.mjs';
 import { createRenderer } from './render.mjs';
-import { prepareChart, drawChart } from './charts.mjs';
+import { prepareChart } from './charts.mjs';
 import { ENUMS } from './contract.mjs';
 
 // Step U3: 唯一递归 pump 拥有浏览器生命周期，不为每个分页创建定时轮询。
@@ -51,6 +51,11 @@ export class Lifecycle {
 }
 
 const previewOperationId = 'qt_00000000-0000-4000-8000-000000000000';
+// 后端每 5 秒发布一次面板快照；按快照年龄把下次读取排在下一次发布之后，避免两边节奏漂移导致快照短暂越过 10 秒过期线。
+const STATE_PERIOD_MS = 5000;
+// 组页偏好只存在本浏览器：钉住的组（最多 4 个，给当前组留出第 5 个位置）与上次查看的组。只存组 ID，不存任何凭据。
+const GROUP_PREFS_KEY = 'qt.panel.groups.v1', MAX_GROUP_PINS = 4;
+const groupIdText = value => typeof value === 'string' && /^[1-9][0-9]{0,18}$/.test(value);
 const explain = label => ({type: 'explanation', label});
 const field = (name, label, value = '', type = 'text', options) => ({name, label, value, type, options});
 export class SecretSlot {
@@ -91,8 +96,9 @@ export class PanelApp {
     let storage; try { storage = window.sessionStorage; } catch { storage = {getItem() { throw new Error(); }}; }
     this.pending = new PendingOperations(storage, now);
     this.config = null; this.configDue = 0; this.stateDue = 0; this.configFailures = 0; this.stateFailures = 0;
-    this.page = ['sources', 'groups', 'data'].includes(window.location.hash.slice(1)) ? window.location.hash.slice(1) : 'sources'; this.sourcesPage = 0; this.groupsPage = 0; this.membersPage = 0; this.selectedGroup = null;
-    this.sourceFilter = {type: '', name: ''}; this.operationsOpen = true;
+    this.page = ['sources', 'groups', 'data'].includes(window.location.hash.slice(1)) ? window.location.hash.slice(1) : 'groups'; this.sourcesPage = 0; this.groupsPage = 0; this.membersPage = 0; this.selectedGroup = null; this.groupUsageMode = '24h'; this.groupPrefs = this.loadGroupPrefs(); this.rank = {hour: null, totals: null}; this.rankDue = 0;
+    // 操作进度默认收起；有恢复出来的待追踪操作时展开。
+    this.sourceFilter = {type: '', name: ''}; this.operationsOpen = this.pending.items.size > 0;
     this.identities = { after: null, data: null, error: null, received: null };
     this.nativePages = new Map(); this.editor = null; this.notice = null; this.desired = null;
     this.sourceUsageId = null; this.usage = null; this.usageDue = Infinity; this.readNotBefore = 0;
@@ -100,7 +106,10 @@ export class PanelApp {
     this.renderer = createRenderer(this.document, {
       action: (action, id) => this.action(action, id), sourcePage: page => { this.sourcesPage = page; if (this.sourceUsageId !== null) this.selectSourceUsage(null); else this.paint(); },
       groupPage: page => { this.groupsPage = page; this.paint(); }, memberPage: page => { this.membersPage = page; this.paint(); },
-      selectGroup: id => { this.selectedGroup = id; this.membersPage = 0; this.lanes.invalidate('work'); this.desired = null; this.editor = null; this.renderer.clearForm(); this.secret?.clear(); this.paint(); },
+      // 切组只作废用量结果（世代号），不抢工作槽、不丢已排队的身份读取。
+      selectGroup: id => { if (id === this.selectedGroup) return; this.selectedGroup = id; this.groupPrefs.last = id; this.saveGroupPrefs(); this.membersPage = 0; this.editor = null; this.renderer.clearForm(); this.secret?.clear(); this.resetUsage(); this.paint(); },
+      pinGroup: id => this.toggleGroupPin(id),
+      groupUsageMode: mode => { if (mode === this.groupUsageMode || !['24h', '30d'].includes(mode)) return; this.groupUsageMode = mode; this.resetUsage(); this.paint(); },
       identities: after => this.loadIdentities(after), native: (scope, page) => this.loadNative(scope, page),
       operation: (action, id) => this.operation(action, id), restoreOperation: () => this.restoreOperation(),
       sourceUsage: id => this.selectSourceUsage(id), identityUsage: identity => this.selectIdentityUsage(identity),
@@ -164,7 +173,7 @@ export class PanelApp {
     this.renderer.frame({ page: this.page, snapshot: this.age.snapshot, observation, config: this.config, readOnly: this.readOnly,
       workBusy: this.lanes.owners.work !== null, notice: this.notice, sourcesPage: this.sourcesPage, groupsPage: this.groupsPage, membersPage: this.membersPage,
       stateBusy: this.lanes.owners.state !== null, operationsOpen: this.operationsOpen, sourceFilter: this.sourceFilter,
-      selectedGroup: this.selectedGroup, identities: this.identities, nativePages: this.nativePages, sourceUsageId: this.sourceUsageId,
+      selectedGroup: this.selectedGroup, groupUsageMode: this.groupUsageMode, groupOrder: this.groupOrder(), groupPins: this.livePins(), maxGroupPins: MAX_GROUP_PINS, rank: this.rank, identities: this.identities, nativePages: this.nativePages, sourceUsageId: this.sourceUsageId,
       storageError: this.pending.storageError, operations: [...this.pending.items.values()].map(i => ({id: i.id, receipt: i.receipt, error: i.error, tracking: i.tracking, canResubmit: i.payload !== null})),
     });
     if (this.editor) {
@@ -186,6 +195,7 @@ export class PanelApp {
     if (this.desired && (!this.desired.requiresFresh || this.age.fresh(now))) { const desired = this.desired; this.desired = null; desired.run(); return; }
     const op = this.pending.due();
     if (op) { this.pollOperation(op.id); return; }
+    if (now >= this.rankDue) this.queryRank?.();
     if (now >= this.usageDue) this.queryUsage?.();
   }
   async readState() {
@@ -193,8 +203,10 @@ export class PanelApp {
     const ticket = this.lanes.acquire('state', 'state'); if (!ticket) return;
     try {
       const result = await requestJson(route('state'), null, ticket, {fetchImpl: this.fetchImpl, now: this.now, valid: t => this.lanes.valid(t)});
-      this.age.ingest(result.value, result.age, ticket.started, result.received); this.stateFailures = 0; this.stateDue = this.now() + 5000;
-      this.checkUsagePeriod?.();
+      this.age.ingest(result.value, result.age, ticket.started, result.received); this.stateFailures = 0;
+      const published = Number(result.age);
+      this.stateDue = this.now() + (Number.isSafeInteger(published) && published >= 0 && published < STATE_PERIOD_MS ? Math.max(1000, STATE_PERIOD_MS - published + 300) : STATE_PERIOD_MS);
+      this.ensureSelectedGroup(); this.checkUsagePeriod?.();
     } catch {
       if (this.lanes.owns(ticket) && ticket.generation === this.lanes.generations.state) { this.age.fail(); this.stateDue = this.now() + backoff(++this.stateFailures); }
     } finally { this.lanes.finish(ticket); this.paint(); }
@@ -349,7 +361,7 @@ export class PanelApp {
       const descriptor = route(action, routeId ? {id: routeId} : {});
       if (result.kind) {
         const item = this.pending.begin(descriptor, {kind: result.kind, targetId: result.targetId}, id => ({...result.body, operation_id: id}), this.window.crypto);
-        this.renderer.clearForm(); this.editor = null;
+        this.renderer.clearForm(); this.editor = null; this.operationsOpen = true;
         this.work(descriptor, item.payload, value => { if (this.pending.items.has(item.id)) this.pending.accept(item.id, value); this.notice = value.target_type === 'token' ? '已收到 Key 操作回执。请显式刷新本地身份页；原生启停状态需另行刷新对应账号页，统一目录快照不包含这些身份。' : '已收到操作回执，等待统一快照反映状态；没有自动续发其他写入。'; }, error => { this.pending.failed(item.id, `结果待核对。${this.message(error)}`); }, `operation:${item.id}`);
       } else {
         this.renderer.clearForm(); this.editor = null;
@@ -384,7 +396,59 @@ export class PanelApp {
   }
   selectSourceUsage(id) { this.sourceUsageId = id; this.changeUsage(); }
   selectIdentityUsage(identity) { this.usageFilters.filter.native_token_id = identityUsageFilter(identity); this.switchPage('data'); this.syncUsageControls(); this.changeUsage(); }
-  changeUsage() { this.usageGeneration++; this.lanes.invalidate('work'); this.desired = this.page === 'data' || this.page === 'sources' && this.sourceUsageId !== null ? {run: () => this.queryUsage(), requiresFresh: true} : null; this.usage = null; this.usageMessage = null; this.usageDue = 0; this.usagePages = {models: 0, tokens: 0, buckets: 0}; this.paint(); }
+  changeUsage() { this.usageGeneration++; this.lanes.invalidate('work'); this.desired = this.showsUsage() ? {run: () => this.queryUsage(), requiresFresh: true} : null; this.usage = null; this.usageMessage = null; this.usageDue = 0; this.usagePages = {models: 0, tokens: 0, buckets: 0}; this.paint(); }
+  resetUsage() { this.usageGeneration++; this.usage = null; this.usageMessage = null; this.usageDue = 0; this.usagePages = {models: 0, tokens: 0, buckets: 0}; }
+  showsUsage() { return this.page === 'data' || this.page === 'groups' && this.selectedGroup !== null || this.page === 'sources' && this.sourceUsageId !== null; }
+  loadGroupPrefs() {
+    try {
+      const value = JSON.parse(this.window.localStorage.getItem(GROUP_PREFS_KEY) ?? 'null');
+      const pins = Array.isArray(value?.pins) ? [...new Set(value.pins.filter(groupIdText))].slice(0, MAX_GROUP_PINS) : [];
+      return {pins, last: groupIdText(value?.last) ? value.last : null};
+    } catch { return {pins: [], last: null}; }
+  }
+  saveGroupPrefs() { try { this.window.localStorage.setItem(GROUP_PREFS_KEY, JSON.stringify(this.groupPrefs)); } catch { /* 存储不可用时只影响下次打开的默认值。 */ } }
+  livePins() { const ids = new Set((this.age.snapshot?.catalog.groups ?? []).map(g => g.group.group_id)); return (this.groupPrefs?.pins ?? []).filter(id => ids.has(id)); }
+  toggleGroupPin(id) {
+    const pins = this.livePins();
+    if (pins.includes(id)) this.groupPrefs.pins = pins.filter(p => p !== id);
+    else if (pins.length < MAX_GROUP_PINS && groupIdText(id)) this.groupPrefs.pins = [...pins, id];
+    else return;
+    this.saveGroupPrefs(); this.paint();
+  }
+  groupOrder() {
+    // 钉住（≤4）→ 当前组（未钉住时）→ 其余按上一个整点小时用量降序；排行未到或平手时按目录顺序。
+    const ids = (this.age.snapshot?.catalog.groups ?? []).map(g => g.group.group_id), exists = new Set(ids);
+    const pins = (this.groupPrefs?.pins ?? []).filter(id => exists.has(id));
+    const head = exists.has(this.selectedGroup) && !pins.includes(this.selectedGroup) ? [...pins, this.selectedGroup] : pins;
+    const totals = this.rank?.totals, rest = ids.filter(id => !head.includes(id));
+    if (totals) rest.sort((a, b) => (totals.get(b) ?? 0) - (totals.get(a) ?? 0) || ids.indexOf(a) - ids.indexOf(b));
+    return [...head, ...rest];
+  }
+  queryRank() {
+    // 每个整点小时只查一次「上一小时」：不过滤，结果里的按组分项一次给出全部组（不逐组查询）。
+    if (this.page !== 'groups' || !this.age.snapshot || !this.age.fresh(this.now()) || this.lanes.owners.work) return;
+    if (!this.age.snapshot.catalog.groups.length) { this.rankDue = this.now() + 60000; return; }
+    const shift = this.usageFilters.offset * 60, hour = Math.floor((Math.floor(this.age.snapshot.captured_at_ms / 1000) + shift) / 3600) * 3600 - shift;
+    if (this.rank.hour === hour) { this.rankDue = this.now() + 60000; return; }
+    let query;
+    try { query = {schema_version: 1, ...validateQuery({from: hour - 3600, to: hour, utc_offset_minutes: this.usageFilters.offset, grain: 'hour', filter: allFilters()})}; }
+    catch { this.rankDue = this.now() + 60000; return; }
+    this.rankDue = Infinity;
+    void Promise.resolve(this.work(route('usage'), query, value => {
+      const report = validateUsage(value, query).usage;
+      this.rank = {hour, totals: report ? new Map(report.groups.filter(g => g.group_id !== null).map(g => [g.group_id, g.usage.total])) : null};
+      this.rankDue = this.now() + 60000;
+    }, () => { this.rankDue = this.now() + 60000; }, `rank:${hour}`)).then(() => { if (this.rankDue === Infinity) this.rankDue = this.now() + 5000; });
+  }
+  ensureSelectedGroup() {
+    // 组页一次看一个组：优先上次在本浏览器看的组；否则排序第一的组。
+    const groups = this.age.snapshot?.catalog.groups ?? [];
+    if (this.groupPrefs && this.livePins().length !== this.groupPrefs.pins.length) { this.groupPrefs.pins = this.livePins(); this.saveGroupPrefs(); }
+    if (groups.some(g => g.group.group_id === this.selectedGroup)) return;
+    const last = this.groupPrefs?.last ?? null, next = groups.some(g => g.group.group_id === last) ? last : this.groupOrder()[0] ?? null;
+    if (next === this.selectedGroup) return;  // 目录里没有组：保持 null，不得每次读状态都重置用量
+    this.selectedGroup = next; if (this.page === 'groups') this.resetUsage();
+  }
   currentPeriodKey() {
     const s = this.age.snapshot?.catalog.sources.find(s => s.source.source_id === this.sourceUsageId);
     return s?.volcano?.runtime ? `${s.source.source_id}:${s.source.config_revision}:${s.volcano.runtime.period_id}` : null;
@@ -399,7 +463,7 @@ export class PanelApp {
     this.usagePeriod = key;
   }
   queryUsage() {
-    if (this.page !== 'data' && !(this.page === 'sources' && this.sourceUsageId)) { this.usageDue = Infinity; return; }
+    if (!this.showsUsage()) { this.usageDue = Infinity; return; }
     if (!this.age.fresh(this.now()) || this.lanes.owners.work) return;
     let query, periodKey = null;
     try {
@@ -409,12 +473,16 @@ export class PanelApp {
         if (!source) throw new ActionError('来源已不在目录。');
         ({query, periodKey} = volcanoUsageQuery(source, this.age.snapshot.captured_at_ms, this.usageFilters.offset));
         this.usagePeriod = periodKey;
+      } else if (this.page === 'groups') {
+        const filter = allFilters(); filter.group_id = {mode: 'exact', value: id(this.selectedGroup)};
+        query = makeUsageQuery(this.groupUsageMode, this.age.snapshot.captured_at_ms, this.usageFilters.offset, filter);
       } else query = makeUsageQuery(this.usageFilters.mode, this.age.snapshot.captured_at_ms, this.usageFilters.offset, this.usageFilters.filter, this.usageFilters.day);
     } catch (error) { this.usageMessage = this.message(error); this.usageDue = this.now() + 5000; this.paint(); return; }
     const key = `${periodKey ?? ''}:${JSON.stringify(query)}`, generation = this.usageGeneration;
     if (this.usage?.key !== key) this.usage = null;
     this.usageMessage = '正在查询；截止时间固定为本次状态采样时间。'; this.usageDue = Infinity;
-    this.work(route('usage'), query, value => {
+    // 查询若被其他工作（如刷新本地身份）作废，成功/失败回调都不会运行：此时重新排期，不能永远停在「正在查询」。
+    void Promise.resolve(this.work(route('usage'), query, value => {
       if (generation !== this.usageGeneration || periodKey !== null && periodKey !== this.currentPeriodKey()) return;
       if (periodKey !== null && this.periodResetPending()) { this.usageMessage = '查询期间已到重置边界，迟到旧周期结果不发布；等待新周期。'; this.usageDue = this.now() + 5000; return; }
       this.usage = {key, chart: prepareChart(value), received: new Date().toISOString(), error: null, periodKey};
@@ -424,7 +492,7 @@ export class PanelApp {
       this.usageMessage = `${this.message(error)}${this.usage?.key === key ? ' 下面是同一查询的旧结果。' : ''}`;
       if (this.usage) this.usage.error = this.usageMessage;
       this.usageDue = this.now() + 60000;
-    }, `usage:${key}`);
+    }, `usage:${key}`)).then(() => { if (this.usageDue === Infinity && generation === this.usageGeneration && !this.desired) this.usageDue = this.now() + 1000; });
   }
   syncUsageControls() {
     const form = this.document.getElementById('usage-controls'); if (!form) return;
@@ -433,14 +501,14 @@ export class PanelApp {
   }
   ensureUsageControls(root) {
     if (this.document.getElementById('usage-controls')) return;
-    const r = this.renderer, form = r.text('form'); form.id = 'usage-controls';
+    const r = this.renderer, form = r.text('form', null, 'frow'); form.id = 'usage-controls';
     const fields = [field('mode', '区间', '24h', 'select', [['24h', '近 24 小时'], ['30d', '近 30 天'], ['day', '单日钻取']]), field('day', '单日日期', '', 'date'), field('offset', '图表 UTC 偏移分钟', '480'), field('tokenMode', '访问 Key 筛选', 'any', 'select', [['any', '全部'], ['unknown', '未归属原生 Key'], ['exact', '指定原生 ID']]), field('token', '原生 Token ID（不是本地身份 ID）'), field('modelMode', '模型筛选', 'any', 'select', [['any', '全部模型'], ['unknown', '未归属模型'], ['exact', '指定模型原标签']]), field('model', '模型原标签')];
     for (const f of fields) {
       const label = r.text('label', f.label), input = r.text(f.type === 'select' ? 'select' : 'input'); input.name = f.name;
       if (f.type === 'select') for (const [value, labelText] of f.options) { const option = r.text('option', labelText); option.value = value; input.append(option); }
       else input.type = f.type ?? 'text'; input.value = f.value; label.append(input); form.append(label);
     }
-    const submit = r.text('button', '应用筛选并查询', 'primary'); submit.type = 'submit'; form.append(submit, r.button('刷新用量', () => this.changeUsage()));
+    const submit = r.text('button', '应用筛选并查询', 'sbtn'); submit.type = 'submit'; form.append(submit, r.button('刷新用量', () => this.changeUsage(), false, 'usage:refresh', 'sbtn'));
     form.addEventListener('submit', event => {
       event.preventDefault();
       try {
@@ -450,55 +518,60 @@ export class PanelApp {
         filter.model = value('modelMode') === 'exact' ? {mode: 'exact', value: modelLabel(value('model'))} : {mode: value('modelMode')};
         this.usageFilters = {mode: value('mode'), day: value('day'), offset: decimal(value('offset'), -720, 840), filter}; this.changeUsage();
       } catch (error) { this.notice = this.message(error); this.paint(); }
-    }); root.append(form); this.syncUsageControls();
+    }); root.append(r.text('h2', '用量数据'), r.text('p', '按模型查看 Token 用量。统计不代表金额或积分。', 'note'));
+    const card = r.text('div', null, 'card'); card.append(form); root.append(card); this.syncUsageControls();
     const report = r.text('div'); report.id = 'usage-report'; root.append(report);
   }
   renderUsage() {
     const r = this.renderer;
     let root;
     if (this.page === 'data') { this.ensureUsageControls(this.document.getElementById('data-content')); root = this.document.getElementById('usage-report'); }
+    else if (this.page === 'groups' && this.selectedGroup) root = this.document.getElementById('group-usage-content');
     else if (this.page === 'sources' && this.sourceUsageId) root = this.document.getElementById('source-usage-content');
     if (!root) return;
-    const periodExpired = this.periodResetPending();
-    const stamp = `${this.usage?.received}:${this.usageMessage}:${this.usage?.error}:${JSON.stringify(this.usagePages)}:${this.age.expired}:${periodExpired}:${root.clientWidth}`;
+    const compact = this.page === 'groups', periodExpired = this.periodResetPending();
+    // 只在新结果/新提示到达时重画（不随每秒 paint 或窗口宽度重建）。
+    const stamp = `${this.usage?.received}:${this.usageMessage}:${this.usage?.error}:${JSON.stringify(this.usagePages)}:${this.age.expired}:${periodExpired}`;
     if (root.dataset.paint === stamp) return; root.dataset.paint = stamp; root.replaceChildren();
-    if (this.usageMessage) root.append(r.text('p', this.usageMessage, 'warning'));
-    if (!this.usage) { if (!this.usageMessage) root.append(r.text('p', '等待可用状态采样后查询。', 'muted')); return; }
-    const chart = this.usage.chart, snapshot = chart.snapshot, query = snapshot.query;
-    root.className = this.usage.error || !this.age.fresh(this.now()) || periodExpired ? 'stale' : '';
-    if (periodExpired) root.append(r.text('p', '以下为旧周期结果。已到重置边界，等待服务端发布新周期。', 'warning'));
-    root.append(r.text('h2', '分模型 Token 用量'), r.text('p', `查询区间 [${formatTime(query.from, 's', query.utc_offset_minutes)}, ${formatTime(query.to, 's', query.utc_offset_minutes)})；截至状态采样时间。读取于 ${this.usage.received}。`));
-    if (this.usage.periodKey) root.append(r.text('p', `来源周期标识 ${this.usage.periodKey}；这是来源周期查询，不是自然日累计。`));
-    root.append(r.text('p', `账本版本 ${snapshot.ledger.revision} · 初始补采起点 ${snapshot.ledger.initial_requested_from ?? '未初始化'}；扫描结束不保证供应商完整性。`, 'muted'));
-    for (const scan of snapshot.ledger.scans) root.append(r.text('p', `${scan.lane} · ${scan.phase} · 下一页 ${scan.next_page} · 窗口 ${scan.window ? `[${scan.window.from}, ${scan.window.to})` : '无'} · 异常 ${scan.fault ?? '无'}`));
-    if (chart.kind === 'uninitialized') { root.append(r.text('p', '账本尚未初始化；不是零统计。', 'warning')); return; }
-    const totals = snapshot.usage.total;
-    root.append(r.text('p', `输入 ${totals.input} · 输出 ${totals.output} · 总 Token ${totals.total} · 消费记录 ${totals.consumption_rows}`));
-    if (chart.kind === 'empty') root.append(r.text('p', '此区间暂无已观测消费。'));
-    if (chart.kind === 'zero') root.append(r.text('p', `已观测 ${totals.consumption_rows} 条消费记录，Token 总量为 0。`));
-    const canvas = r.text('canvas', null, 'chart'); canvas.setAttribute('aria-label', '按模型堆叠的 Token 柱形图，精确数值见下方表格'); root.append(canvas);
-    const geometry = drawChart(canvas, chart, this.window.devicePixelRatio);
-    const tooltip = r.text('p', '移动到柱形查看该桶的精确数值；下表可用键盘读取。'); root.append(tooltip);
-    if (chart.bars.length) root.append(r.text('p', `区间 ${formatTime(chart.bars[0].from, 's', query.utc_offset_minutes)} → ${formatTime(chart.bars[chart.bars.length - 1].to, 's', query.utc_offset_minutes)} · 峰值 ${chart.maximum} Token/桶`, 'chart-axis'));
-    canvas.addEventListener('pointermove', event => {
-      if (!geometry || !geometry.count) return;
-      const index = Math.floor((event.clientX - canvas.getBoundingClientRect().left - geometry.left) / geometry.step), bucket = chart.bars[index];
-      if (bucket) tooltip.textContent = `${formatTime(bucket.from, 's', query.utc_offset_minutes)}：输入 ${bucket.total.input} / 输出 ${bucket.total.output} / 总 Token ${bucket.total.total} / 消费记录 ${bucket.total.consumption_rows}`;
-    });
-    const section = (name, title, rows, header, toRow) => {
-      root.append(r.text('h3', title)); const total = rows.length, page = Math.min(this.usagePages[name], Math.max(0, Math.ceil(total / 50) - 1));
-      root.append(r.pager(page, total, 50, next => { this.usagePages[name] = next; root.dataset.paint = ''; this.paint(); }, `usage:${name}`));
-      root.append(r.table(header, rows.slice(page * 50, page * 50 + 50).map(toRow)));
+    if (this.usageMessage) root.append(r.text('p', this.usageMessage, 'warn'));
+    if (!this.usage) { if (!this.usageMessage) root.append(r.text('p', '等待可用状态采样后查询。', 'note')); return; }
+    const chart = this.usage.chart, snapshot = chart.snapshot, query = snapshot.query, at = sec => formatTime(sec, 's', query.utc_offset_minutes);
+    root.classList.toggle('stale', !!this.usage.error || !this.age.fresh(this.now()) || periodExpired);
+    if (periodExpired) root.append(r.text('p', '以下为旧周期结果。已到重置边界，等待服务端发布新周期。', 'warn'));
+    if (chart.kind === 'uninitialized') { root.append(r.text('p', '账本尚未初始化；不是零统计。', 'warn')); return; }
+    const totals = snapshot.usage.total, note = r.text('div', null, 'cnote');
+    const strong = value => r.text('b', value);
+    note.append(r.text('span', '合计'), strong(`${r.kfmt(totals.total)} tokens`), r.text('span', `输入 ${r.kfmt(totals.input)} · 输出 ${r.kfmt(totals.output)} · ${totals.consumption_rows} 次请求 · 峰值 ${r.kfmt(chart.maximum)}/桶`));
+    if (this.usage.periodKey) note.append(r.text('span', '· 来源当前周期（不是自然日）'));
+    root.append(r.bars(chart, query, note));
+    if (chart.kind === 'empty') root.append(r.text('p', '此区间暂无已观测消费。', 'empty'));
+    if (chart.kind === 'zero') root.append(r.text('p', `已观测 ${totals.consumption_rows} 条消费记录，Token 总量为 0。`, 'empty'));
+    const onlyThis = compact ? null : m => { this.usageFilters.filter.model = modelFilter(m.model); this.switchPage('data'); this.syncUsageControls(); this.changeUsage(); };
+    const header = ['模型', 'Token', '输入 / 输出', '请求', '占比'];
+    if (compact) {
+      if (chart.models.length) { root.append(r.text('h3', '按模型')); const card = r.text('div', null, 'card'); card.append(r.table(header, r.modelRows(chart, null))); root.append(card); }
+      return;
+    }
+    const section = (name, title, rows, head, toRow, target = root) => {
+      target.append(r.text('h3', title)); const total = rows.length, page = Math.min(this.usagePages[name], Math.max(0, Math.ceil(total / 50) - 1)), card = r.text('div', null, 'card');
+      if (total > 50) card.append(r.pager(page, total, 50, next => { this.usagePages[name] = next; root.dataset.paint = ''; this.paint(); }, `usage:${name}`));
+      card.append(r.table(head, rows.slice(page * 50, page * 50 + 50).map(toRow))); target.append(card);
     };
-    const legend = model => {
-      const label = r.text('span', null, 'legend-label'), swatch = r.text('canvas', null, 'legend-swatch'); swatch.width = 18; swatch.height = 18; swatch.setAttribute('aria-hidden', 'true');
-      const context = swatch.getContext('2d'); if (context) { context.fillStyle = model.color; context.fillRect(0, 0, 18, 18); }
-      label.append(swatch, r.text('span', model.model === null ? '未归属模型（null）' : model.model)); return label;
-    };
-    section('models', '模型图例与明细（图表保留全部模型）', chart.models, ['颜色 / 模型', '输入 / 输出 / 总 Token / 记录', '筛选'], m => [legend(m), `${m.usage.input} / ${m.usage.output} / ${m.usage.total} / ${m.usage.consumption_rows}`, r.button('只看此模型', () => { this.usageFilters.filter.model = modelFilter(m.model); this.switchPage('data'); this.syncUsageControls(); this.changeUsage(); })]);
-    section('tokens', '原生 Key 明细', snapshot.usage.tokens, ['原生 ID', '输入 / 输出 / 总 Token / 记录'], t => [t.native_token_id ?? '未归属（null）', `${t.usage.input} / ${t.usage.output} / ${t.usage.total} / ${t.usage.consumption_rows}`]);
+    const modelRows = r.modelRows(chart, onlyThis);
+    section('models', '按模型', modelRows, [...header, '筛选'], row => row);
+    section('tokens', '按访问 Key（原生）', snapshot.usage.tokens, ['原生 ID', 'Token', '输入 / 输出', '请求'], t => [t.native_token_id ?? '未归属（null）', r.kfmt(t.usage.total), `${r.kfmt(t.usage.input)} / ${r.kfmt(t.usage.output)}`, String(t.usage.consumption_rows)]);
     const rows = chart.bars.flatMap(b => b.models.length ? b.models.map(m => ({bucket: b, model: m.model, usage: m.usage})) : [{bucket: b, model: undefined, usage: b.total}]);
-    section('buckets', '按桶和模型读取精确数值', rows, ['桶区间', '模型', '输入 / 输出 / 总 Token / 记录'], row => [`[${formatTime(row.bucket.from, 's', query.utc_offset_minutes)}, ${formatTime(row.bucket.to, 's', query.utc_offset_minutes)})`, row.model === undefined ? '空桶' : row.model === null ? '未归属模型（null）' : row.model, `${row.usage.input} / ${row.usage.output} / ${row.usage.total} / ${row.usage.consumption_rows}`]);
+    // 逐桶精确值默认收起；区间用短格式（起点日期时刻 – 终点时刻），完整时间戳见「查询区间与账本状态」。
+    const exact = r.text('details', null, 'more'); exact.dataset.key = 'usage-buckets'; exact.append(r.text('summary', '按时间桶和模型读取精确值'));
+    const span = (from, to) => query.grain === 'day' ? at(from).slice(5, 10) : `${at(from).slice(5, 16)} – ${at(to).slice(11, 16)}`;
+    section('buckets', '按时间桶和模型（精确值）', rows.filter(row => row.model !== undefined), ['时间桶', '模型', '输入 / 输出 / 总 Token / 记录'], row => [span(row.bucket.from, row.bucket.to), row.model === null ? '未归属模型（null）' : row.model, `${row.usage.input} / ${row.usage.output} / ${row.usage.total} / ${row.usage.consumption_rows}`], exact);
+    root.append(exact);
+    const more = r.text('details', null, 'more'); more.append(r.text('summary', '查询区间与账本状态'));
+    more.append(r.text('p', `查询区间 [${at(query.from)}, ${at(query.to)})；截至状态采样时间。读取于 ${this.usage.received}。`));
+    if (this.usage.periodKey) more.append(r.text('p', `来源周期标识 ${this.usage.periodKey}；这是来源周期查询，不是自然日累计。`));
+    more.append(r.text('p', `账本版本 ${snapshot.ledger.revision} · 初始补采起点 ${snapshot.ledger.initial_requested_from ?? '未初始化'}；扫描结束不保证供应商完整性。`));
+    for (const scan of snapshot.ledger.scans) more.append(r.text('p', `${scan.lane} · ${scan.phase} · 下一页 ${scan.next_page} · 窗口 ${scan.window ? `[${scan.window.from}, ${scan.window.to})` : '无'} · 异常 ${scan.fault ?? '无'}`));
+    root.append(more);
   }
   reveal(identity) {
     if (this.readOnly || !this.lifecycle.active || this.page !== 'groups' || this.now() < this.readNotBefore) return;

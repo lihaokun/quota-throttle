@@ -107,7 +107,12 @@ fn attribution_moves_unknown_partitions_without_changing_native_facts_or_totals(
     assert_eq!(result.ledger_revision, before.revision + 1);
     assert_eq!(native(&s), raw);
     assert_eq!(total(&s.conn), totals);
-    assert!(chart(&s, DimensionFilter::Any).usage == before_chart);
+    let after_chart = chart(&s, DimensionFilter::Any).usage;
+    let (b, a) = (before_chart.as_ref().unwrap(), after_chart.as_ref().unwrap());
+    assert!(a.total == b.total && a.models == b.models && a.tokens == b.tokens && a.buckets == b.buckets);
+    // 重新归属只把「未归组」挪进真实组：按组分项随之变化，总量守恒（finish_parts 校验边际和）。
+    assert_eq!(b.groups.iter().map(|(group, _)| *group).collect::<Vec<_>>(), vec![None]);
+    assert!(a.groups.iter().any(|(group, _)| *group == Some(g)));
     assert_eq!(s.load_ledger_state().unwrap().scans, before.scans);
     let facts = full_facts(&s.conn);
     assert_eq!(facts[0]["source"], source.get());

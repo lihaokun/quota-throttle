@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fc from 'fast-check';
 import { allFilters, makeUsageQuery, volcanoUsageQuery, validateUsage, modelFilter, modelKey, consumedFields } from '../../src/panel_http/ui/core.mjs';
-import { prepareChart, modelColor, drawChart } from '../../src/panel_http/ui/charts.mjs';
+import { prepareChart, modelColor, barModel } from '../../src/panel_http/ui/charts.mjs';
 import { WIRE_FIELDS } from '../../src/panel_http/ui/contract.mjs';
 import { usageSnapshot } from './fixtures.mjs';
 const query = {schema_version: 1, from: 0, to: 7200, grain: 'hour', utc_offset_minutes: 480, filter: allFilters()};
@@ -29,10 +29,10 @@ test('u8 uninitialized, empty and zero-token consumption retain distinct branche
   const empty = prepareChart(usageSnapshot(query)); assert.equal(empty.kind, 'empty'); assert.equal(empty.bars.length, 2);
   const zero = prepareChart(usageSnapshot(query, [{at: 1, model: null, token: null, input: 0, output: 0}]));
   assert.equal(zero.kind, 'zero'); assert.equal(zero.snapshot.usage.total.consumption_rows, 1); assert.equal(zero.maximum, 0);
-  const calls = [], context = {setTransform() {}, clearRect() {}, fillText() {}, fillRect(...args) { calls.push(args); }};
-  const canvas = {getBoundingClientRect: () => ({width: 5000}), getContext: () => context};
-  const geometry = drawChart(canvas, zero, 4); assert.equal(geometry.width, 4096); assert.equal(canvas.width, 8192);
-  for (const call of calls) { assert.ok(call.every(Number.isFinite)); assert.equal(call[3], 0); }
+  const bars = barModel(zero); assert.equal(bars.length, zero.bars.length);
+  for (const bar of bars) { assert.ok(Number.isFinite(bar.height)); assert.equal(bar.height, 0); assert.equal(bar.zero, true); }
+  const observed = barModel(prepareChart(usageSnapshot(query, [{at: 1, model: 'a', token: null, input: 2, output: 2}, {at: 3601, model: 'a', token: null, input: 1, output: 1}])));
+  assert.deepEqual(observed.map(b => b.height), [100, 50]); assert.deepEqual(observed.map(b => b.rows), [1, 1]);
 });
 test('u8 query mismatch, overflow and model marginal drift reject the entire report', () => {
   const rows = [{at: 1, model: null, token: null, input: 2, output: 3}, {at: 3601, model: 'unknown', token: '9', input: 4, output: 5}];
@@ -40,6 +40,11 @@ test('u8 query mismatch, overflow and model marginal drift reject the entire rep
   assert.throws(() => validateUsage(snapshot, {...query, to: 7201}));
   const bad = structuredClone(snapshot); bad.usage.models[0].usage.input++; bad.usage.models[0].usage.total++; bad.usage.models[1].usage.input--; bad.usage.models[1].usage.total--;
   assert.throws(() => validateUsage(bad, query));
+  const grouped = usageSnapshot(query, rows.map((row, i) => ({...row, group: i ? '2' : null})));
+  assert.deepEqual(validateUsage(grouped, query).usage.groups.map(g => [g.group_id, g.usage.total]), [[null, 5], ['2', 9]]);
+  const groupDrift = structuredClone(grouped); groupDrift.usage.groups[1].usage.input++; groupDrift.usage.groups[1].usage.total++; assert.throws(() => validateUsage(groupDrift, query));
+  const groupDuplicate = structuredClone(grouped); groupDuplicate.usage.groups[0].group_id = '2'; assert.throws(() => validateUsage(groupDuplicate, query));
+  const groupMissing = structuredClone(grouped); delete groupMissing.usage.groups; assert.throws(() => validateUsage(groupMissing, query));
   const overflow = structuredClone(snapshot); overflow.usage.total.input = Number.MAX_SAFE_INTEGER; assert.throws(() => validateUsage(overflow, query));
   const malformed = structuredClone(snapshot); malformed.usage.buckets[1].from++; assert.throws(() => validateUsage(malformed, query));
   const impossible = structuredClone(snapshot);

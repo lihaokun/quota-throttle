@@ -384,8 +384,9 @@ const totalsFields = record('totals', { input: integer, output: integer, total: 
 export function validateTotals(value) { const t = totalsFields(value); requireThat(safeAdd(t.input, t.output) === t.total && (t.consumption_rows > 0 || t.total === 0)); return t; }
 const modelUsage = record('modelUsage', { model: nullable(modelLabel), usage: validateTotals });
 const tokenUsage = record('tokenUsage', { native_token_id: nullable(id), usage: validateTotals });
+const groupUsage = record('groupUsage', { group_id: nullable(id), usage: validateTotals });
 const bucketFields = record('bucket', { from: integer, to: integer, total: validateTotals, models: array(modelUsage, L.bucketModels) });
-const usageReport = record('usageReport', { total: validateTotals, models: array(modelUsage, L.usageModels), tokens: array(tokenUsage, L.usageTokens), buckets: array(bucketFields, L.usageBuckets) });
+const usageReport = record('usageReport', { total: validateTotals, models: array(modelUsage, L.usageModels), tokens: array(tokenUsage, L.usageTokens), groups: array(groupUsage, L.usageGroups), buckets: array(bucketFields, L.usageBuckets) });
 const scanWindowFields = record('scanWindow', { from: integer, to: revision });
 function scanWindow(value) { const w = scanWindowFields(value); requireThat(w.from < w.to); return w; }
 const scanFields = record('scan', { lane: enumeration('scanLane'), generation: integer, window: nullable(scanWindow), next_page: revision, phase: enumeration('scanPhase'), last_observed_at: nullable(integer), fault: enumeration('scanFault') });
@@ -417,8 +418,8 @@ export function validateUsage(value, expectedQuery) {
   requireThat((snapshot.ledger.initial_requested_from === null) === (snapshot.usage === null));
   if (snapshot.usage === null) return snapshot;
   const report = snapshot.usage;
-  unique(report.models, m => modelKey(m.model)); unique(report.tokens, t => t.native_token_id);
-  sumTotals(report.models.map(m => m.usage), report.total); sumTotals(report.tokens.map(t => t.usage), report.total);
+  unique(report.models, m => modelKey(m.model)); unique(report.tokens, t => t.native_token_id); unique(report.groups, g => g.group_id);
+  sumTotals(report.models.map(m => m.usage), report.total); sumTotals(report.tokens.map(t => t.usage), report.total); sumTotals(report.groups.map(g => g.usage), report.total);
   sumTotals(report.buckets.map(b => b.total), report.total);
   const joint = new Map(); let items = 0, cursor = snapshot.query.from;
   for (const bucket of report.buckets) {

@@ -25,7 +25,7 @@ for (const [name, engine, viewportName, viewport] of projects) {
   page.on('pageerror', error => errors.push(error.message));
   const label = `browser-${name}-${viewportName}`;
   try {
-    const response = await page.goto(base);
+    const response = await page.goto(`${base}/#sources`);
     assert.equal(response.status(), 200);
     assert.ok(response.headers()['content-security-policy'].includes("script-src 'self'"));
     await expect(page.getByRole('button', {name: '添加来源', exact: true})).toBeEnabled({timeout: 20000});
@@ -42,10 +42,11 @@ for (const [name, engine, viewportName, viewport] of projects) {
     assert.equal(created.status(), 201);
     const source = await created.json();
     assert.equal(source.model_origin, 'discovered');
-    await expect(page.getByRole('heading', {name: `${label} · 火山 · #${source.source.source_id}`, exact: true})).toBeVisible({timeout: 20000});
+    await expect(page.getByRole('heading', {name: label, exact: true})).toBeVisible({timeout: 20000});
+    await expect(page.getByText(`火山 · #${source.source.source_id}`, {exact: true})).toBeVisible();
     assert.equal(await page.locator('input[type=password]').count(), 0);
     assert.ok(!(await page.evaluate(() => JSON.stringify({...sessionStorage, ...localStorage}))).includes(`SYNTHETIC_${label}`));
-    await page.getByRole('button', {name: '组与 Key', exact: true}).click();
+    await page.getByRole('button', {name: '组', exact: true}).click();
     await page.getByRole('button', {name: '创建组', exact: true}).click();
     await page.getByLabel('显示名称', {exact: true}).fill(label);
     await page.getByLabel('NewAPI 分组标识', {exact: true}).fill(label);
@@ -55,9 +56,10 @@ for (const [name, engine, viewportName, viewport] of projects) {
     const groupReply = await groupResponse;
     assert.equal(groupReply.status(), 201);
     const group = (await groupReply.json()).group;
-    await expect(page.getByRole('button', {name: `${label} (#${group.group_id})`, exact: true})).toBeVisible({timeout: 20000});
-    await page.getByRole('button', {name: '用量数据', exact: true}).click();
-    await expect(page.locator('#data-content canvas.chart')).toBeVisible({timeout: 20000});
+    // 组页的组卡片按钮名为「组名 · N 个成员」；新组尚无成员。
+    await expect(page.getByRole('button', {name: `${label} · 0 个成员`, exact: true})).toBeVisible({timeout: 20000});
+    await page.getByRole('button', {name: '数据', exact: true}).click();
+    await expect(page.locator('#data-content .chart')).toBeVisible({timeout: 20000});
     for (const model of ['gpt-4o-mini', 'gpt-4o']) await expect(page.getByText(model, {exact: true}).first()).toBeVisible();
     await page.screenshot({path: `${directory}/${label}.png`, fullPage: true});
     assert.deepEqual(errors, []);

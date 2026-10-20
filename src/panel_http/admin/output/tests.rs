@@ -1,7 +1,8 @@
 use super::*;
 use crate::catalog::ledger::{LedgerState, ScanLane, ScanPhase, ScanProgress, ScanWindow};
 use crate::ledger::analytics::*;
-use crate::ledger::UsageTotals;
+use crate::catalog::GroupId;
+use crate::ledger::{add_usage, UsageTotals};
 use proptest::prelude::*;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -71,6 +72,39 @@ fn h2_usage_uninitialized_and_unknown_filters_remain_distinct() {
     assert_eq!(wire["ledger"]["scans"][0]["lane"], "recent");
     assert_eq!(wire["ledger"]["scans"][1]["lane"], "history");
     assert!(wire.get("complete").is_none());
+}
+
+#[test]
+fn h2_usage_group_breakdown_serializes_ids_as_strings_and_keeps_unattributed_null() {
+    let part = |n| UsageTotals {
+        input: n,
+        output: 0,
+        consumption_rows: 1,
+    };
+    let wire = value(UsageSnapshot {
+        query: query(1),
+        state: state(true),
+        usage: Some(UsageReport {
+            total: UsageTotals {
+                input: 6,
+                output: 0,
+                consumption_rows: 2,
+            },
+            models: vec![(None, add_usage(part(1), part(5)).unwrap())],
+            tokens: vec![(None, add_usage(part(1), part(5)).unwrap())],
+            groups: vec![(None, part(1)), (Some(GroupId::new(i64::MAX).unwrap()), part(5))],
+            buckets: vec![UsageBucket {
+                from: 0,
+                to: 3600,
+                total: add_usage(part(1), part(5)).unwrap(),
+                models: vec![(None, add_usage(part(1), part(5)).unwrap())],
+            }],
+        }),
+    });
+    assert_eq!(
+        wire["usage"]["groups"],
+        json!([{"group_id":null,"usage":wire_totals(1, 0, 1)},{"group_id":i64::MAX.to_string(),"usage":wire_totals(5, 0, 1)}])
+    );
 }
 
 #[test]
@@ -148,6 +182,14 @@ fn large_snapshot(label_bytes: usize) -> UsageSnapshot {
                 })
                 .collect(),
             tokens: vec![(
+                None,
+                UsageTotals {
+                    input: 65536,
+                    output: 65536,
+                    consumption_rows: 65536,
+                },
+            )],
+            groups: vec![(
                 None,
                 UsageTotals {
                     input: 65536,

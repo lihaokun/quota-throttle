@@ -2,7 +2,7 @@
 use super::{add_usage, valid_label, UsageTotals};
 use crate::catalog::control::ControlErrorCode;
 use crate::catalog::ledger::{LedgerError, LedgerState, ScanWindow};
-use crate::catalog::{GroupId, SourceId, JSON_SAFE};
+use crate::catalog::{GroupId, SourceId, JSON_SAFE, MAX_GROUPS};
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -14,6 +14,8 @@ pub(crate) use query::*;
 pub(crate) const MAX_QUERY_SECONDS: i64 = 31 * 86400;
 pub(crate) const MAX_MODELS: usize = 1024;
 pub(crate) const MAX_TOKENS: usize = 4096;
+/// 按组分项上限：目录组上限 + 「未归组」(None) 一项。
+pub(crate) const MAX_USAGE_GROUPS: usize = MAX_GROUPS + 1;
 pub(crate) const MAX_BUCKET_MODELS: usize = 65536;
 pub(crate) const QUERY_TIMEOUT: Duration = Duration::from_secs(10);
 pub(crate) const QUERY_PAGE_ROWS: usize = 256;
@@ -120,6 +122,8 @@ pub(crate) struct UsageReport {
     pub(crate) total: UsageTotals,
     pub(crate) models: Vec<(Option<String>, UsageTotals)>,
     pub(crate) tokens: Vec<(Option<i64>, UsageTotals)>,
+    /// 按组分项（与按组过滤同一归属列）；未归组的消费记在 None。
+    pub(crate) groups: Vec<(Option<GroupId>, UsageTotals)>,
     pub(crate) buckets: Vec<UsageBucket>,
 }
 #[derive(PartialEq, Eq)]
@@ -146,6 +150,7 @@ struct Working {
     total: UsageTotals,
     models: BTreeMap<Option<String>, UsageTotals>,
     tokens: BTreeMap<Option<i64>, UsageTotals>,
+    groups: BTreeMap<Option<GroupId>, UsageTotals>,
     buckets: Vec<BucketWork>,
     ranges: Vec<ScanWindow>,
     bucket_models: usize,
@@ -180,6 +185,7 @@ impl UsageAccumulator {
                 total: UsageTotals::default(),
                 models: BTreeMap::new(),
                 tokens: BTreeMap::new(),
+                groups: BTreeMap::new(),
                 buckets,
                 ranges,
                 bucket_models: 0,
@@ -237,12 +243,21 @@ impl UsageAccumulator {
             work.tokens.len(),
             MAX_TOKENS,
         )?;
+        capacity(
+            !work.groups.contains_key(&dims.group),
+            work.groups.len(),
+            MAX_USAGE_GROUPS,
+        )?;
         let new_bucket_model = !bucket.models.contains_key(&model);
         capacity(new_bucket_model, work.bucket_models, MAX_BUCKET_MODELS)?;
         let total = sum(work.total, totals)?;
         let model_total = sum(work.models.get(&model).copied().unwrap_or_default(), totals)?;
         let token_total = sum(
             work.tokens.get(&dims.token).copied().unwrap_or_default(),
+            totals,
+        )?;
+        let group_total = sum(
+            work.groups.get(&dims.group).copied().unwrap_or_default(),
             totals,
         )?;
         let bucket_total = sum(bucket.total, totals)?;
@@ -254,6 +269,7 @@ impl UsageAccumulator {
         work.total = total;
         work.models.insert(model.clone(), model_total);
         work.tokens.insert(dims.token, token_total);
+        work.groups.insert(dims.group, group_total);
         let bucket = &mut work.buckets[index];
         bucket.total = bucket_total;
         bucket.models.insert(model, bucket_model);
@@ -272,6 +288,7 @@ impl UsageAccumulator {
         }
         let models = finish_parts(work.models, work.total, control)?;
         let tokens = finish_parts(work.tokens, work.total, control)?;
+        let groups = finish_parts(work.groups, work.total, control)?;
         let mut buckets = Vec::new();
         let mut bucket_sum = UsageTotals::default();
         for (bucket, range) in work.buckets.into_iter().zip(work.ranges) {
@@ -295,6 +312,7 @@ impl UsageAccumulator {
                 total: work.total,
                 models,
                 tokens,
+                groups,
                 buckets,
             }),
         })

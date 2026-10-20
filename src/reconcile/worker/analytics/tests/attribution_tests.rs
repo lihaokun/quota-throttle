@@ -148,7 +148,12 @@ async fn attribution_worker_batches_and_replays_preserve_routing_and_totals() {
     let replay = worker.repair_attribution_once().await.unwrap();
     assert_eq!((replay.checked, replay.changed), (256, 0));
     assert_eq!(replay.ledger_revision, third.ledger_revision);
-    assert!(worker.query_usage(query()).await.unwrap().usage == before_usage);
+    let after_usage = worker.query_usage(query()).await.unwrap().usage;
+    let (b, a) = (before_usage.as_ref().unwrap(), after_usage.as_ref().unwrap());
+    assert!(a.total == b.total && a.models == b.models && a.tokens == b.tokens && a.buckets == b.buckets);
+    // 归属修复只把「未归组」挪进真实组：按组分项随之变化，总量守恒。
+    assert!(b.groups.iter().any(|(group, _)| group.is_none()));
+    assert!(a.groups.iter().all(|(group, _)| group.is_some()));
     assert_eq!(
         serde_json::to_value(worker.snapshot().unwrap()).unwrap(),
         before

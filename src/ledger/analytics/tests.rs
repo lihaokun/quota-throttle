@@ -451,6 +451,52 @@ fn analytics_model_and_token_capacity_include_unknown_and_reject_plus_one() {
     }
 }
 
+fn grouped<'a>(group: Option<i64>, model: Option<&'a str>) -> UsageDimensions<'a> {
+    UsageDimensions {
+        source: group.map(|_| SourceId::new(1).unwrap()),
+        group: group.map(|g| GroupId::new(g).unwrap()),
+        token: None,
+        model,
+    }
+}
+#[test]
+fn analytics_group_breakdown_sums_each_group_and_keeps_unattributed_separate() {
+    let c = control();
+    let mut acc = UsageAccumulator::new(query(0, 7200, 0, UsageGrain::Hour), &c).unwrap();
+    acc.push(grouped(Some(2), Some("a")), 0, amount(3, 1, 1), &c).unwrap();
+    acc.push(grouped(Some(1), Some("a")), 10, amount(5, 0, 1), &c).unwrap();
+    acc.push(grouped(Some(2), Some("b")), 3600, amount(2, 2, 2), &c).unwrap();
+    acc.push(grouped(None, None), 3601, amount(0, 0, 1), &c).unwrap();
+    let r = report(acc, &c);
+    assert_eq!(r.total, amount(10, 3, 5));
+    // 与 tokens 一样按键排序；未归组（None）单列，不并入任何组。
+    assert_eq!(
+        r.groups,
+        vec![
+            (None, amount(0, 0, 1)),
+            (Some(GroupId::new(1).unwrap()), amount(5, 0, 1)),
+            (Some(GroupId::new(2).unwrap()), amount(5, 3, 3)),
+        ]
+    );
+}
+#[test]
+fn analytics_group_capacity_includes_unattributed_and_rejects_plus_one() {
+    let c = control();
+    let mut acc = UsageAccumulator::new(query(0, 60, 0, UsageGrain::Hour), &c).unwrap();
+    acc.push(grouped(None, None), 0, amount(0, 0, 1), &c).unwrap();
+    for g in 1..MAX_USAGE_GROUPS as i64 {
+        acc.push(grouped(Some(g), None), 0, amount(1, 0, 1), &c).unwrap();
+    }
+    assert_eq!(acc.work.as_ref().ok().unwrap().groups.len(), MAX_USAGE_GROUPS);
+    // 已存在的组仍可加；新组越界整份作废，不发布部分结果。
+    acc.push(grouped(Some(1), None), 0, amount(1, 0, 1), &c).unwrap();
+    assert_eq!(
+        acc.push(grouped(Some(MAX_USAGE_GROUPS as i64), None), 0, amount(1, 0, 1), &c),
+        Err(AnalyticsError::LimitExceeded)
+    );
+    assert_eq!(acc.finish(state(), &c).err(), Some(AnalyticsError::LimitExceeded));
+}
+
 fn maximum_output(c: &QueryControl) -> UsageAccumulator {
     let mut acc =
         UsageAccumulator::new(query(1, MAX_QUERY_SECONDS + 1, 0, UsageGrain::Hour), c).unwrap();

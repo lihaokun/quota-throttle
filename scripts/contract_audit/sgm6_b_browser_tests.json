@@ -12,7 +12,7 @@
     "API fixture source form is cleared on pagehide and does not enter storage",
     "API fixture refresh marks frozen source draft conflict without replacing user input",
     "API fixture native page failure retains local identity and operation reload queries same ID",
-    "API fixture usage renders distinct unknown/string models, exact totals and matching legend colors",
+    "API fixture usage renders distinct unknown/string models, exact totals and model share rows",
     "API fixture slow usage survives a new five-second state publication",
     "API fixture clipboard denial reuses one reveal and changing identity clears the manual key",
     "API fixture late clipboard completion cannot recreate key after hiding",
@@ -23,6 +23,10 @@
     "initialization exception cleans partial listeners and leaves explicit readonly reload",
     "API fixture source filters header refresh and collapsible operation progress remain usable",
     "API fixture retired source exposes complete readonly models without a write action",
+    "API fixture group page queries group-filtered usage and an open menu survives state refreshes",
+    "API fixture unknown usage never renders as zero and zero groups never re-query usage",
+    "API fixture group tiles order pinned then current then last-hour usage with five tiles and searchable more menu",
+    "API fixture more menu pages many groups without closing and keeps the search across state refreshes",
     "real browser cross-origin preflight and simple POST cannot mutate the isolated Rust catalog"
   ],
   "performance": ["serial full chart and 100-row DOM budgets including expanded source detail reuse"]

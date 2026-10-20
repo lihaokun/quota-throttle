@@ -27,6 +27,6 @@ export function maximumUsage() {
   const total = count => ({input: count, output: count * 2, total: count * 3, consumption_rows: count});
   const buckets = snapshot.usage.buckets.map(b => ({...b, total: total(0), models: []}));
   for (let n = 0; n < 65536; n++) { const bucket = buckets[n % buckets.length]; bucket.models.push({model: labels[n % 1024], usage: total(1)}); bucket.total = total(bucket.models.length); }
-  snapshot.usage = {total: total(65536), models: labels.map(model => ({model, usage: total(64)})), tokens: Array.from({length: 4096}, (_, n) => ({native_token_id: String(9223372036854775807n - BigInt(n)), usage: total(16)})), buckets};
+  snapshot.usage = {total: total(65536), models: labels.map(model => ({model, usage: total(64)})), tokens: Array.from({length: 4096}, (_, n) => ({native_token_id: String(9223372036854775807n - BigInt(n)), usage: total(16)})), groups: [{group_id: null, usage: total(65536 - 100 * 512)}, ...Array.from({length: 100}, (_, n) => ({group_id: String(n + 1), usage: total(512)}))], buckets};
   return snapshot;
 }

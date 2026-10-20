@@ -131,6 +131,11 @@ struct Token {
     usage: Totals,
 }
 #[derive(Serialize)]
+struct Group {
+    group_id: Option<String>,
+    usage: Totals,
+}
+#[derive(Serialize)]
 struct Bucket<'a> {
     from: i64,
     to: i64,
@@ -142,6 +147,7 @@ struct Usage<'a> {
     total: Totals,
     models: Vec<Model<'a>>,
     tokens: Vec<Token>,
+    groups: Vec<Group>,
     buckets: Vec<Bucket<'a>>,
 }
 fn usage(r: &UsageReport) -> Result<Usage<'_>, AdminError> {
@@ -154,6 +160,16 @@ fn usage(r: &UsageReport) -> Result<Usage<'_>, AdminError> {
             .map(|(id, t)| {
                 Ok(Token {
                     native_token_id: id.map(|v| v.to_string()),
+                    usage: totals(*t)?,
+                })
+            })
+            .collect::<Result<_, AdminError>>()?,
+        groups: r
+            .groups
+            .iter()
+            .map(|(id, t)| {
+                Ok(Group {
+                    group_id: id.map(|v| v.get().to_string()),
                     usage: totals(*t)?,
                 })
             })

@@ -210,6 +210,7 @@ export const LIMITS = {
   "nativeTotal": 10000,
   "usageModels": 1024,
   "usageTokens": 4096,
+  "usageGroups": 101,
   "usageBuckets": 745,
   "bucketModels": 1024,
   "operationTargets": 10000,
@@ -519,6 +520,10 @@ export const WIRE_FIELDS = {
     "native_token_id",
     "usage"
   ],
+  "groupUsage": [
+    "group_id",
+    "usage"
+  ],
   "bucket": [
     "from",
     "to",
@@ -529,6 +534,7 @@ export const WIRE_FIELDS = {
     "total",
     "models",
     "tokens",
+    "groups",
     "buckets"
   ],
   "httpError": [

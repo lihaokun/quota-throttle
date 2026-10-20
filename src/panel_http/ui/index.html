@@ -3,22 +3,23 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Quota · 管理面板</title>
+  <title>quota-throttle</title>
   <link rel="stylesheet" href="/assets/panel.css">
   <script type="module" src="/assets/app.mjs"></script>
 </head>
 <body>
-  <header class="masthead"><a href="/" class="brand">Quota<span>管理面板</span></a><p id="connection" role="status">正在连接</p><div class="toolbar"><button type="button" id="refresh-state">刷新状态</button><button type="button" id="toggle-operations" aria-controls="operations" aria-expanded="true">操作进度</button></div></header>
-  <main>
+  <div class="wrap">
+    <header><h1>quota-throttle</h1><span class="tag">来源分组</span><nav class="seg" aria-label="管理页面"><button type="button" data-page="groups" aria-current="page">组</button><button type="button" data-page="sources">来源</button><button type="button" data-page="data">数据</button></nav></header>
+    <div class="sub"><span id="connection" role="status">正在连接</span><button type="button" class="lnk-btn" id="refresh-state">刷新状态</button><button type="button" class="lnk-btn" id="toggle-operations" aria-controls="operations" aria-expanded="false">操作进度</button></div>
     <p id="compatibility" role="alert">界面正在加载。如果此提示持续存在，请使用支持 JavaScript 模块、Fetch 和 AbortController 的浏览器。</p>
-    <nav aria-label="管理页面"><button type="button" data-page="sources" aria-current="page">来源管理</button><button type="button" data-page="groups">组与 Key</button><button type="button" data-page="data">用量数据</button></nav>
+    <div class="chips" id="chips"></div>
     <section id="notice" aria-live="polite"></section>
-    <section id="page-sources"><h1>来源管理</h1><p>同一来源的额度、用量与异常状态由所有组共享。</p><form id="source-filters" class="toolbar"><label for="source-type-filter">来源类型筛选</label><select id="source-type-filter" name="type"><option value="">全部类型</option><option value="glm">GLM</option><option value="volcano">火山</option></select><label for="source-name-filter">来源名称筛选</label><input id="source-name-filter" name="name" type="search" autocomplete="off"><button type="submit">筛选来源</button></form><div id="sources-content"></div></section>
-    <section id="page-groups" hidden><h1>组与 Key</h1><p>每个访问 Key 对应一个组，同时支持 OpenCode 和 Claude 协议。</p><div id="groups-content"></div></section>
-    <section id="page-data" hidden><h1>用量数据</h1><p>按模型查看 Token 用量。统计不代表金额或积分。</p><div id="data-content"></div></section>
-    <section id="operations" aria-label="操作记录"></section>
+    <section id="page-groups"><div id="groups-content"></div></section>
+    <section id="page-sources" hidden><div class="hrow"><h2>来源</h2><form id="source-filters" class="right"><label for="source-type-filter" hidden>来源类型筛选</label><select id="source-type-filter" name="type" aria-label="来源类型筛选"><option value="">全部类型</option><option value="glm">GLM</option><option value="volcano">火山</option></select><label for="source-name-filter" hidden>来源名称筛选</label><input id="source-name-filter" name="name" type="search" autocomplete="off" placeholder="按名称筛选" aria-label="来源名称筛选"><button type="submit" class="pbtn">筛选来源</button></form></div><div id="sources-content"></div></section>
+    <section id="page-data" hidden><div id="data-content"></div></section>
     <section id="editor" aria-label="编辑操作" hidden></section>
     <section id="secret" aria-label="访问 Key" hidden></section>
-  </main>
+    <section id="operations" aria-label="操作记录" hidden></section>
+  </div>
 </body>
 </html>
