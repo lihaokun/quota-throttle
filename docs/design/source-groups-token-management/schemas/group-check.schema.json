@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:quota-throttle:group-check:1",
+  "title": "Group configuration check version 1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "group_id", "revision", "ready", "error_code"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "group_id": {"type": "string", "pattern": "^[1-9][0-9]{0,18}$"},
+    "revision": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+    "ready": {"type": "boolean"},
+    "error_code": {"enum": [null, "invalid_input", "not_found", "revision_conflict", "idempotency_conflict", "queue_full", "not_ready", "binding_drift", "ambiguous_create", "auth_failed", "remote_rejected", "invalid_response", "rate_limited", "transport_unknown", "storage"]}
+  },
+  "allOf": [
+    {"if": {"properties": {"ready": {"const": true}}}, "then": {"properties": {"error_code": {"const": null}}}},
+    {"if": {"properties": {"ready": {"const": false}}}, "then": {"properties": {"error_code": {"not": {"const": null}}}}}
+  ]
+}

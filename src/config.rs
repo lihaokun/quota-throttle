@@ -2,7 +2,7 @@
 //! 不写死在代码，方便你 F12 抓到真实接口后直接改。
 
 use anyhow::{bail, Context};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::path::Path;
 
@@ -269,7 +269,7 @@ pub struct ChannelTemplate {
 
 /// 上游模型目录的鉴权形态。不同 OpenAI 兼容网关并不统一：智谱用 Bearer，
 /// 火山自定义 APIG 实测使用原始 Authorization。
-#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelDiscoveryAuth {
     #[default]
@@ -278,7 +278,7 @@ pub enum ModelDiscoveryAuth {
     XApiKey,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Hash)]
 pub struct ModelDiscoveryConfig {
     /// 完整 models URL，例如 https://open.bigmodel.cn/api/coding/paas/v4/models
     pub url: String,
@@ -295,7 +295,7 @@ fn default_group() -> String {
     "default".to_string()
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct HeaderKV {
     pub key: String,
     pub value: String,
@@ -490,7 +490,7 @@ impl Config {
     /// 阈值必须满足 0 < restore ≤ throttle ≤ exhausted ≤ 100。
     /// 配错阈值是**静默灾难**（例如 throttle > exhausted 会让合格集恒空、永不切换），
     /// 所以启动就失败，别等到线上才发现。
-    fn validate(&self) -> anyhow::Result<()> {
+    pub(crate) fn validate(&self) -> anyhow::Result<()> {
         let (r, t, e) = (
             self.restore_threshold,
             self.throttle_threshold,

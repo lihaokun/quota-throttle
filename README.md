@@ -1,5 +1,42 @@
 # quota-throttle
 
+## 来源分组版：全新部署
+
+新入口 `serve <config.toml>` 提供三个页面：来源管理、组与访问 Key、按模型/Key 汇总的用量。
+来源支持 GLM、火山；每组只选一种类型，每个访问 Key 固定一个组，**同一 Key 同时支持 OpenAI/OpenCode 和 Claude 请求格式**。
+共享来源在各组创建独立渠道与优先级，但用量、暂停、错误耗尽统一计量。GLM 原策略不变；火山默认每日 UTC+8 01:00 重置，可改时间和软 token 上界。
+
+新模式不导入旧 `keys`，也不与旧 `up/run` 共用数据目录或端口。旧版使用说明保留在下方。
+目前只支持 Linux、本地受管的固定 NewAPI v1.0.0-rc.20、Custom(type 8) 完整 `/chat/completions` 地址。
+
+```bash
+cargo build --release --locked
+python3 scripts/deploy/initialize_groups.py \
+  --target /absolute/private/new-instance \
+  --newapi-binary /absolute/path/new-api-v1.0.0-rc.20 \
+  --app-binary target/release/quota-throttle \
+  --api-port 13000 --panel-port 13001 \
+  --revision YOUR_TESTED_COMMIT --install-service
+```
+
+安装器只接受**不存在的新目录**和空闲端口，核验固定原生 SHA256，生成私有管理员/普通签发账号及 0600 配置；绝不覆盖、导入旧数据库或重复初始化。失败保留目录，先核查报错阶段，不能删目录盲目重试未知账号创建。`--install-service` 使用当前用户的 systemd；无该选项时初始化后需手动执行 `新目录/bin/quota-throttle serve 新目录/config.toml`。配置示例见 [config.groups.example.toml](config.groups.example.toml)。
+
+```bash
+systemctl --user status quota-throttle-sgm.service
+systemctl --user restart quota-throttle-sgm.service
+journalctl --user -u quota-throttle-sgm.service -n 50
+```
+
+面板仅回环监听，适用于可信管理员/SSH 隧道，**不是多用户认证边界**。NewAPI 原生端可能监听所有接口，访问 Key 需保密；安装器不修改防火墙。
+远程访问示例：`ssh -L 13001:127.0.0.1:13001 -L 13000:127.0.0.1:13000 fermat`。
+面板为 `http://127.0.0.1:13001/`；OpenAI base URL 为 `http://127.0.0.1:13000/v1`，Claude base URL 为 `http://127.0.0.1:13000`。
+
+首次为空来源/Key：在面板添加来源（以 model list 为准）→创建同类型组→加入来源建立成员计划→显式 Ensure 建渠道→注册并核验组→等待启用回读→生成访问 Key。暂态操作可用原操作的“重试”，不要重复创建替代 key；发送结果未知时保留待核验状态。用量和火山熔断来自统一日志采集，不是即时硬额度保证；成功 token 流会清连续失败计数，已经耗尽仍按显式撤错/周期规则恢复。
+
+`systemctl --user stop` 只停新控制器并保留目录、数据库及独立 NewAPI，不会撤销已下发路由；这不是“停止流量”按钮。停原生进程前须另行核验该实例的 PID/exe/cwd。退出登录仍运行需用户 lingering 已启用；控制器意外退出由服务重启恢复。
+
+## 旧版 GLM 单池模式
+
 给智谱 GLM Coding Plan **多 key 池**做**预防式调度**的守护进程：轮询每把 key 的真实用量（5 小时 / 每周窗口），通过 new-api 用 `priority` **钉住单把活动 key**（让 prompt 缓存能连续命中），当它逼近额度上限时**在撞墙前**自动切到下一把还有额度的 key。
 
 顺带把 new-api 也管了：`up` 一条命令自动下载 new-api 二进制、拉起进程、按 key 列表建好渠道，并提供一个状态看板。

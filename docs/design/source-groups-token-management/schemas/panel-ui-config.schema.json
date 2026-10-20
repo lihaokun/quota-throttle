@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:quota-throttle:panel-ui-config:1",
+  "title": "Panel UI configuration version 1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "dry_run",
+    "public_api_base_url"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "dry_run": {
+      "type": "boolean"
+    },
+    "public_api_base_url": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8192,
+          "format": "uri",
+          "pattern": "^https?://[^/?#@\\s]+(?:/[^?#\\s]*)?$",
+          "not": {
+            "pattern": "/(?:[vV]|%56|%76)(?:1|%31)/*$"
+          }
+        }
+      ]
+    }
+  },
+  "description": "Only explicit public NewAPI root; never infer from panel Host/Origin. Rust validates original and canonical URL <=8192 UTF-8 bytes, rejects userinfo/query/fragment/outer whitespace and decoded trailing v1, then normalizes trailing slash. Schema covers wire shape and visible URL constraints, not full Rust URL semantics. dry_run comes from same immutable worker."
+}

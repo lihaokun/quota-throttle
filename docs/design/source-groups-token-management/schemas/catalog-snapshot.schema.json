@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:quota-throttle:catalog-snapshot:1",
+  "title": "Catalog snapshot version 1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "sources", "groups", "memberships"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "sources": {"type": "array", "maxItems": 1000, "items": {"$ref": "#/$defs/source"}},
+    "groups": {"type": "array", "maxItems": 100, "items": {"$ref": "#/$defs/group"}},
+    "memberships": {"type": "array", "maxItems": 10000, "items": {"$ref": "#/$defs/membership"}}
+  },
+  "$defs": {
+    "id": {"type": "string", "pattern": "^[1-9][0-9]{0,18}$"},
+    "kind": {"enum": ["glm", "volcano"]},
+    "name": {
+      "type": "string", "minLength": 1, "maxLength": 128,
+      "pattern": "^\\S(?:[\\s\\S]*\\S)?$", "not": {"pattern": "\u0000"}
+    },
+    "revision": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+    "priority": {"type": "integer", "minimum": -9007199254740991, "maximum": 9007199254740991},
+    "timestamp": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+    "source": {
+      "type": "object", "additionalProperties": false,
+      "required": ["source_id", "type", "name", "note", "manual_paused", "retired_at", "config_revision"],
+      "properties": {
+        "source_id": {"$ref": "#/$defs/id"},
+        "type": {"$ref": "#/$defs/kind"},
+        "name": {"$ref": "#/$defs/name"},
+        "note": {"type": "string", "maxLength": 2048, "not": {"pattern": "\u0000"}},
+        "manual_paused": {"type": "boolean"},
+        "retired_at": {"anyOf": [{"$ref": "#/$defs/timestamp"}, {"type": "null"}]},
+        "config_revision": {"$ref": "#/$defs/revision"}
+      }
+    },
+    "group": {
+      "type": "object", "additionalProperties": false,
+      "required": ["group_id", "newapi_group", "name", "type", "revision", "ready"],
+      "properties": {
+        "group_id": {"$ref": "#/$defs/id"},
+        "newapi_group": {
+          "type": "string", "minLength": 1, "maxLength": 64,
+          "pattern": "^[A-Za-z0-9_.-]+$", "not": {"const": "auto"}
+        },
+        "name": {"$ref": "#/$defs/name"},
+        "type": {"$ref": "#/$defs/kind"},
+        "revision": {"$ref": "#/$defs/revision"},
+        "ready": {"type": "boolean"}
+      }
+    },
+    "membership": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "membership_id", "source_id", "group_id", "channel_id", "order", "lifecycle",
+        "desired_priority", "observed_status", "observed_priority", "applied_revision", "retired_at"
+      ],
+      "properties": {
+        "membership_id": {"$ref": "#/$defs/id"},
+        "source_id": {"$ref": "#/$defs/id"},
+        "group_id": {"$ref": "#/$defs/id"},
+        "channel_id": {"anyOf": [{"$ref": "#/$defs/id"}, {"type": "null"}]},
+        "order": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+        "lifecycle": {"enum": ["planned", "imported", "created_disabled", "ready", "retired"]},
+        "desired_priority": {"$ref": "#/$defs/priority"},
+        "observed_status": {"enum": [null, 1, 2, 3]},
+        "observed_priority": {"anyOf": [{"$ref": "#/$defs/priority"}, {"type": "null"}]},
+        "applied_revision": {"anyOf": [{"$ref": "#/$defs/revision"}, {"type": "null"}]},
+        "retired_at": {"anyOf": [{"$ref": "#/$defs/timestamp"}, {"type": "null"}]}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"lifecycle": {"const": "planned"}}},
+          "then": {"properties": {"channel_id": {"type": "null"}}}
+        },
+        {
+          "if": {"properties": {"lifecycle": {"enum": ["imported", "created_disabled", "ready"]}}},
+          "then": {"properties": {"channel_id": {"$ref": "#/$defs/id"}}}
+        },
+        {
+          "if": {"properties": {"lifecycle": {"const": "retired"}}},
+          "then": {"properties": {"retired_at": {"$ref": "#/$defs/timestamp"}}},
+          "else": {"properties": {"retired_at": {"type": "null"}}}
+        }
+      ]
+    }
+  }
+}

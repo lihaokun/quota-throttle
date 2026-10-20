@@ -11,11 +11,21 @@ use crate::config::{ChannelTemplate, KeyMapping, ModelDiscoveryConfig, NewApiCon
 use crate::model_catalog::{model_sets_equal, normalize_models_csv, ModelCatalogClient};
 use crate::status::{ChannelState, RequestLog};
 use anyhow::{bail, Context, Result};
-use reqwest::StatusCode;
+pub(crate) mod logs;
+pub(crate) mod groups;
+pub mod managed_channels;
+pub mod preflight;
+pub(crate) mod tokens;
+pub mod transport;
+
+use reqwest::Method;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
-use tokio::sync::Mutex;
 use tracing::{info, warn};
+use transport::{
+    ManagementBudget, ManagementRequest, ManagementResponse, ManagementTransport, RequestClass,
+    RequestSemantics, LIST_BODY_LIMIT, SINGLE_BODY_LIMIT,
+};
 
 /// new-api 列表响应兼容：新版 `data.items[]`，旧版 `data[]`。
 fn extract_items(body: &Value) -> Vec<Value> {
@@ -37,14 +47,6 @@ fn s(v: &Value, k: &str) -> String {
 }
 fn i(v: &Value, k: &str) -> Option<i64> {
     v.get(k).and_then(|x| x.as_i64())
-}
-
-enum Auth {
-    Token(String),
-    /// 已登录，会话在 cookie 里；user_id 用于 New-Api-User 头
-    Session { user_id: Option<i64> },
-    /// 还没登录（admin_token 为空，需调 login）
-    Pending,
 }
 
 /// 建渠道参数：两种格式模板（OpenAI/Anthropic）归一到同一 payload 形状。
@@ -112,7 +114,9 @@ fn plan_channel_ops<'a>(
                 key: &k.zhipu_api_key,
             });
         } else {
-            ops.push(ChannelOp::Missing { name: k.name.clone() });
+            ops.push(ChannelOp::Missing {
+                name: k.name.clone(),
+            });
         }
     }
     ops
@@ -144,196 +148,89 @@ type DiscoveryCache =
     HashMap<(String, ModelDiscoveryConfig), std::result::Result<Vec<String>, String>>;
 
 pub struct NewApiClient {
-    client: reqwest::Client,
     catalog: ModelCatalogClient,
-    base_url: String,
     channel_path: String,
-    /// 管理鉴权状态。锁覆盖一次完整管理请求；本地 API 通常为毫秒级，串行化换来
-    /// 401 时单飞重登，避免面板和调度循环同时反复登录。
-    auth: Mutex<Auth>,
-    root_username: String,
-    root_password: String,
-    extra_headers: Vec<(String, String)>,
+    transport: ManagementTransport,
 }
 
 impl NewApiClient {
+    pub(crate) fn managed_groups<'a>(&'a self, guard: &'a (dyn Fn() -> bool + Send + Sync)) -> groups::ManagedGroups<'a> {
+        groups::ManagedGroups::new(&self.transport, guard)
+    }
+    pub(crate) fn shares_management_scope(&self, other: &Self) -> bool {
+        self.transport.shares_scope(&other.transport)
+    }
+    #[allow(dead_code)]
+    pub(crate) fn managed_tokens(&self, owner: tokens::TokenOwner) -> tokens::ManagedTokens<'_> {
+        tokens::ManagedTokens::new(&self.transport, owner)
+    }
+    pub async fn retry_management_authentication(&self) -> transport::Result<()> {
+        self.transport.retry_authentication().await
+    }
     pub fn new(cfg: &NewApiConfig) -> Result<Self> {
-        let client = reqwest::Client::builder()
-            .cookie_store(true)
+        Self::with_budget(cfg, ManagementBudget::new())
+    }
+
+    /// 同实例的其他管理身份由组装层注入同一预算。
+    pub fn with_budget(
+        cfg: &NewApiConfig,
+        budget: std::sync::Arc<ManagementBudget>,
+    ) -> Result<Self> {
+        // 模型发现不共用管理 cookie 或管理预算。
+        let catalog_client = reqwest::Client::builder()
             .build()
-            .context("构建 HTTP client 失败")?;
-        let auth = if cfg.admin_token.trim().is_empty() {
-            Auth::Pending
-        } else {
-            Auth::Token(cfg.admin_token.clone())
-        };
+            .context("构建模型目录 client 失败")?;
         Ok(Self {
-            catalog: ModelCatalogClient::new(client.clone()),
-            client,
-            base_url: cfg.base_url.trim_end_matches('/').to_string(),
-            channel_path: cfg.channel_path.clone(),
-            auth: Mutex::new(auth),
-            root_username: cfg.root_username.clone(),
-            root_password: cfg.root_password.clone(),
-            extra_headers: cfg
-                .extra_headers
-                .iter()
-                .map(|h| (h.key.clone(), h.value.clone()))
-                .collect(),
+            catalog: ModelCatalogClient::new(catalog_client),
+            channel_path: cfg.channel_path.trim_end_matches('/').to_string(),
+            transport: ManagementTransport::new(cfg, budget)?,
         })
     }
 
-    fn apply_headers(
+    pub fn managed_channels(&self) -> managed_channels::ManagedChannels<'_> {
+        managed_channels::ManagedChannels::new(&self.transport)
+    }
+
+    async fn send_management(
         &self,
-        mut rb: reqwest::RequestBuilder,
-        auth: &Auth,
-    ) -> reqwest::RequestBuilder {
-        match auth {
-            Auth::Token(t) => {
-                rb = rb.header("Authorization", format!("Bearer {t}"));
-            }
-            Auth::Session { user_id } => {
-                if let Some(id) = user_id {
-                    rb = rb.header("New-Api-User", id.to_string());
-                }
-            }
-            Auth::Pending => {}
-        }
-        for (k, v) in &self.extra_headers {
-            rb = rb.header(k.as_str(), v.as_str());
-        }
-        rb
+        method: Method,
+        path: &str,
+        body: Option<Value>,
+        class: RequestClass,
+    ) -> Result<ManagementResponse> {
+        let semantics = match method {
+            Method::GET => RequestSemantics::Read,
+            Method::POST => RequestSemantics::Create,
+            _ => RequestSemantics::IdempotentWrite,
+        };
+        let single_channel = path
+            .strip_prefix(&format!("{}/", self.channel_path))
+            .and_then(|id| id.parse::<i64>().ok())
+            .is_some();
+        let response_limit = if method != Method::GET || single_channel {
+            SINGLE_BODY_LIMIT
+        } else {
+            LIST_BODY_LIMIT
+        };
+        Ok(self
+            .transport
+            .send(
+                ManagementRequest::new(method, path, body, semantics, response_limit)?,
+                class,
+            )
+            .await?)
     }
 
-    /// 发送一条 NewAPI 管理请求。会话模式收到 401 时只重登一次并重放原请求；
-    /// `auth` mutex 让并发请求排队，因此同一波 401 只会由首个请求触发登录。
-    async fn send_management(&self, rb: reqwest::RequestBuilder) -> Result<reqwest::Response> {
-        let retry = rb.try_clone();
-        let mut auth = self.auth.lock().await;
-        let resp = self
-            .apply_headers(rb, &auth)
-            .send()
-            .await
-            .context("NewAPI 管理请求失败")?;
-        if resp.status() != StatusCode::UNAUTHORIZED {
-            return Ok(resp);
-        }
-
-        match &*auth {
-            Auth::Token(_) => {
-                bail!("NewAPI admin_token 已失效或被拒绝（HTTP 401），请更新配置")
-            }
-            Auth::Pending | Auth::Session { .. } => {}
-        }
-
-        warn!("NewAPI 管理会话返回 401，自动重新登录并重试一次");
-        drop(resp);
-        *auth = self.login().await?;
-        let retry = retry.context("NewAPI 管理请求体不可重放，无法在重新登录后重试")?;
-        let resp = self
-            .apply_headers(retry, &auth)
-            .send()
-            .await
-            .context("重新登录后重试 NewAPI 管理请求失败")?;
-        if resp.status() == StatusCode::UNAUTHORIZED {
-            bail!("NewAPI 重新登录后管理请求仍返回 HTTP 401")
-        }
-        Ok(resp)
-    }
-
-    /// 新版 new-api 首启不再自带 root：需先 POST /api/setup 建管理员。幂等——已初始化则跳过。
-    async fn ensure_setup(&self) -> Result<()> {
-        let url = format!("{}/api/setup", self.base_url);
-        let body: Value = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .context("查询 new-api setup 状态失败")?
-            .json()
-            .await
-            .unwrap_or(Value::Null);
-        let data = body.get("data");
-        let status = data
-            .and_then(|d| d.get("status"))
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        let root_init = data
-            .and_then(|d| d.get("root_init"))
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        if status || root_init {
-            return Ok(()); // 已初始化
-        }
-        info!(user = %self.root_username, "new-api 首启未初始化，创建管理员");
-        let payload = json!({
-            "username": self.root_username,
-            "password": self.root_password,
-            "confirmPassword": self.root_password,
-            "SelfUseModeEnabled": true,   // 自用网关，关掉多租户计费等检查
-            "DemoSiteEnabled": false,
-        });
-        let resp = self
-            .client
-            .post(&url)
-            .json(&payload)
-            .send()
-            .await
-            .context("初始化 new-api 失败")?;
-        let st = resp.status();
-        let rb: Value = resp.json().await.unwrap_or(Value::Null);
-        let ok = rb.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
-        if !ok {
-            bail!("new-api 初始化失败: HTTP {st} body={rb}（密码需≥8位、用户名≤12）");
-        }
-        info!("new-api 管理员已创建");
-        Ok(())
-    }
-
-    /// 用 root 登录并返回新的会话鉴权信息。cookie 由 reqwest cookie store 自动更新。
-    async fn login(&self) -> Result<Auth> {
-        self.ensure_setup().await?;
-        let url = format!("{}/api/user/login", self.base_url);
-        let resp = self
-            .client
-            .post(&url)
-            .json(&json!({ "username": self.root_username, "password": self.root_password }))
-            .send()
-            .await
-            .context("登录 new-api 失败")?;
-        let status = resp.status();
-        let body: Value = resp.json().await.unwrap_or(Value::Null);
-        let ok = body.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
-        if !ok {
-            bail!(
-                "new-api 登录失败: HTTP {} body={}（默认 root/123456，改过密码就填 admin_token 或 root_password）",
-                status,
-                body
-            );
-        }
-        let user_id = body
-            .get("data")
-            .and_then(|d| d.get("id"))
-            .and_then(|v| v.as_i64());
-        info!(user_id = ?user_id, "已登录 new-api（会话模式）");
-        Ok(Auth::Session { user_id })
-    }
-
-    /// 确保已鉴权：Token 模式无需动作；Pending 则（必要时先 setup）用 root 登录换会话。
+    /// 首启引导是显式动作；自动重登不再查询或调用 setup。
     pub async fn authenticate(&self) -> Result<()> {
-        let mut auth = self.auth.lock().await;
-        if !matches!(*auth, Auth::Pending) {
-            return Ok(());
-        }
-        *auth = self.login().await?;
-        Ok(())
+        Ok(self.transport.bootstrap().await?)
     }
 
     /// 列出渠道，返回 name → id。兼容 data.items 和 data 直接数组两种结构。
     pub async fn list_channels(&self) -> Result<HashMap<String, i64>> {
-        let url = format!("{}{}/?p=0&page_size=100", self.base_url, self.channel_path);
+        let url = format!("{}/?p=1&page_size=100", self.channel_path);
         let body: Value = self
-            .send_management(self.client.get(&url))
+            .send_management(Method::GET, &url, None, RequestClass::Observe)
             .await
             .context("列出渠道失败")?
             .json()
@@ -358,9 +255,9 @@ impl NewApiClient {
     /// 首要用途：暴露「渠道被 new-api 自动禁用」这个盲区——我们只改 priority、从不碰 status，
     /// 渠道一旦被禁，priority=100 也不会有流量。
     pub async fn list_channel_states(&self) -> Result<Vec<ChannelState>> {
-        let url = format!("{}{}/?p=0&page_size=100", self.base_url, self.channel_path);
+        let url = format!("{}/?p=1&page_size=100", self.channel_path);
         let body: Value = self
-            .send_management(self.client.get(&url))
+            .send_management(Method::GET, &url, None, RequestClass::Observe)
             .await
             .context("拉取渠道状态失败")?
             .json()
@@ -395,9 +292,9 @@ impl NewApiClient {
     /// 过滤依据用**字段语义**（model_name 非空 且 channel != 0）而非 `type` 枚举值——
     /// 后者随 new-api 版本可能变，前者稳。日志里混有登录等系统条目（实测 type=7）。
     pub async fn recent_logs(&self, n: usize) -> Result<Vec<RequestLog>> {
-        let url = format!("{}/api/log/?p=0&page_size={n}", self.base_url);
+        let url = format!("/api/log/?p=1&page_size={n}");
         let body: Value = self
-            .send_management(self.client.get(&url))
+            .send_management(Method::GET, &url, None, RequestClass::Observe)
             .await
             .context("拉取请求日志失败")?
             .json()
@@ -421,7 +318,10 @@ impl NewApiClient {
                     completion_tokens: i(it, "completion_tokens").unwrap_or(0),
                     quota: i(it, "quota").unwrap_or(0),
                     use_time: i(it, "use_time").unwrap_or(0),
-                    is_stream: it.get("is_stream").and_then(|v| v.as_bool()).unwrap_or(false),
+                    is_stream: it
+                        .get("is_stream")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false),
                     token_name: s(it, "token_name"),
                 })
             })
@@ -510,7 +410,10 @@ impl NewApiClient {
         p: &ChannelParams<'_>,
         models: &str,
     ) -> Result<()> {
-        anyhow::ensure!(!normalize_models_csv(models).is_empty(), "渠道 models 不能为空");
+        anyhow::ensure!(
+            !normalize_models_csv(models).is_empty(),
+            "渠道 models 不能为空"
+        );
         // new-api 的 AddChannel 期望 { mode, channel:{...} }，channel 是指针，缺了会 nil-panic。
         let payload = json!({
             "mode": "single",
@@ -526,9 +429,9 @@ impl NewApiClient {
                 "status": 1,
             }
         });
-        let url = format!("{}{}", self.base_url, self.channel_path);
+        let url = format!("{}/", self.channel_path);
         let resp = self
-            .send_management(self.client.post(&url).json(&payload))
+            .send_management(Method::POST, &url, Some(payload), RequestClass::Control)
             .await
             .context("创建渠道失败")?;
         let status = resp.status();
@@ -536,9 +439,9 @@ impl NewApiClient {
         let ok = body
             .get("success")
             .and_then(|v| v.as_bool())
-            .unwrap_or(status.is_success());
+            .unwrap_or(false);
         if !ok {
-            bail!("创建渠道 {name} 失败: HTTP {status} body={body}");
+            bail!("创建渠道 {name} 失败: HTTP {status}");
         }
         Ok(())
     }
@@ -565,10 +468,11 @@ impl NewApiClient {
         obj.insert("models".to_string(), Value::from(desired));
         // new-api UpdateChannel 拒绝带 status；GET 返回的空 key 表示保留原 key。
         obj.remove("status");
+        obj.remove("key");
 
-        let url = format!("{}{}", self.base_url, self.channel_path);
+        let url = format!("{}/", self.channel_path);
         let resp = self
-            .send_management(self.client.put(&url).json(&channel))
+            .send_management(Method::PUT, &url, Some(channel), RequestClass::Control)
             .await
             .with_context(|| format!("更新渠道 {name} models 失败"))?;
         let status = resp.status();
@@ -576,9 +480,9 @@ impl NewApiClient {
         let ok = body
             .get("success")
             .and_then(Value::as_bool)
-            .unwrap_or(status.is_success());
+            .unwrap_or(false);
         if !ok {
-            bail!("更新渠道 {name} models 失败: HTTP {status} body={body}");
+            bail!("更新渠道 {name} models 失败: HTTP {status}");
         }
 
         let after = self.get_channel(id).await?;
@@ -631,9 +535,16 @@ impl NewApiClient {
                     {
                         Ok(models) => {
                             let desired = models.join(",");
-                            match self.ensure_channel_models(existing[name], name, &desired).await {
-                                Ok(true) => info!(name = %name, count = models.len(), "已按上游 /models 更新渠道模型"),
-                                Ok(false) => info!(name = %name, count = models.len(), "渠道模型已与上游一致"),
+                            match self
+                                .ensure_channel_models(existing[name], name, &desired)
+                                .await
+                            {
+                                Ok(true) => {
+                                    info!(name = %name, count = models.len(), "已按上游 /models 更新渠道模型")
+                                }
+                                Ok(false) => {
+                                    info!(name = %name, count = models.len(), "渠道模型已与上游一致")
+                                }
                                 Err(e) => return Err(e),
                             }
                         }
@@ -656,12 +567,7 @@ impl NewApiClient {
                     key,
                 } => {
                     let result = match self
-                        .resolve_models_for_create(
-                            owner_name,
-                            key,
-                            params,
-                            &mut discovery_cache,
-                        )
+                        .resolve_models_for_create(owner_name, key, params, &mut discovery_cache)
                         .await
                     {
                         Ok((models, source)) => {
@@ -706,12 +612,9 @@ impl NewApiClient {
     ///
     /// ⚠️ 该接口 `Group("model_name, created_at")` —— **不带渠道维度**（new-api 从不暴露按渠道的用量）。
     pub async fn usage_data(&self, start: i64, end: i64) -> Result<Vec<(String, i64, i64, i64)>> {
-        let url = format!(
-            "{}/api/data/?start_timestamp={start}&end_timestamp={end}",
-            self.base_url
-        );
+        let url = format!("/api/data/?start_timestamp={start}&end_timestamp={end}");
         let body: Value = self
-            .send_management(self.client.get(&url))
+            .send_management(Method::GET, &url, None, RequestClass::Backfill)
             .await
             .context("拉取用量统计失败")?
             .json()
@@ -744,9 +647,9 @@ impl NewApiClient {
     /// ⚠️ new-api 按「按量付费倍率」给包月编码套餐虚构记账，余额见底会**直接挡住转发**
     /// （报「预扣费额度失败」），跟智谱额度毫无关系。看板据此在见底前告警。
     pub async fn user_quota(&self) -> Result<i64> {
-        let url = format!("{}/api/user/self", self.base_url);
+        let url = "/api/user/self";
         let body: Value = self
-            .send_management(self.client.get(&url))
+            .send_management(Method::GET, url, None, RequestClass::Observe)
             .await
             .context("拉取 new-api 用户余额失败")?
             .json()
@@ -760,9 +663,9 @@ impl NewApiClient {
 
     /// GET /api/channel/{id} → 渠道对象（从 data 取出）
     pub async fn get_channel(&self, id: i64) -> Result<Value> {
-        let url = format!("{}{}/{}", self.base_url, self.channel_path, id);
+        let url = format!("{}/{}", self.channel_path, id);
         let body: Value = self
-            .send_management(self.client.get(&url))
+            .send_management(Method::GET, &url, None, RequestClass::Control)
             .await
             .context("获取渠道失败")?
             .json()
@@ -782,12 +685,13 @@ impl NewApiClient {
                 // new-api 的 UpdateChannel 明确拒绝请求体里带 status（判为 Invalid parameters），
                 // 必须剔除。GET 回来的 key 是空串，UpdateChannel 对空 key 会保留原值，安全。
                 obj.remove("status");
+                obj.remove("key");
             }
             None => bail!("渠道 {id} 返回的不是 JSON 对象"),
         }
-        let url = format!("{}{}", self.base_url, self.channel_path);
+        let url = format!("{}/", self.channel_path);
         let resp = self
-            .send_management(self.client.put(&url).json(&channel))
+            .send_management(Method::PUT, &url, Some(channel), RequestClass::Control)
             .await
             .context("更新渠道失败")?;
         let status = resp.status();
@@ -795,9 +699,9 @@ impl NewApiClient {
         let ok = body
             .get("success")
             .and_then(|v| v.as_bool())
-            .unwrap_or(status.is_success());
+            .unwrap_or(false);
         if !ok {
-            bail!("更新渠道 {id} 字段 {field} 失败: HTTP {status} body={body}");
+            bail!("更新渠道 {id} 字段 {field} 失败: HTTP {status}");
         }
         Ok(())
     }
@@ -835,7 +739,9 @@ mod tests {
     fn names(ops: &[ChannelOp]) -> Vec<String> {
         ops.iter()
             .map(|o| match o {
-                ChannelOp::Skip { name, .. } | ChannelOp::Create { name, .. } | ChannelOp::Missing { name } => name.clone(),
+                ChannelOp::Skip { name, .. }
+                | ChannelOp::Create { name, .. }
+                | ChannelOp::Missing { name } => name.clone(),
             })
             .collect()
     }
@@ -850,7 +756,9 @@ mod tests {
         let template = openai_tpl();
         let ops = plan_channel_ops(&keys, &existing(&[]), Some(&template));
         assert_eq!(names(&ops), vec!["zhipu-1"]);
-        let ChannelOp::Create { key, .. } = &ops[0] else { unreachable!() };
+        let ChannelOp::Create { key, .. } = &ops[0] else {
+            unreachable!()
+        };
         assert_eq!(*key, "k-zhipu-1");
     }
 
@@ -859,7 +767,15 @@ mod tests {
         let keys = [key("zhipu-1")];
         let template = openai_tpl();
         let ops = plan_channel_ops(&keys, &existing(&["zhipu-1"]), Some(&template));
-        let ChannelOp::Skip { params, key, owner_name, .. } = &ops[0] else { unreachable!() };
+        let ChannelOp::Skip {
+            params,
+            key,
+            owner_name,
+            ..
+        } = &ops[0]
+        else {
+            unreachable!()
+        };
         assert!(params.is_some(), "配了模板的存量渠道必须进入模型对账");
         assert_eq!(*key, "k-zhipu-1");
         assert_eq!(*owner_name, "zhipu-1");
@@ -871,7 +787,9 @@ mod tests {
         let ops = plan_channel_ops(&keys, &existing(&[]), None);
         assert_eq!(
             ops,
-            vec![ChannelOp::Missing { name: "zhipu-1".into() }]
+            vec![ChannelOp::Missing {
+                name: "zhipu-1".into()
+            }]
         );
     }
 

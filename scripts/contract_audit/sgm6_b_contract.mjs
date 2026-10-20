@@ -1,0 +1,66 @@
+// Build-time constants only: the browser contains no JSON Schema interpreter.
+import { readFileSync, writeFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+const root = fileURLToPath(new URL('../../', import.meta.url));
+const read = name => JSON.parse(readFileSync(`${root}docs/design/source-groups-token-management/schemas/${name}.schema.json`, 'utf8'));
+const panel = read('panel-snapshot'), response = read('panel-admin-responses');
+const operation = read('control-operation'), identity = read('token-identity'), native = read('native-token');
+const http = read('panel-http-error'), config = read('panel-ui-config');
+const request = read('panel-admin-requests'), check = read('group-check'), references = read('group-references');
+const bucketModelCapacity = /pub\(crate\) const MAX_BUCKET_MODELS: usize = ([0-9]+);/.exec(readFileSync(`${root}src/ledger/analytics.rs`, 'utf8'));
+if (!bucketModelCapacity) throw new Error('Missing authoritative joint model capacity');
+const pd = panel.$defs, rd = response.$defs;
+const enums = {
+  sourceKind: pd.kind.enum, lifecycle: pd.membership.properties.lifecycle.enum,
+  observedStatus: pd.membership.properties.observed_status.enum, regime: pd.panel_group.properties.regime.enum,
+  statusDirective: pd.panel_membership.properties.status_directive.enum, createState: identity.properties.create_state.enum,
+  quotaState: pd.quota.properties.state.enum, controlError: pd.control_error.enum,
+  operationKind: operation.properties.kind.enum, operationPhase: operation.properties.phase.enum,
+  targetType: operation.properties.target_type.enum, ownerScope: identity.properties.owner_scope.enum,
+  identityOrigin: identity.properties.origin.enum, nativeStatus: native.properties.status.enum,
+  modelOrigin: rd.SourceCreated.properties.model_origin.enum, grain: rd.ResolvedQuery.properties.grain.enum,
+  scanLane: rd.ScanProgress.properties.lane.enum, scanPhase: rd.ScanProgress.properties.phase.enum,
+  scanFault: rd.ScanProgress.properties.fault.enum, httpError: http.properties.error.enum,
+  adminError: rd.AdminError.properties.error.enum,
+  discoveryAuth: request.$defs.modelDiscovery.properties.auth.enum,
+  modelSelection: request.$defs.modelSelection.oneOf.map(v => v.properties.mode.const),
+  filterMode: rd.IdFilter.oneOf.map(v => v.properties.mode.const),
+  localSettingKind: operation.allOf.find(v => v.then?.properties?.total_targets?.const === 0).if.properties.kind.enum,
+};
+const limits = {
+  jsonSafe: pd.revision.maximum, sources: pd.catalog.properties.sources.maxItems,
+  groups: pd.catalog.properties.groups.maxItems, memberships: pd.catalog.properties.memberships.maxItems,
+  models: rd.SourceModels.properties.models.maxItems, identities: rd.IdentityPage.properties.items.maxItems,
+  nativePage: rd.NativePage.properties.page_size.const, nativePages: rd.NativePage.properties.page.maximum,
+  nativeTotal: rd.NativePage.properties.total.maximum, usageModels: rd.UsageReport.properties.models.maxItems,
+  usageTokens: rd.UsageReport.properties.tokens.maxItems, usageGroups: rd.UsageReport.properties.groups.maxItems, usageBuckets: rd.UsageReport.properties.buckets.maxItems,
+  bucketModels: rd.UsageBucket.properties.models.maxItems, operationTargets: operation.properties.total_targets.maximum,
+  bucketModelItems: Number(bucketModelCapacity[1]),
+  failureThreshold: pd.policy.properties.failure_threshold.maximum, resetMinute: pd.policy.properties.reset_minute.maximum,
+  offsetMin: pd.policy.properties.utc_offset_minutes.minimum, offsetMax: pd.policy.properties.utc_offset_minutes.maximum,
+};
+const shapes = {
+  state: panel, config, source: pd.source, group: pd.group, membership: pd.membership,
+  panelSource: pd.panel_source, panelGroup: pd.panel_group, panelMembership: pd.panel_membership,
+  catalog: pd.catalog, glm: pd.glm, quota: pd.quota, window: pd.window, assessment: pd.assessment,
+  pinRelease: pd.pin_release, policy: pd.policy, runtime: pd.runtime, volcano: pd.volcano,
+  operation, identity, native, groupCheck: check, groupReferences: references,
+  sourceCreated: rd.SourceCreated, groupCreated: rd.GroupCreated, memberPlanned: rd.MemberPlanned,
+  sourceModels: rd.SourceModels, identities: rd.IdentityPage, nativePage: rd.NativePage,
+  reveal: rd.TokenReveal, usageSnapshot: rd.UsageSnapshot, resolvedQuery: rd.ResolvedQuery,
+  resolvedFilter: rd.ResolvedFilter, ledger: rd.Ledger, scan: rd.ScanProgress, scanWindow: rd.ScanWindow,
+  totals: rd.Totals, modelUsage: rd.ModelUsage, tokenUsage: rd.TokenUsage, groupUsage: rd.GroupUsage,
+  bucket: rd.UsageBucket, usageReport: rd.UsageReport, httpError: http, adminError: rd.AdminError, requestHeader: request.$defs.header,
+};
+const fields = Object.fromEntries(Object.entries(shapes).map(([k, v]) => [k, Object.keys(v.properties)]));
+const versions = Object.fromEntries(Object.entries(shapes).filter(([,v]) => v.properties.schema_version).map(([k, v]) => [k, v.properties.schema_version.const]));
+const data = { ENUMS: enums, LIMITS: limits, VERSIONS: versions, WIRE_FIELDS: fields };
+const output = '// Generated by scripts/contract_audit/sgm6_b_contract.mjs; edit the source schemas, not this file.\n'
+  + Object.entries(data).map(([k,v]) => `export const ${k} = ${JSON.stringify(v, null, 2)};\n`).join('');
+const destination = `${root}src/panel_http/ui/contract.mjs`;
+if (process.argv.includes('--check')) {
+  if (readFileSync(destination, 'utf8') !== output) throw new Error('UI contract constants are out of date');
+  console.log(`UI schema constants match: ${Object.keys(enums).length} enums, ${Object.keys(fields).length} field families`);
+} else {
+  writeFileSync(destination, output);
+}
