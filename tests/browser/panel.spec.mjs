@@ -308,3 +308,18 @@ test('real browser cross-origin preflight and simple POST cannot mutate the isol
     expect(after.catalog).toEqual(before.catalog);
   } finally { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
 });
+test('rejected delete keeps confirm open with reason and tracks nothing', async ({page}) => {
+  await mockState(page); const writes = [];
+  await page.route('**/api/admin/v1/tokens/12', route => {
+    if (route.request().method() !== 'DELETE') return route.continue();
+    writes.push(route.request().postDataJSON());
+    return route.fulfill({status: 503, json: {schema_version: 1, error: 'not_ready', existing_source_id: null}});
+  });
+  await page.goto('/'); await act(page, '删除');
+  await page.getByRole('button', {name: '确认提交', exact: true}).click();
+  await expect(page.getByText(/提交未完成：对象当前状态不允许此操作.*（not_ready）/)).toBeVisible();
+  await expect(page.locator('#editor')).toBeVisible();
+  await expect(page.locator('#toggle-operations')).toHaveText('操作进度（0）');
+  expect(writes).toHaveLength(1);
+  expect(await page.evaluate(() => JSON.parse(sessionStorage.getItem('qt.pending.v1')))).toEqual({schema_version: 1, operation_ids: []});
+});

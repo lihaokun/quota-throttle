@@ -1,8 +1,33 @@
 import { Lanes, SnapshotAge, observations, backoff, PendingOperations, freezeDraft, buildAction, draftConflict, ActionError, ProtocolError, identityUsageFilter, operationId, decimal, id, modelLabel, modelFilter, allFilters, makeUsageQuery, volcanoUsageQuery, validateQuery, validateUsage, formatTime } from './core.mjs';
-import { route, requestJson, ClientError } from './client.mjs';
+import { route, requestJson, ClientError, rejected } from './client.mjs';
 import { createRenderer } from './render.mjs';
 import { prepareChart } from './charts.mjs';
 import { ENUMS } from './contract.mjs';
+
+// 首次提交被后端明确拒绝时在确认框内显示的原因；键只能是契约里的错误码。
+export const REJECTION_TEXT = Object.freeze({
+  not_ready: '对象当前状态不允许此操作（例如尚未创建完成、另有操作正在进行，或组尚未就绪）',
+  queue_full: '后端正忙或已达容量上限，请稍后再试',
+  overloaded: '后端正忙或已达容量上限，请稍后再试',
+  revision_conflict: '对象或后端状态已变化，请刷新后重新打开再确认（Key 操作需先刷新本地身份页）',
+  not_found: '对象不存在或已被移除',
+  invalid_input: '输入不合法，请检查后再提交',
+  bad_request: '输入不合法，请检查后再提交',
+  dry_run: '当前为演练模式，不会写入',
+  idempotency_conflict: '操作 ID 冲突，请重新提交',
+  binding_drift: '签发账号与已登记的身份不一致',
+  auth_failed: 'new-api 账号认证失败',
+  remote_rejected: 'new-api 拒绝了请求',
+  invalid_response: 'new-api 或上游返回异常',
+  rate_limited: 'new-api 管理接口限流，请稍后再试',
+  duplicate_group: '已有使用相同 NewAPI 分组标识的组',
+  duplicate_membership: '该来源已在此组中',
+  type_mismatch: '来源与组的类型不一致',
+  retired: '对象已归档',
+  channel_conflict: '渠道绑定冲突',
+  forbidden: '请求被拒绝（请求来源校验未通过）',
+});
+const POLL_NOT_FOUND = '后端暂未找到这条操作记录。结果未知的提交可能稍后才落库，60 秒内会继续查询；之后可点「继续查询」。';
 
 // Step U3: 唯一递归 pump 拥有浏览器生命周期，不为每个分页创建定时轮询。
 export class Lifecycle {
@@ -180,7 +205,7 @@ export class PanelApp {
       const original = this.editor.draft?.value;
       const currentIdentity = this.editor.draft?.entity === 'identity' && this.identities.data?.items.find(i => i.token_id === original.token_id);
       const conflict = this.editor.draft?.entity === 'identity' ? currentIdentity && (currentIdentity.revision !== original.revision || currentIdentity.deleted_at !== original.deleted_at) : this.editor.draft && this.age.snapshot && draftConflict(this.editor.draft, this.age.snapshot, this.editor.action);
-      this.renderer.conflict(conflict ? '对象已有新版本。请关闭后重新打开，不会覆盖当前草稿或自动重发。' : null, this.editor.readOnlyAction ? this.lanes.owners.work !== null : this.readOnly || !!conflict);
+      this.renderer.conflict(conflict ? '对象已有新版本。请关闭后重新打开，不会覆盖当前草稿或自动重发。' : (this.editor.rejection ?? null), this.editor.readOnlyAction ? this.lanes.owners.work !== null : this.readOnly || !!conflict);
     }
     this.renderUsage?.();
   }
@@ -266,7 +291,8 @@ export class PanelApp {
     }, error => { this.nativePages.set(scope, {...this.nativePages.get(scope), error: `${this.message(error)} 未据此删除任何本地身份。`}); }));
   }
   pollOperation(id) {
-    this.work(route('operation', {id}), null, value => { if (this.pending.items.has(id)) this.pending.accept(id, value); }, error => this.pending.failed(id, this.message(error)), `operation:${id}`);
+    // 404 只说明此刻没有：504 之后的提交可能稍后才落库，所以照常在 60 秒窗口内继续查询。
+    this.work(route('operation', {id}), null, value => { if (this.pending.items.has(id)) this.pending.accept(id, value); }, error => this.pending.failed(id, error instanceof ClientError && error.status === 404 ? POLL_NOT_FOUND : this.message(error)), `operation:${id}`);
   }
   restoreOperation() {
     this.editor = {readOnlyAction: true};
@@ -351,6 +377,8 @@ export class PanelApp {
   }
   submit(action, draft, fields) {
     if (this.readOnly || !this.lifecycle.active) return;
+    // 本次提交所属的确认框；结果回来时若已换成别的表单，只写顶部提示，不动别人的表单。
+    const editor = this.editor;
     try {
       if (draft?.entity === 'identity') {
         const current = this.identities.data?.items.find(i => i.token_id === draft.value.token_id);
@@ -359,17 +387,39 @@ export class PanelApp {
       const result = buildAction(action, draft, fields, this.age.snapshot, previewOperationId);
       const routeId = result.targetId ?? (action === 'createToken' ? null : draft?.value?.source?.source_id);
       const descriptor = route(action, routeId ? {id: routeId} : {});
+      if (editor) editor.rejection = null;
       if (result.kind) {
         const item = this.pending.begin(descriptor, {kind: result.kind, targetId: result.targetId}, id => ({...result.body, operation_id: id}), this.window.crypto);
-        this.renderer.clearForm(); this.editor = null; this.operationsOpen = true;
-        this.work(descriptor, item.payload, value => { if (this.pending.items.has(item.id)) this.pending.accept(item.id, value); this.notice = value.target_type === 'token' ? '已收到 Key 操作回执。请显式刷新本地身份页；原生启停状态需另行刷新对应账号页，统一目录快照不包含这些身份。' : '已收到操作回执，等待统一快照反映状态；没有自动续发其他写入。'; }, error => { this.pending.failed(item.id, `结果待核对。${this.message(error)}`); }, `operation:${item.id}`);
+        this.work(descriptor, item.payload, value => {
+          if (this.pending.items.has(item.id)) this.pending.accept(item.id, value);
+          this.closeEditor(editor); this.operationsOpen = true;
+          this.notice = value.target_type === 'token' ? '已收到 Key 操作回执。请显式刷新本地身份页；原生启停状态需另行刷新对应账号页，统一目录快照不包含这些身份。' : '已收到操作回执，等待统一快照反映状态；没有自动续发其他写入。';
+        }, error => {
+          // 首次提交被明确拒绝 ⇒ 后端没有记录（I8），不进追踪；否则结果不确定，沿用「结果待核对」。
+          if (rejected(error)) { this.pending.discard(item.id); this.rejectSubmit(editor, error); return; }
+          this.pending.failed(item.id, `结果待核对。${this.message(error)}`);
+          this.closeEditor(editor); this.operationsOpen = true;
+        }, `operation:${item.id}`);
       } else {
-        this.renderer.clearForm(); this.editor = null;
         this.work(descriptor, result.body, value => {
+          this.closeEditor(editor);
           this.notice = action === 'createSource' ? `来源 #${value.source.source_id} 已保存，模型来源 ${value.model_origin}。等待新目录快照。` : action === 'checkGroup' ? `核验结果：${value.ready ? '就绪' : `未就绪 · ${value.error_code}`}。` : action === 'planMember' ? '成员计划已保存。请等待新目录显示，再显式 Ensure。' : '已保存，等待目录或手动刷新本地身份。';
-        }, error => { this.notice = error.existingSourceId ? `该凭据已对应来源 #${error.existingSourceId}，请核对原来源；没有覆盖配置。` : `${this.message(error)} 回执丢失不证明未写入：来源需重新填写凭据后显式提交核对；组/成员按唯一关系核对，不按名称认领。`; });
+        }, error => {
+          if (rejected(error)) { this.rejectSubmit(editor, error); return; }
+          this.closeEditor(editor);
+          this.notice = `${this.message(error)} 回执丢失不证明未写入：来源需重新填写凭据后显式提交核对；组/成员按唯一关系核对，不按名称认领。`;
+        });
       }
     } catch (error) { this.notice = this.message(error); this.paint(); }
+  }
+  closeEditor(editor) { if (editor && this.editor === editor) { this.renderer.clearForm(); this.editor = null; } }
+  rejectSubmit(editor, error) {
+    const text = this.rejectionText(error);
+    if (editor && this.editor === editor) editor.rejection = text; else this.notice = text;
+  }
+  rejectionText(error) {
+    // 不写「未执行」：核验组在 409 时远端注册可能已经做了。
+    return `提交未完成：${error.existingSourceId ? `该凭据已对应来源 #${error.existingSourceId}，没有覆盖配置` : Object.hasOwn(REJECTION_TEXT, error.code) ? REJECTION_TEXT[error.code] : '后端拒绝了请求'}（${error.code}）`;
   }
   openGroup() {
     this.editor = {action: 'createGroup'};

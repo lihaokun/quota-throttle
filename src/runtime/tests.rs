@@ -247,9 +247,12 @@ async fn r4_r5_stopped_job_never_starts_and_delay_has_no_catchup_ticks() {
     assert_eq!(MAINTENANCE_INTERVAL, Duration::from_secs(5));
     assert_eq!(BACKEND_INTERVAL, Duration::from_secs(30));
     assert_eq!(
-        control::<()>(Err(crate::catalog::control::ControlError {
-            code: ControlErrorCode::Storage
-        })),
+        control::<()>(
+            "runtime_backend",
+            Err(crate::catalog::control::ControlError {
+                code: ControlErrorCode::Storage
+            })
+        ),
         Err(RuntimeError::Storage)
     );
 }
@@ -280,6 +283,49 @@ async fn r5_fresh_ledger_waits_for_collection_instead_of_terminating_service() {
         repair_outcome::<()>(Err(AnalyticsError::Control(ControlErrorCode::Storage))),
         Err(RuntimeError::Storage)
     );
+}
+
+#[test]
+fn control_warning_names_the_maintenance_job() {
+    use crate::catalog::control::ControlError;
+    #[derive(Clone, Default)]
+    struct Capture(Arc<std::sync::Mutex<Vec<u8>>>);
+    impl std::io::Write for Capture {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let capture = Capture::default();
+    let writer = capture.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .with_writer(move || writer.clone())
+        .finish();
+    tracing::subscriber::with_default(subscriber, || {
+        // 并行测试可能已在没有订阅者时注册过这个调用点并缓存了「不感兴趣」；重建后本订阅者才能收到。
+        tracing::callsite::rebuild_interest_cache();
+        let busy = ControlError {
+            code: ControlErrorCode::QueueFull,
+        };
+        assert_eq!(control::<()>("volcano_policy", Err(busy)), Ok(None));
+        let storage = ControlError {
+            code: ControlErrorCode::Storage,
+        };
+        assert_eq!(
+            control::<()>("glm_policy", Err(storage)),
+            Err(RuntimeError::Storage)
+        );
+    });
+    let text = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
+    assert!(text.contains("来源分组维护暂未完成"), "{text}");
+    assert!(text.contains("volcano_policy"), "{text}");
+    assert!(text.contains("QueueFull"), "{text}");
+    // Storage 直接终止服务，不发这条警告。
+    assert!(!text.contains("glm_policy"), "{text}");
 }
 
 proptest! {

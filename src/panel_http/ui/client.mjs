@@ -10,6 +10,11 @@ export class ClientError extends Error {
     this.name = 'ClientError'; this.code = code; this.status = status; this.existingSourceId = existingSourceId;
   }
 }
+// 规则 R：只有后端给出明确错误响应、且不是 500 / 504 时，首次提交才确定没有留下记录（架构 I8）。
+const UNCERTAIN_STATUS = new Set([500, 504]);
+export function rejected(error) {
+  return error instanceof ClientError && Number.isInteger(error.status) && !UNCERTAIN_STATUS.has(error.status);
+}
 // 调用者不能提供任意路径、host、方法或响应族。
 export function route(action, args = {}) {
   let path, method = 'GET', family, write = false, status = 200;

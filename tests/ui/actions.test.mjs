@@ -3,8 +3,9 @@ import assert from 'node:assert/strict';
 import fc from 'fast-check';
 import { PendingOperations, freezeDraft, buildAction, draftConflict, validateOperation, validateIdentity } from '../../src/panel_http/ui/core.mjs';
 import { richState, operation, identity } from './fixtures.mjs';
-import { PanelApp } from '../../src/panel_http/ui/app.mjs';
-import { route } from '../../src/panel_http/ui/client.mjs';
+import { PanelApp, REJECTION_TEXT } from '../../src/panel_http/ui/app.mjs';
+import { route, ClientError } from '../../src/panel_http/ui/client.mjs';
+import { ENUMS } from '../../src/panel_http/ui/contract.mjs';
 const opId = operation().operation_id;
 test('u6 both provider forms select the supported Custom channel type', () => {
   const app = Object.create(PanelApp.prototype); let fields;
@@ -147,4 +148,93 @@ test('pbt5 operation storage/reload/phase sequences keep IDs and immutable paylo
       assert.deepEqual(JSON.parse(s.getItem('qt.pending.v1')).operation_ids, [item.id]);
     }
   }), { numRuns: 128, verbose: true });
+});
+// 提交被拒就地反馈（SGM-8 第 1 步）：假 renderer + 假 work，回调方式与真实 work 相同（success 抛错转 failure）。
+function submitApp(outcome) {
+  const s = storage(), p = new PendingOperations(s, () => 0), app = Object.create(PanelApp.prototype), cleared = [], state = richState();
+  Object.assign(app, {pending: p, lifecycle: {active: true}, paint() {}, notice: null, operationsOpen: false, window: {crypto: cryptoIds()},
+    age: {snapshot: state}, identities: {data: null}, renderer: {clearForm() { cleared.push(true); }},
+    work(descriptor, body, success, failure) { try { outcome(app, body, success, failure); } catch (error) { failure(error); } }});
+  Object.defineProperty(app, 'readOnly', {value: false});
+  const draft = freezeDraft('source', state.catalog.sources[0]), editor = {action: 'setSourcePaused', draft, sensitive: false};
+  app.editor = editor;
+  return {app, s, p, cleared, draft, editor, pause: () => app.submit('setSourcePaused', draft, {paused: true}), group: () => {
+    const groupEditor = {action: 'createGroup'}; app.editor = groupEditor; app.submit('createGroup', null, {name: 'dup', newapi_group: 'managed', type: 'glm'}); return groupEditor;
+  }};
+}
+const pausedReceipt = body => operation({operation_id: body.operation_id, kind: 'set_source_paused', target_type: 'source', target_id: '1'});
+test('submit rejected keeps the confirm open with the reason and tracks nothing', () => {
+  const t = submitApp((_app, _body, _success, failure) => failure(new ClientError('not_ready', 503)));
+  t.pause();
+  assert.equal(t.p.items.size, 0); assert.deepEqual(JSON.parse(t.s.getItem('qt.pending.v1')).operation_ids, []);
+  assert.equal(t.app.editor, t.editor); assert.equal(t.editor.rejection, `提交未完成：${REJECTION_TEXT.not_ready}（not_ready）`);
+  assert.equal(t.cleared.length, 0); assert.equal(t.app.operationsOpen, false); assert.equal(t.app.notice, null);
+  const g = submitApp((_app, _body, _success, failure) => failure(new ClientError('duplicate_group', 409)));
+  const groupEditor = g.group();
+  assert.equal(g.app.editor, groupEditor); assert.match(groupEditor.rejection, /相同 NewAPI 分组标识.*（duplicate_group）$/); assert.equal(g.cleared.length, 0);
+  assert.equal(t.app.rejectionText(new ClientError('duplicate_source', 409, '7')), '提交未完成：该凭据已对应来源 #7，没有覆盖配置（duplicate_source）');
+  assert.equal(t.app.rejectionText(new ClientError('limit_exceeded', 422)), '提交未完成：后端拒绝了请求（limit_exceeded）');
+  // 再次提交前清空上一次的原因。
+  const again = submitApp((app, body, success) => success(pausedReceipt(body)));
+  again.editor.rejection = 'old'; again.pause(); assert.equal(again.editor.rejection, null); assert.equal(again.app.editor, null); assert.equal(again.cleared.length, 1);
+});
+test('submit with unknown outcome still records pending check and closes the confirm', () => {
+  for (const outcome of [
+    (_app, _body, _success, failure) => failure(new ClientError('result_unconfirmed', 504)),
+    (_app, _body, _success, failure) => failure(new ClientError('transport')),
+    (_app, body, success) => success(operation({operation_id: body.operation_id, kind: 'retire_source'})),
+  ]) {
+    const t = submitApp(outcome);
+    t.pause();
+    const [item] = t.p.items.values();
+    assert.equal(t.p.items.size, 1); assert.match(item.error, /^结果待核对。/);
+    assert.equal(t.cleared.length, 1); assert.equal(t.app.editor, null); assert.equal(t.app.operationsOpen, true);
+  }
+  const g = submitApp((_app, _body, _success, failure) => failure(new ClientError('storage', 500)));
+  g.group(); assert.equal(g.app.editor, null); assert.equal(g.cleared.length, 1); assert.match(g.app.notice, /回执丢失不证明未写入/);
+});
+test('submit outcome never touches a form opened during the request', () => {
+  const other = {action: 'restore', readOnlyAction: true};
+  const rejected = submitApp((app, _body, _success, failure) => { app.editor = other; failure(new ClientError('not_ready', 503)); });
+  rejected.pause();
+  assert.equal(rejected.app.editor, other); assert.equal(other.rejection, undefined); assert.equal(rejected.editor.rejection, null);
+  assert.match(rejected.app.notice, /^提交未完成：/); assert.equal(rejected.cleared.length, 0);
+  const succeeded = submitApp((app, body, success) => { app.editor = other; success(pausedReceipt(body)); });
+  succeeded.pause();
+  assert.equal(succeeded.app.editor, other); assert.equal(succeeded.cleared.length, 0); assert.equal(succeeded.p.items.size, 1);
+});
+test('operation poll 404 explains and keeps polling within the window', () => {
+  let now = 0, reply = new ClientError('not_found', 404);
+  const p = new PendingOperations(storage(), () => now), app = Object.create(PanelApp.prototype);
+  Object.assign(app, {pending: p, work(_descriptor, _body, _success, failure) { failure(reply); }});
+  p.restore(opId); app.pollOperation(opId);
+  const item = p.items.get(opId);
+  assert.match(item.error, /^后端暂未找到这条操作记录/); assert.equal(item.tracking, true);
+  now = 5000; assert.equal(p.due()?.id, opId);
+  reply = new ClientError('queue_full', 503); app.pollOperation(opId); assert.equal(item.error, '请求失败：queue_full');
+  now = 60000; assert.equal(p.due(), null);
+  p.continue(opId); assert.equal(p.due()?.id, opId);
+});
+test('rejection texts only name contract error codes', () => {
+  const codes = new Set([...ENUMS.adminError, ...ENUMS.httpError]);
+  for (const key of Object.keys(REJECTION_TEXT)) assert.ok(codes.has(key), key);
+});
+test('pending discard removes the entry even when the storage write fails', () => {
+  let fail = false; const values = new Map();
+  const s = {getItem: k => values.get(k) ?? null, setItem: (k, v) => { if (fail) throw new Error('quota'); values.set(k, v); }};
+  const p = new PendingOperations(s, () => 0), item = begin(p);
+  fail = true;
+  // 与 dismiss 不同：后端本来就没有这条记录，存储写失败也必须移除内存条目，且不抛错。
+  assert.doesNotThrow(() => p.discard(item.id));
+  assert.equal(p.items.size, 0); assert.match(p.storageError, /写入失败/);
+  p.discard(item.id); assert.equal(p.items.size, 0);
+});
+test('rejected sensitive source form stays only until the page is hidden', () => {
+  const t = submitApp((_app, _body, _success, failure) => failure(new ClientError('duplicate_source', 409, '7')));
+  const editor = {action: 'createSource', sensitive: true}; t.app.editor = editor;
+  t.app.submit('createSource', null, {type: 'glm', name: 'Synthetic', note: '', credential: 'FAKE_NOT_A_KEY', channel_type: '8', base_url: 'https://example.test/chat/completions', models_url: '', discovery_auth: 'bearer', model_selection: 'manual', models: '["m"]', quota_url: 'https://example.test/quota?type=2', global_headers: '[]', key_headers: '[]'});
+  assert.equal(t.app.editor, editor); assert.equal(editor.rejection, '提交未完成：该凭据已对应来源 #7，没有覆盖配置（duplicate_source）'); assert.equal(t.cleared.length, 0);
+  Object.assign(t.app, {lanes: {invalidate() {}}, age: {fail() {}}, secret: null, desired: null}); t.app.renderer.clearSecret = () => {};
+  t.app.suspend();
+  assert.equal(t.app.editor, null); assert.equal(t.cleared.length, 1);
 });

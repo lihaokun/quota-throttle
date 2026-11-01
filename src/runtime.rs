@@ -69,12 +69,15 @@ where
     .await
     .map_err(|_| RuntimeError::Background)
 }
-fn control<T>(result: crate::catalog::control::ControlResult<T>) -> RuntimeResult<Option<T>> {
+fn control<T>(
+    job: &'static str,
+    result: crate::catalog::control::ControlResult<T>,
+) -> RuntimeResult<Option<T>> {
     match result {
         Ok(value) => Ok(Some(value)),
         Err(e) if e.code == ControlErrorCode::Storage => Err(RuntimeError::Storage),
         Err(e) => {
-            warn!(code = ?e.code, "来源分组维护暂未完成");
+            warn!(job, code = ?e.code, "来源分组维护暂未完成");
             Ok(None)
         }
     }
@@ -107,7 +110,7 @@ async fn glm_loop(
         else {
             return Ok(());
         };
-        control(result)?;
+        control("glm_policy", result)?;
         if !delay(&mut shutdown, interval).await {
             return Ok(());
         }
@@ -133,7 +136,8 @@ async fn maintenance(
             else {
                 return Ok(());
             };
-            let ready = control(result)?.is_some_and(|check| check.issue().is_none());
+            let ready =
+                control("runtime_backend", result)?.is_some_and(|check| check.issue().is_none());
             backend_due = Instant::now()
                 + if ready {
                     BACKEND_INTERVAL
@@ -149,7 +153,7 @@ async fn maintenance(
         else {
             return Ok(());
         };
-        control(result)?;
+        control("volcano_policy", result)?;
         let current = worker.clone();
         let Some(result) = owned_job(shutdown.clone(), async move {
             current.repair_attribution_once().await

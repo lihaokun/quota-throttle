@@ -50,3 +50,11 @@ u8 fixed offset ranges, day drilling, empty futures and volcano reset boundaries
 u8 uninitialized, empty and zero-token consumption retain distinct branches and zero buckets
 u8 query mismatch, overflow and model marginal drift reject the entire report
 pbt7 model/bucket/native-token conservation uses independent integer totals and stable colors
+client rejected() treats only definite backend refusals as unrecorded
+submit rejected keeps the confirm open with the reason and tracks nothing
+submit with unknown outcome still records pending check and closes the confirm
+submit outcome never touches a form opened during the request
+operation poll 404 explains and keeps polling within the window
+rejection texts only name contract error codes
+pending discard removes the entry even when the storage write fails
+rejected sensitive source form stays only until the page is hidden

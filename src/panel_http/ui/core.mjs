@@ -515,6 +515,13 @@ export class PendingOperations {
     if (this.storageError === null) this.persist(ids);
     this.items.delete(id);
   }
+  discard(id) {
+    // 调用方已确认后端没有这条记录（规则 R）；存储写失败也照样移除内存条目，残留 ID 重新加载后只会查到 404。
+    if (!this.items.has(id)) return;
+    const ids = [...this.items.keys()].filter(v => v !== id);
+    this.items.delete(id);
+    if (this.storageError === null) { try { this.persist(ids); } catch { /* persist 已置位 storageError。 */ } }
+  }
 }
 const idValue = id;
 

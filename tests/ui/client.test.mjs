@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { route, requestJson, serializeBody, ClientError } from '../../src/panel_http/ui/client.mjs';
+import { route, requestJson, serializeBody, ClientError, rejected } from '../../src/panel_http/ui/client.mjs';
 import { Lanes, ProtocolError } from '../../src/panel_http/ui/core.mjs';
 import { emptyState, operation } from './fixtures.mjs';
 function setup() {
@@ -86,4 +86,9 @@ test('u2 JSON write method/headers and accepted status retain original operation
     return json(operation({ phase: 'applying' }), 202);
   } });
   assert.equal(response.value.phase, 'applying');
+});
+test('client rejected() treats only definite backend refusals as unrecorded', () => {
+  // 规则 R：没收到合法错误响应、500、504 或非 ClientError 都不能证明后端没有记录。
+  for (const error of [new ClientError('transport'), new ClientError('deadline'), new ClientError('cancelled'), new ClientError('storage', 500), new ClientError('result_unconfirmed', 504), new ProtocolError(), new Error('x'), null]) assert.equal(rejected(error), false);
+  for (const status of [403, 404, 409, 422, 429, 502, 503]) assert.equal(rejected(new ClientError('not_ready', status)), true, String(status));
 });

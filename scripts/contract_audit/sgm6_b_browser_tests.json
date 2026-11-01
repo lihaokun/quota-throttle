@@ -27,7 +27,8 @@
     "API fixture unknown usage never renders as zero and zero groups never re-query usage",
     "API fixture group tiles order pinned then current then last-hour usage with five tiles and searchable more menu",
     "API fixture more menu pages many groups without closing and keeps the search across state refreshes",
-    "real browser cross-origin preflight and simple POST cannot mutate the isolated Rust catalog"
+    "real browser cross-origin preflight and simple POST cannot mutate the isolated Rust catalog",
+    "rejected delete keeps confirm open with reason and tracks nothing"
   ],
   "performance": ["serial full chart and 100-row DOM budgets including expanded source detail reuse"]
 }

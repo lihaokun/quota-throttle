@@ -321,7 +321,11 @@ proptest! {
         runtime.block_on(async {
             let f = fixture(dry);
             let server = Running::start(f.worker.clone()).await;
-            let before = std::fs::read(f.dir.path().join("catalog.sqlite3")).unwrap();
+            // catalog 为 WAL 模式，提交可能只写进 -wal：主文件与 -wal 的字节都要比较，并比较语义快照。
+            let stored = || ["catalog.sqlite3", "catalog.sqlite3-wal"].map(|name| match std::fs::read(f.dir.path().join(name)) {
+                Ok(bytes) => bytes, Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(), Err(e) => panic!("{e}"),
+            });
+            let before = (f.worker.snapshot().unwrap(), stored());
             if dry {
                 assert_eq!(expect(&server,"POST","/sources",Some(&manual_source(1)),403).await["error"],"dry_run");
                 assert_eq!(expect(&server,"POST","/groups/1/check",Some(&json!({"schema_version":1,"expected_revision":1,"register":false})),403).await["error"],"dry_run");
@@ -329,7 +333,7 @@ proptest! {
                 let usage = expect(&server,"POST","/usage/query",Some(&usage_request()),200).await;
                 assert_eq!(usage["usage"],Value::Null);
                 assert_eq!(usage["ledger"]["initial_requested_from"],Value::Null);
-                assert_eq!(before,std::fs::read(f.dir.path().join("catalog.sqlite3")).unwrap());
+                assert_eq!(before,(f.worker.snapshot().unwrap(),stored()));
             } else {
                 expect(&server,"POST","/sources",Some(&manual_source(1)),201).await;
                 let before = serde_json::to_value(f.worker.source_models(crate::catalog::SourceId::new(1).unwrap()).unwrap()).unwrap();
