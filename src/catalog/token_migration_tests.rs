@@ -31,7 +31,15 @@ fn as_v7(store: &mut CatalogStore) {
 fn expected_v8(
     mut before: BTreeMap<String, Vec<Vec<rusqlite::types::Value>>>,
 ) -> BTreeMap<String, Vec<Vec<rusqlite::types::Value>>> {
-    before.get_mut("catalog_meta").unwrap()[0][1] = rusqlite::types::Value::Integer(8);
+    before.get_mut("catalog_meta").unwrap()[0][1] =
+        rusqlite::types::Value::Integer(DATABASE_SCHEMA_VERSION);
+    before.insert(
+        "balance_policy".into(),
+        vec![vec![1, 1, 1, 100000000000000, 1000000000000000]
+            .into_iter()
+            .map(rusqlite::types::Value::Integer)
+            .collect()],
+    );
     for name in [
         "managed_tokens",
         "token_operation_targets",
@@ -129,7 +137,10 @@ fn t5b_reopen_rejects_corrupt_identity_receipt_and_future_schema() {
                     .unwrap();
             }
             5 => {
-                store.conn.pragma_update(None, "user_version", 9).unwrap();
+                store
+                    .conn
+                    .pragma_update(None, "user_version", DATABASE_SCHEMA_VERSION + 1)
+                    .unwrap();
             }
             _ => {
                 store

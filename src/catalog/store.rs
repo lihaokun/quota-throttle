@@ -18,6 +18,7 @@ const SCHEMA_V5: &str = include_str!("schema_v5.sql");
 const SCHEMA_V6: &str = include_str!("schema_v6.sql");
 const SCHEMA_V7: &str = include_str!("schema_v7.sql");
 const SCHEMA_V8: &str = include_str!("schema_v8.sql");
+const SCHEMA_V9: &str = include_str!("schema_v9.sql");
 pub(super) const SOURCE_COLUMNS: &str =
     "source_id,kind,name,note,manual_paused,retired_at,config_revision";
 pub(super) const GROUP_COLUMNS: &str = "group_id,newapi_group,name,kind,revision,ready";
@@ -159,6 +160,9 @@ impl CatalogStore {
             if version >= 8 {
                 super::tokens::verify_tokens(&probe)?;
             }
+            if version >= 9 {
+                super::balance::verify_balance(&probe)?;
+            }
             probe.execute_batch("ROLLBACK")?;
         }
         // Step P4: 仅初始化本次创建的库；schema 与版本标记同事务。
@@ -241,10 +245,23 @@ impl CatalogStore {
         }
         if version <= 7 {
             if !new_file && version == 7 {
-                let suffix: String = store.conn.query_row("SELECT lower(hex(randomblob(16)))", [], |r| r.get(0))?;
+                let suffix: String =
+                    store
+                        .conn
+                        .query_row("SELECT lower(hex(randomblob(16)))", [], |r| r.get(0))?;
                 store.backup_to(&parent.join(format!("catalog-v7-before-v8-{suffix}.sqlite3")))?;
             }
             store.migrate_v7()?;
+        }
+        if version <= 8 {
+            if !new_file && version == 8 {
+                let suffix: String =
+                    store
+                        .conn
+                        .query_row("SELECT lower(hex(randomblob(16)))", [], |r| r.get(0))?;
+                store.backup_to(&parent.join(format!("catalog-v8-before-v9-{suffix}.sqlite3")))?;
+            }
+            store.migrate_v8()?;
         }
         let conn = &store.conn;
         // Step P5: 配置回读及数据检查完成才发布 Store。
@@ -270,6 +287,7 @@ impl CatalogStore {
         super::policy::verify_policy(conn)?;
         super::ledger::observed::verify_observed(conn)?;
         super::tokens::verify_tokens(conn)?;
+        super::balance::verify_balance(conn)?;
         let snapshot = store.snapshot()?;
         for source in &snapshot.sources {
             store.read_material(source.source_id, true)?;
@@ -420,11 +438,21 @@ impl CatalogStore {
 
     fn migrate_v7(&mut self) -> Result<()> {
         // Step T5B.2: 旧库验证/备份后，扩展操作约束和token侧表同事务提交。
-        let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let instance: String = tx.query_row("SELECT catalog_instance_id FROM catalog_meta WHERE singleton=1", [], |r| r.get(0))?;
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let instance: String = tx.query_row(
+            "SELECT catalog_instance_id FROM catalog_meta WHERE singleton=1",
+            [],
+            |r| r.get(0),
+        )?;
         replace_control_operations(&tx, SCHEMA_V8)?;
         tx.execute("DROP TABLE catalog_meta", [])?;
-        for statement in SCHEMA_V8.split(';').map(str::trim).filter(|s| !s.is_empty() && !s.starts_with("CREATE TABLE control_operations (")) {
+        for statement in SCHEMA_V8
+            .split(';')
+            .map(str::trim)
+            .filter(|s| !s.is_empty() && !s.starts_with("CREATE TABLE control_operations ("))
+        {
             tx.execute_batch(statement)?;
         }
         tx.execute("INSERT INTO catalog_meta VALUES(1,8,?1)", [instance])?;
@@ -433,6 +461,30 @@ impl CatalogStore {
         verify_core_data(&tx)?;
         super::control::verify_control(&tx)?;
         super::tokens::verify_tokens(&tx)?;
+        commit(tx, &mut self.poisoned)
+    }
+
+    fn migrate_v8(&mut self) -> Result<()> {
+        // Step B1.balance.migrate: 旧库已验证/备份；实例、默认策略与版本同事务。
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let instance: String = tx.query_row(
+            "SELECT catalog_instance_id FROM catalog_meta WHERE singleton=1",
+            [],
+            |r| r.get(0),
+        )?;
+        tx.execute("DROP TABLE catalog_meta", [])?;
+        tx.execute_batch(SCHEMA_V9)?;
+        tx.execute("INSERT INTO catalog_meta VALUES(1,9,?1)", [instance])?;
+        tx.execute(
+            "INSERT INTO balance_policy VALUES(1,1,1,100000000000000,1000000000000000)",
+            [],
+        )?;
+        tx.pragma_update(None, "user_version", 9)?;
+        verify_schema(&tx, 9)?;
+        verify_core_data(&tx)?;
+        super::balance::verify_balance(&tx)?;
         commit(tx, &mut self.poisoned)
     }
 
@@ -874,8 +926,16 @@ fn verify_schema(conn: &Connection, expected_version: i64) -> Result<()> {
                 .map(str::trim)
                 .filter(|s| expected_version >= 7 && !s.is_empty() && expected_version < 8),
         )
+        .chain(SCHEMA_V8.split(';').map(str::trim).filter(|s| {
+            expected_version >= 8
+                && !s.is_empty()
+                && !(expected_version >= 9 && s.starts_with("CREATE TABLE catalog_meta"))
+        }))
         .chain(
-            SCHEMA_V8.split(';').map(str::trim).filter(|s| expected_version >= 8 && !s.is_empty()),
+            SCHEMA_V9
+                .split(';')
+                .map(str::trim)
+                .filter(|s| expected_version >= 9 && !s.is_empty()),
         );
     for statement in statements {
         let tail = statement

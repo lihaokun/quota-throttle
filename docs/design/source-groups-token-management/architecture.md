@@ -456,3 +456,9 @@ A2.1唯一成功路径为GET `/api/admin/v1/state`，输出原PanelSnapshot wire
 新私有RuntimeOptions只由serve解析，包含应用库路径、显式调用根和固定普通issuer身份；没有新公开wire或DB版本。完整预检在同一真实PID/exe/cwd/listener快照中核验原能力、SQLite日志与路由覆盖设置，一次撤销/核验/发布，不暴露中间ready。初始化器仅用于全新目录，管理凭据私有持久，不在常规运行重建账号或重设余额。
 
 运行期自动提交与多步组注册/token操作用worker私有try锁协调；人工控制仍走原fence立即撤销。只保护单操作，不包整个64项round；原未知交付、lease、策略和去重不变。正常关闭广播后等待全部实际任务及usage工作，独立NewAPI不随控制器stop连带退出。实际验收/部署证据见[SGM7报告](../../audits/sgm-7-runtime-release/audit-report.md)，未提供真实供应商Key时不宣称已验证真实上游。
+
+## SGM8第5批：内部余额共享类型（设计中）
+
+[第5批细化](subplans/sgm-8-5-balance.md)覆盖NewAPI账号内部记账余额，非供应商token上限；当前尚未实现。catalog的BalancePolicy/Draft（修订号、开关、预警线、目标）供worker和HTTP使用；newapi的QuotaUnit（正有限比例、显示类型）供worker与前端使用；worker的BalanceView/AccountView/RefillView供快照与浏览器，HTTP的BalanceRefilled/BalancePolicySaved供两同步路由与浏览器。完整字段/enum/null规则以细化§4为准，所有线上user_id为字符串；内存RefillReport及投递保护不序列化。
+
+来源额度/调度共享类型不改。余额槽位只缓存Native资料及目录策略，Native为实际余额权威；正常观测/设置不推进路由栅栏，存储中毒仍失败关闭。2026-11-02用户同意I10仅承诺每笔与补足前计算有界，实际余额可受退款/其他写者影响，不作硬cap保证。取消结算、有界准入及展示投影的细化需C1独审通过后才可实施，C2/C3停点保留。

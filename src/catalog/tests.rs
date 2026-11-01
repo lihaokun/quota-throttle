@@ -6,6 +6,8 @@ use std::collections::BTreeMap;
 use std::os::unix::fs::{symlink, PermissionsExt};
 use tempfile::TempDir;
 
+#[path = "balance_tests.rs"]
+mod balance;
 #[path = "control_tests.rs"]
 mod control;
 #[path = "execution_tests.rs"]
@@ -16,18 +18,18 @@ mod glm_round;
 mod ledger;
 #[path = "observed_publication_tests.rs"]
 mod observed_publication;
+#[path = "panel_tests.rs"]
+mod panel;
 #[path = "policy_tests.rs"]
 mod policy;
 #[path = "policy_command_tests.rs"]
 mod policy_commands;
-#[path = "panel_tests.rs"]
-mod panel;
 #[path = "token_tests.rs"]
 mod tokens;
 
 const DROP_LEDGER_V5: &str = "DROP TABLE ledger_minute_usage; DROP TABLE ledger_facts; DROP TABLE ledger_checkpoints; DROP TABLE ledger_state;";
 const DROP_OBSERVED_V6: &str = "DROP TABLE IF EXISTS volcano_observation_queue; DROP TABLE IF EXISTS volcano_request_observations; DROP TABLE IF EXISTS volcano_period_history; DROP INDEX IF EXISTS ledger_cell_source_time; DROP INDEX IF EXISTS ledger_fact_source_usage; DROP INDEX IF EXISTS ledger_fact_source_request;";
-const DROP_TOKENS_V8: &str = "DROP TABLE token_execution_attempts; DROP TABLE token_operation_targets; DROP TABLE managed_tokens; DROP INDEX token_pending;";
+const DROP_TOKENS_V8: &str = "DROP TABLE IF EXISTS balance_policy; DROP TABLE token_execution_attempts; DROP TABLE token_operation_targets; DROP TABLE managed_tokens; DROP INDEX token_pending;";
 fn drop_ledger_for_legacy(conn: &Connection) {
     conn.execute_batch(DROP_TOKENS_V8).unwrap();
     replace_control_operations(conn, SCHEMA_V2).unwrap();

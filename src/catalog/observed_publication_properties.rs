@@ -1,7 +1,7 @@
 use super::*;
 
 fn legacy_image(conn: &Connection) -> BTreeMap<String, Vec<Vec<rusqlite::types::Value>>> {
-    let mut q=conn.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT IN ('catalog_meta','sqlite_sequence') AND name NOT LIKE 'volcano_observation%' AND name NOT IN ('volcano_request_observations','volcano_period_history','managed_tokens','token_operation_targets','token_execution_attempts') ORDER BY name").unwrap();
+    let mut q=conn.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT IN ('catalog_meta','sqlite_sequence') AND name NOT LIKE 'volcano_observation%' AND name NOT IN ('volcano_request_observations','volcano_period_history','managed_tokens','token_operation_targets','token_execution_attempts','balance_policy') ORDER BY name").unwrap();
     let tables = q
         .query_map([], |r| r.get::<_, String>(0))
         .unwrap()
