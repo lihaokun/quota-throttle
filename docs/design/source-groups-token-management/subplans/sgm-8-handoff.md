@@ -4,7 +4,7 @@
 > 工作区：`/home/haokun/projects/quota-throttle/.worktrees/source-groups-research`（与 Claude 共享，不要改写历史、不要 stash）。
 > 分支：`research/source-groups-token-management`，对应 PR #5（https://github.com/lihaokun/quota-throttle/pull/5）。**本轮后续所有改动都合进 PR #5**，不另开 PR。
 > 最新审查安排（2026-11-02用户）：**改用subagent独立审核，不用等Claude**；原Claude审查为历史记录，C1/C2/C3停点仍保留。
-> 接手进度：I10 与 D1 具体 60/70/75 配套均获用户确认并同步架构；**v3 独立技术复审通过，剩余 blocker/major/minor 均 0，Step0 文本独立核对通过，C1 完成**。证据见 docs/audits/sgm-8-5-balance/c1-v3-independent-review.md，历史 v2 报告保持。当前逐模块实现，测试与本地提交后停 C2；不把设计通过当作实现门禁通过，不推送或部署。
+> 接手进度：I10 与 D1 具体 60/70/75 配套均获用户确认，C1 完成。**B1 提交 `94362c4` 的局部 C2 已通过：两路独审、机械检查、固定 SHA 门禁和 189 输入文件哈希核对通过，剩余问题 0**。证据见 `docs/audits/sgm-8-5-balance/audit-report.md`；下一实施模块为 B2。B2–B8 尚未实现，不把局部通过当作整批退出或部署许可。
 
 ## 0. 铁律（违反任何一条都要停下来）
 
@@ -32,14 +32,14 @@
 
 ## 2. 原部署与接手基线（`7e5cf97`，已推送，PR #5 的 CI 三项全绿）
 
-> 2026-11-02 B1 局部进度：余额策略持久化、v8→v9 迁移及回归/PBT 已实现，两路独立静态审查剩余问题 0。实测及三项变异证据见 `docs/audits/sgm-8-5-balance/b1-implementation-review.md`，该材料随 B1 本地模块提交交 C2；未推送或部署。B2–B8 未实现，不能把本模块审查当作整批可部署结论。
+> 2026-11-02 B1 局部进度：余额策略持久化、v8→v9 迁移及回归/PBT 已提交为 `94362c4`，提交后的 C2 独审通过，剩余问题 0。实施和三项变异证据见 `docs/audits/sgm-8-5-balance/b1-implementation-review.md`，C2 见同目录 `audit-report.md`。未推送或部署；B2–B8 未实现。
 
 - 已完成：架构 v6（`2d48438`）；**第 1 步**（`7e5cf97`）：提交被拒就地反馈（规则 R：带状态码且不是 500 / 504 的错误 = 后端没有记录）、轮询 404 说明、`QueueFull` 警告带 `job`、pb2 断言修正、T1 按 8 类提交钉住 I8。
 - 已部署 `7e5cf97`：
   - 本机（3000 / 3001，`quota-throttle-sgm.service`）：bin sha `c7acbfe3…`，回滚用 `~/apps/quota-throttle-sgm/bin/quota-throttle.bak-20261101-194951`。
   - fermat（13000 / 13001）：bin sha `a21866f7…`，回滚用同目录 `quota-throttle.bak-20261101-195427`。
   - 两边 new-api 子进程都未重启（serve 复用已运行的 new-api）。
-- 工作区未提交：`sgm-8-cleanup.md`（文首加了第 5 批细化的链接）、`sgm-8-5-balance.md`（新）、本文。随第 5 批的第一个提交一起提交即可。
+- 接手时未提交的 `sgm-8-cleanup.md`、`sgm-8-5-balance.md`、本文及 C1 材料，已随 B1 提交 `94362c4` 保存。
 - 正在采集：**`QueueFull` 按任务的 24 小时基线**，起点本机 2026-11-01 19:49:52。2026-11-02 19:50 之后执行：
   `journalctl --user -u quota-throttle-sgm.service --since "2026-11-01 19:49:52" --until "2026-11-02 19:49:52" | grep 来源分组维护暂未完成 | grep -o 'job="[a-z_]*"' | sort | uniq -c`
   结果记入第 2 批细化，作为「修改前」基线。
@@ -58,7 +58,7 @@
      - guard 为假时报 `not_ready`。
      另有两处细节：改设置时库忙返回 503；锁定期内的拒绝不覆盖「结果不确定」记录。
   2. **C1 已完成**：D1 具体配套已获用户确认；最终报告完整列输入 SHA 与各路结果，不需再等 Claude。
-  3. 已进入 §5 逐模块实施，B1 位置及局部证据已回填；Step0 十节文本已独立核对。后续仍须完成 B2–B8、T-B4–T-B17、T1、夹具/清单/PBT 与机械项。主 architecture 共享类型段已补，按实际类型继续同步；B1 本地提交后停 C2 交审，不直接推送或进入部署。
+  3. B1 的提交后 C2 已通过，位置及局部证据已回填；Step0 十节文本已独立核对。下一模块为 B2，按已确认细化实施、测试、独审。后续仍须完成 B2–B8、T-B4–T-B17、T1、夹具/清单/PBT 与机械项；不直接推送或进入部署。
   4. 同批更正 `CLAUDE.md` 中「new-api 管理面没有调用户余额的 API」一条（细化 §7）。
 - 要点：
   - 补足函数严格按 7 步（含 1b）。锁顺序为「所有者异步互斥 → Core（短暂）→ 槽位」，Core 与槽位不跨 `.await`。

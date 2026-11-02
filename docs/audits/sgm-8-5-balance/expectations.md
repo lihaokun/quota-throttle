@@ -124,3 +124,9 @@ Drop无法安全结算时只原子置balance.failed、不写全局publication；
 | 旧库只读预检，v8 私有备份、实例与历史不变、默认策略、失败回滚、重开不重复迁移 | `store.rs::{open,migrate_v8,verify_schema}` | `v8_migration_adds_default_balance_policy_and_backup`、`balance_migration_failure_keeps_v8_and_backup`、`balance_corrupt_v8_rejected_before_backup_or_migration` |
 
 B2–B8（Native 有界传输、worker、runtime、HTTP、快照、前端和探针）仍待实现，前文对应字段表及行为门禁继续待填。运行目录库没有打开或迁移；NewAPI 没有余额写入。
+
+## B1 Step 5 验证记录（2026-11-02）
+
+提交 `94362c46b1f7eeb9951f0562f1cbcbc9b295eb34` 的局部 C2 已通过。路径 A 独立机械检查及同 SHA 门禁通过；路径 B 从契约重新提取后对照 diff，未读取作者实现映射，遗漏/不一致/待决策项均 0；五维审核均通过。Rust 787/0（35 既有 ignored）、Node 60/0、浏览器 full 92/0，189 输入文件前后哈希一致。报告见 `audit-report.md`，处置见 `decisions.md`。
+
+B1 未新增 JSON wire 出口，相关 JSON/HTTP/UI 扩展属于 B2–B8 的后续验证范围；本记录不把整个十节预期表宣称为已实现或整批 §6.6 退出。
