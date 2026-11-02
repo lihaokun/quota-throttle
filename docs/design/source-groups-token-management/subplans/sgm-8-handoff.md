@@ -4,7 +4,7 @@
 > 工作区：`/home/haokun/projects/quota-throttle/.worktrees/source-groups-research`（与 Claude 共享，不要改写历史、不要 stash）。
 > 分支：`research/source-groups-token-management`，对应 PR #5（https://github.com/lihaokun/quota-throttle/pull/5）。**本轮后续所有改动都合进 PR #5**，不另开 PR。
 > 最新用户授权覆盖：已改用subagent独立审核；**B3–B8一次性连续完成，取消逐模块中间停点，最终统一交付，部署前确认仍保留。** 旧文档的模块间等待、逐模块提交后停C2描述只保留为历史，不得据此中断已授权工作；终审和固定SHA验证要求没有被免除。
-> 当前实现：HEAD `9298636`之上的 **B3–B8已实现，最终代码契约独审通过，未关闭生产问题0**。F1已修并独立56/56复核关闭；修后最后Node68/0、check:ui、full浏览器112/112、余额8/8及全部JS25/25变异通过。Rust831/0（35既有ignored、默认并发）、真实Rust wires3386报文、Native10/10、真实组合16/16+4/4证据保留；**最终固定SHA完整Rust/C2汇总仍pending**，831/0早于两处测试harness修正，不能冒充最后字节全量。完整时点与失败历史见[实施汇总](../../../audits/sgm-8-5-balance/b3-b8-implementation-review.md)、[终审](../../../audits/sgm-8-5-balance/final-contract-review.md)。未推送或部署，本机与远端stable仍`7e5cf97`。
+> 当前实现：代码提交`ef44c070bd967cfec602d8cbc4e11c08585ebbbc`，**第5批B1–B8实施、固定SHA C2与workflow §6.6审核通过，未关闭问题0**。独立全量Rust831/0（35既有ignored、默认并发，含最终测试harness）、Node68/0、full浏览器112/112、报文3386、Native10/10、真实组合16/16+4/4、变异及原阈值性能均通过；275输入与提交一致且前后无漂移。F1由独立56例关闭。见[实施汇总](../../../audits/sgm-8-5-balance/b3-b8-implementation-review.md)、[终审](../../../audits/sgm-8-5-balance/final-contract-review.md)、[固定SHA验证](../../../audits/sgm-8-5-balance/final-fixed-sha-validation.md)。下一步归档审核文档、推送PR #5并核对CI，再停在C3；当前stable服务未升级。
 
 ## 0. 铁律（违反任何一条都要停下来）
 
@@ -51,7 +51,7 @@
 
 ### A. 第 5 批：签发账号内部余额（架构 §2.9，记作第 1b 步）
 
-- 细化v3/C1/Step0、I10与D1均已确认，B1/B2前置实现和B3–B8连续实施已完成；当前收敛终审修复及最终证据，不能据作者处置直接部署/推送。
+- 细化v3/C1/Step0、I10与D1均已确认，B1–B8连续实施及最终固定SHA C2通过；按既定流程更新PR #5和核对CI，部署仍需C3确认。
 - 下一步：
   1. **已完成（2026-11-02）**：把 v1 交用户确认。已确认的四处偏差：
      - 快照只加一个根字段 `balance`；
@@ -60,7 +60,7 @@
      - guard 为假时报 `not_ready`。
      另有两处细节：改设置时库忙返回 503；锁定期内的拒绝不覆盖「结果不确定」记录。
   2. **C1 已完成**：D1 具体配套已获用户确认；最终报告完整列输入 SHA 与各路结果，不需再等 Claude。
-  3. **当前下一步**：确定最终SHA并完成完整Rust/固定SHA C2汇总。F1修复、最后full112/112、Node68/0/check:ui、8余额/25全部JS变异和代码终审均已完成。831/0编译早于两处测试harness清理/断言顺序调整；生产Rust未变且独立恢复已过，仍不能称最后测试字节已跑固定SHA全量。
+  3. **当前下一步**：归档最终审核文档并以显式refspec推送PR #5，等三项CI全绿，再停在C3。代码`ef44c070`的独立固定SHA全量831/0及机械/性能检查已覆盖最终源码，275输入前后与HEAD一致；F1修后Node68/0/full112/112、全部JS25/25、代码独审和五维审核均通过。
   4. T1已扩⑨旧设置409/⑩合法amount但before+amount超cap422，并直接读store策略/last_refill；PBT实际名称、生成域与独立参考见细化§10.12和expectations§7，旧B1/B2窄性质继续明确保留。`CLAUDE.md`原生add_quota API更正已随B2完成。
 - 要点：
   - 补足函数严格按 7 步（含 1b）。锁顺序为「所有者异步互斥 → Core（短暂）→ 槽位」，Core 与槽位不跨 `.await`。
@@ -202,6 +202,6 @@ ssh fermat 'I=~/apps/quota-throttle-sgm/bin; ts=$(date +%Y%m%d-%H%M%S); cp -p $I
 
 ## 8. 待用户决定的事项
 
-1. v1/I10/D1已确认，B3–B8连续完成已获授权，F1修复、代码终审及最后UI门禁已通过；最终固定SHA完整Rust/C2汇总pending，不是等待模块实施许可。最终统一交付后部署仍须确认。
+1. v1/I10/D1及连续完成已获确认，第5批实现、独审、固定SHA C2和本地门禁均已完成，不再等待模块实施许可。PR/CI收口后部署仍须C3确认。
 2. 第 5 批部署到 fermat 的时机（首轮会写 fermat 的 new-api）。
 3. 之前悬而未决、细节以用户为准：是否把 `panel-ui` / `groups-runtime` 设为 main 的必需检查；是否停用旧渠道 #8。

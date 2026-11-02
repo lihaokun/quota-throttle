@@ -1,6 +1,6 @@
-# SGM-8 第 5 批 B1：C2 独立审核
+# SGM-8 第5批 C2审核总入口（保留B1/B2历史）
 
-> 当前总入口（2026-11-03）：B3–B8已连续实施，用户取消模块间停点；[最终代码契约独审](final-contract-review.md)通过、未关闭生产问题0。F1已修并独立56例关闭；修后最后Node68/0/check:ui/full112/112、余额8/8、全部JS25/25通过。仅最终固定SHA完整Rust/C2汇总pending，**不宣称固定SHA C2/整批退出已完成**。见[实施汇总](b3-b8-implementation-review.md)、[F1修正](../../fixes/sgm8-balance-policy-raw-amount.md)、[处置](decisions.md)、[十节实施对照](expectations.md)。部署前确认保留，stable部署未变。
+> 当前总入口（2026-11-03）：**第5批B1–B8的C2及workflow §6.6退出审核通过，未关闭问题0**。最终代码提交`ef44c070bd967cfec602d8cbc4e11c08585ebbbc`；路径B及五维判断见[最终代码契约独审](final-contract-review.md)，路径A及固定输入独立执行见[固定SHA验证](final-fixed-sha-validation.md)。Rust831/0、Node68/0、浏览器112/112、Native10/10和组合16+4、变异及原阈值性能均有明确时点的证据；275输入前后与提交一致。F1由原审查者独立56例关闭。见[实施汇总](b3-b8-implementation-review.md)、[F1修正](../../fixes/sgm8-balance-policy-raw-amount.md)、[处置](decisions.md)、[十节实施对照](expectations.md)。此结论不代替远端CI或C3部署许可，stable服务未升级。
 
 > B2历史进度：C2意见修正后的专项复审及门禁曾通过（Rust803/0、Node60/0、浏览器full96/96），见[修正记录](b2-c2-fix-review.md)。下文与旧B2失败报告均为各自固定SHA的历史结论，不替代新提交复核。
 

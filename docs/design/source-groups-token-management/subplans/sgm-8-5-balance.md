@@ -1,6 +1,6 @@
 # 细化设计 — SGM-8 / 第 5 批：签发账号内部余额
 
-> 状态（2026-11-03）：**v3/C1已确认，B1–B8已实施，最终代码契约独审通过、未关闭生产问题0。** F1已修复并独立56例关闭；修后最后Node68/0、check:ui、full浏览器112/112、余额8/8及全部JS25/25变异通过。仅最终固定SHA完整Rust/C2汇总仍pending。用户最新授权B3–B8连续完成，取消逐模块中间停点，最终统一交付；部署确认保留。证据时点见§10.11、[实施汇总](../../../audits/sgm-8-5-balance/b3-b8-implementation-review.md)、[最终代码独审](../../../audits/sgm-8-5-balance/final-contract-review.md)。代码独审不代替固定SHA C2。
+> 状态（2026-11-03）：**v3/C1已确认，第5批B1–B8实施、最终固定SHA C2及workflow §6.6审核通过，未关闭问题0。** 代码提交`ef44c070bd967cfec602d8cbc4e11c08585ebbbc`；独立Rust831/0、Node68/0、修后full浏览器112/112、全部JS25/25及原阈值性能通过。F1已修并独立56例关闭。用户授权连续完成，部署确认保留。证据见§10.11、[实施汇总](../../../audits/sgm-8-5-balance/b3-b8-implementation-review.md)、[最终代码独审](../../../audits/sgm-8-5-balance/final-contract-review.md)、[固定SHA验证](../../../audits/sgm-8-5-balance/final-fixed-sha-validation.md)。
 > 架构依据：`sgm-8-cleanup.md` v6 §2.9（2026-11-01 用户确认；§4.4 第 1 项三轮审查后通过）、§2.6 I5 / I8 / I9 / I10、§6 第 1b 步。
 > 本稿对 §2.9 的细化与偏差见 §1 末尾。所有 file:line 以提交 `7e5cf97` 为准。
 
@@ -693,13 +693,13 @@ V1确定复现为手势中途重绘替换按钮导致click未到达；单按钮�
 
 已取得门禁：Rust默认并发831/0（35既有ignored），F1修后Node68/0及check:ui；旧full浏览器112/112、UI43正例/25族/76余额反例、JS核2050实际Rust回复/15族、Python核3386报文/20请求族/15回复族；Native专用10/10，真实组合16/16+4/4无API mocks浏览器，测试进程均清理。B3关键8/8、B4关键3/3、HTTP两项反向验证闭环；F1修后余额变异子集**8/8**及全部JS最后整轮**25/25**已实际通过，日志`/tmp/sgm8-balance-js-mutations-unrestricted.log`，原沙箱子进程无输出失败保留。
 
-**输入时点与未完成项**：Rust主full编译早于`balance/tests.rs`先join再断言publication及`runtime/tests.rs`有界接收/先释放Condvar再断言两项测试harness修正，生产Rust未改且独立恢复已过；最终固定SHA完整Rust/C2汇总仍待安排。旧full112/wires/组合早于F1，其历史时点保留；F1修后最后full112/112已有新日志`/tmp/sgm8-balance-browser-final.log`及`/tmp/quota-throttle-sgm6-b-browser-ZPlYy1/report.json`。F1真实open→submit永久回归、最后Node68/0/check:ui、8余额/25全部JS变异及原审查者独立56/56复核均已通过；[八节修正报告](../../../fixes/sgm8-balance-policy-raw-amount.md)与[最终代码独审](../../../audits/sgm-8-5-balance/final-contract-review.md)已归档，未关闭生产问题0。本机与远端stable仍7e5cf97，未部署本轮工作树。
+**输入时点与最终收口**：首轮Rust早于两处测试harness修正，其旧日志不作为最后字节证据。独立验证者已在`ef44c070`重新执行完整Rust831/0（595.92s，35既有ignored）及Node68/0、3386报文/2050回复、生成契约、SGM7精确清单、探针静态回归和Rust性能31/31 release+4/4 debug；275输入与HEAD一致且前后无漂移。主任务补齐UI性能2/2、浏览器性能4/4，原阈值未改。旧组合早于F1的时点保留；生产Rust与最终提交相同，F1修后full112/112、余额8/8、全部JS25/25及独立56例另有最终证据。[八节修正报告](../../../fixes/sgm8-balance-policy-raw-amount.md)、[最终代码独审](../../../audits/sgm-8-5-balance/final-contract-review.md)、[固定SHA验证](../../../audits/sgm-8-5-balance/final-fixed-sha-validation.md)齐全，未关闭问题0，满足本子计划workflow §6.6/C2。当前stable服务未升级。
 
 原始日志、各失败原因、模块独审、变异输入/恢复哈希与资源清理见[实施汇总](../../../audits/sgm-8-5-balance/b3-b8-implementation-review.md)和[处置记录](../../../audits/sgm-8-5-balance/decisions.md)。
 
 ### 10.12 最终Named PBT覆盖矩阵
 
-每组128例；名称与生成域取已实现测试，参考模型独立于生产函数。下列“最终矩阵”指本批已声明性质的位置/范围，不表示pending退出项已完成。
+每组128例；名称与生成域取已实现测试，参考模型独立于生产函数。下列矩阵声明有限生成域及保证边界；固定提交执行证据见§10.11，不将PBT称为无穷全域证明。
 
 | 模块/精确测试名 | 实现位置 | 生成范围与保证边界 |
 |---|---|---|
@@ -721,4 +721,4 @@ V1确定复现为手势中途重绘替换按钮导致click未到达；单按钮�
 - 审查范围：v3按workflow §4.4逐项独立判断，不采信作者§10为通过证据；原v2已不通过，核所有IR处置与相关推论。用户已确认I10收窄，须复核第1项；D1仍单列用户确认，不代批准。
 - 重点：补足 1 → 1b → 7 的退出与副作用、所有者互斥 / Core / 槽位锁序、截止后的零发送、投递证据与 ≥500 不确定分类、10 分钟封锁、失败立即未知及回读失败不改补足结论、Busy 与 I8、v9 迁移 / 回滚、前端换算及契约清单、T-B1–T-B13 与变异覆盖。
 - 输出：逐项通过/不通过，问题级别、file:line依据、最小方案；由主代理记录与处置，独立审查者不修改业务代码。
-- 当前阶段：**B1–B8已实施，F1修复、最终代码契约独审与最后UI门禁通过；最终固定SHA完整Rust/C2汇总pending**。取消模块间等待，连续完成已授权工作；不把工作树代码独审等同固定SHA C2，不迁移运行库或部署。
+- 当前阶段：**第5批B1–B8实施、F1修复、独立代码审核、固定SHA C2与本地退出门禁全部通过**。按既定流程归档、更新PR #5并核对CI，再停在C3部署确认；不迁移运行库或部署。

@@ -1,8 +1,8 @@
 # SGM-8 第5批 B3–B8 实施、验证与独审汇总
 
-2026-11-03；工作树基线 `929863618e87f375e901f6ee6189cc4c8093e018`，分支 `research/source-groups-token-management`，继续归入 PR #5。本报告记录未提交工作树的实现证据，不是固定提交后的 C2 通过结论。
+2026-11-03；差异基线 `929863618e87f375e901f6ee6189cc4c8093e018`，代码提交 `ef44c070bd967cfec602d8cbc4e11c08585ebbbc`，分支 `research/source-groups-token-management`，继续归入 PR #5。下文保留各轮证据时点，最终固定提交复核另行归档。
 
-**当前状态：B3–B8已实现，最终代码契约独审与五维兜底通过，未关闭生产问题0；最终固定SHA完整Rust/C2汇总pending。** B7 F1已修复并由原审查者独立56例复核关闭；修后最后Node68/0、check:ui、full浏览器112/112、余额8/8及全部JS25/25变异通过。用户最新授权连续完成B3–B8，取消逐模块中间停点，最终统一交付；部署前确认保留。本机与远端stable部署仍为`7e5cf97`，没有部署本轮工作树，未推送。见[F1八节修正报告](../../fixes/sgm8-balance-policy-raw-amount.md)和[最终代码独审](final-contract-review.md)。
+**当前状态：B3–B8已实现，固定代码提交的C2、workflow §6.6及五维兜底通过，未关闭问题0。** B7 F1已修复并由原审查者独立56例复核关闭；修后最后Node68/0、check:ui、full浏览器112/112、余额8/8及全部JS25/25变异通过。独立验证者在`ef44c070`重新执行完整Rust831/0、31项release及4项debug性能，275个输入与HEAD相同且前后无漂移；主任务补齐UI性能2/2、浏览器性能4/4。用户授权连续完成B3–B8，最终统一交付；部署前确认保留。现有stable服务未升级。见[F1八节修正报告](../../fixes/sgm8-balance-policy-raw-amount.md)、[最终代码独审](final-contract-review.md)和[固定SHA验证](final-fixed-sha-validation.md)。
 
 ## 1. 实现与契约对照
 
@@ -29,7 +29,9 @@
 | 手动T-B13固定rc.20 | **10/10**，退出码0，临时进程与私有材料清理完成 | `/tmp/sgm8-native-balance-probe-fixed-final.log` |
 | 探针静态回归 | Python新增**2/0**；原组合脚本单测**11/0**，精确10/16检查清单与格式检查通过 | `scripts/tests/newapi-balance-probe-test.py`、`groups-probe-test.py`；`/tmp/balance-b4-b8-report.md` |
 
-**时点限制必须保留**：主全量Rust的编译早于两处测试harness修正：`balance/tests.rs`先join回收并保留JoinResult，再断言并发publication；`runtime/tests.rs`有界接收并确保释放Condvar后再断言。两处不改生产代码或成功条件，B3/B4独立基线及恢复已过；831/0仍不是最后测试字节的固定SHA全量证明。旧112浏览器/wires/组合早于F1修复，其历史时点不改写；F1修后最后Node/check:ui、full112/112、8余额/25全部JS变异和独立56例已有新证据。尚待最终固定SHA完整Rust与C2汇总，代码独审不代替它们。
+**历史时点保留**：上表首轮全量Rust早于两处测试harness修正：`balance/tests.rs`先join回收并保留JoinResult，再断言并发publication；`runtime/tests.rs`有界接收并确保释放Condvar后再断言。该轮不作为最终字节证明。最终独立全量已在`ef44c070`覆盖两处修正，831通过/0失败/35既有ignored，595.92s，日志`/tmp/sgm8-final-c2-rust.log`。旧112浏览器/wires/组合早于F1，其历史时点不改写；F1修后full112/112与变异另有新证据，固定SHA还重验3386报文。Native组合的生产Rust与最终提交相同。
+
+最终性能门禁沿用原阈值：Rust性能31/31 release、4/4 debug及runner回归24/24；UI两项为85.6ms/1000ms、212.5ms/500ms，浏览器性能4/4。日志分别为`/tmp/sgm8-final-c2-performance.log`、`/tmp/sgm8-final-ui-performance.log`、`/tmp/sgm8-final-browser-performance.log`。275输入聚合SHA256为`cabae87ddbe2092e33314808dc5bb05b54ec6fa9c55438a1397f98a12b191718`；最终release二进制SHA256为`7aeba806f454b56334d4ef1829b10c3b5d7821a83adb5be4a0805408a8685fde`，未安装到运行实例。
 
 ## 3. Named PBT矩阵（每组128例）
 
@@ -76,9 +78,9 @@ F1额外独立56例是7种比例×4组合法raw策略×两种开关的表单回�
 
 本轮产品语义未偏离已确认I10/D1/七步设计；主要实现选择为余额Node八名称集中新文件、测试使用私有生命周期接缝和实际请求sidecar。文档、schema、fixture与精确清单同步，旧冻结审计脚本仍保留历史范围。
 
-## 6. 待完成与部署边界
+## 6. 最终收口与部署边界
 
-1. F1修后最后full112/112、Node68/0/check:ui、余额8/8、全部JS25/25与代码独审均已完成；保留修前与修后各自日志，收口最终固定SHA Rust/C2汇总。
-2. 确定最终提交SHA后，对含两处晚到测试harness修正的最终源码完成完整Rust/固定SHA复核。当前代码独审通过，但未宣称整批workflow §6.6或固定SHA C2已通过。
-3. 统一交付后才进入已授权的提交/PR/CI步骤；本报告不授权推送或部署。
+1. F1修后full112/112、Node68/0/check:ui、余额8/8、全部JS25/25与代码独审完成；修前与修后日志分别保留。
+2. 最终代码`ef44c070`的独立全量、机械契约、性能及输入一致性验证通过，十节expectations齐全，所有已确认问题关闭，满足本子计划workflow §6.6与C2；不扩大为其它SGM-8批次完成。
+3. 按主任务统一安排收口本地提交、固定SHA复核及既定PR/CI流程，不恢复逐模块用户停点；本报告不额外授予推送或部署许可。
 4. 部署仍需用户确认v8→v9迁移、私有备份/WAL-SHM整体回滚边界及首轮原生加额；原生已成功加额不会随目录回滚撤销。未获确认不更换任何stable部署，不读取或记录远端配置、凭据或主机接入细节。
