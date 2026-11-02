@@ -73,11 +73,12 @@ cargo run --release -- down config.toml    # 停 new-api
 - **new-api PUT /api/channel 拒绝带 `status` 字段**的请求体（判 Invalid parameters）；改字段前必须 `obj.remove("status")`。GET 单渠道返回的 `key` 是空串，PUT 空 key 会保留原值（安全）。
 - **new-api 首启无默认 root/123456**：需先 `POST /api/setup {username,password,confirmPassword,SelfUseModeEnabled}`（密码≥8位、用户名≤12）建管理员，再登录拿会话。
 - **new-api 令牌 key 在列表里打码**（`aK1A****7H3Z`），真实值从 SQLite `tokens.key` 读（或 `POST /api/token/:id/key` 直接回完整值）；POST/PUT 到 `/api/xxx/` 要带**尾斜杠**（否则 307，reqwest 会自动跟随、urllib 不会）；会话鉴权还要带 `New-Api-User: <用户id>` 头。
-- **new-api 管理面没有「调用户余额」的 API**：PUT /api/user/ 的 EditWithTx 白名单只有
-  username/display_name/group/remark/password（**quota 改不动、还回 success=true**）；
-  ManageUser 只有 enable/disable/delete 等。最短路径：直写 SQLite
-  `UPDATE users SET quota=… WHERE id=1` + **重启 new-api**（用户缓存靠重启失效；
-  quota 单位 = 货币数 × QuotaPerUnit(500000)）。
+- **new-api rc.20 支持原子加用户余额**：管理员调用 `POST /api/user/manage`
+  `{id, action:"add_quota", mode:"add", value}`；`PUT /api/user/` 的 quota 仍不在更新白名单，可能不改余额却回 success=true。
+  必须先核验正数用户 ID：id=0 会命中 root，不存在的正 ID 也可能回 success=true 而未加余额。
+  SGM 使用 `newapi/users.rs::add_user_quota_until`，复用管理预算/认证/最终 guard；只有明确 401 允许一次恢复重放，不确定结果不能自动重发。
+  换算取 `/api/status` 的 `quota_per_unit` 与 `quota_display_type`，不要硬编码 500000；正常加额不需直写 SQLite 或重启。
+  依据见 `docs/design/source-groups-token-management/subplans/sgm-8-cleanup.md` §2.9 的固定版本调研记录。
 - **⚠️ new-api `/api` 全局限流：360 次/180 秒（≈2 次/秒，env `GLOBAL_API_RATE_LIMIT`，不在 option 系统里）**。
   2026-08-24 踩坑：面板曾**逐渠道**轮询 `/api/log/stat` 拉 rpm/tpm（N 把 key），
   单面板就吃光预算 → 控制循环的 GET→PUT 被 429（且 429 响应体非 JSON，报「解析渠道响应失败」）

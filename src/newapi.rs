@@ -11,12 +11,13 @@ use crate::config::{ChannelTemplate, KeyMapping, ModelDiscoveryConfig, NewApiCon
 use crate::model_catalog::{model_sets_equal, normalize_models_csv, ModelCatalogClient};
 use crate::status::{ChannelState, RequestLog};
 use anyhow::{bail, Context, Result};
-pub(crate) mod logs;
 pub(crate) mod groups;
+pub(crate) mod logs;
 pub mod managed_channels;
 pub mod preflight;
 pub(crate) mod tokens;
 pub mod transport;
+pub(crate) mod users;
 
 use reqwest::Method;
 use serde_json::{json, Value};
@@ -154,7 +155,10 @@ pub struct NewApiClient {
 }
 
 impl NewApiClient {
-    pub(crate) fn managed_groups<'a>(&'a self, guard: &'a (dyn Fn() -> bool + Send + Sync)) -> groups::ManagedGroups<'a> {
+    pub(crate) fn managed_groups<'a>(
+        &'a self,
+        guard: &'a (dyn Fn() -> bool + Send + Sync),
+    ) -> groups::ManagedGroups<'a> {
         groups::ManagedGroups::new(&self.transport, guard)
     }
     pub(crate) fn shares_management_scope(&self, other: &Self) -> bool {

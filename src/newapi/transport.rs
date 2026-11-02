@@ -84,6 +84,13 @@ impl ManagementError {
     }
 }
 pub type Result<T> = std::result::Result<T, ManagementError>;
+fn check_deadline(deadline: Option<Instant>) -> Result<()> {
+    if deadline.is_some_and(|end| Instant::now() >= end) {
+        Err(error(ManagementErrorKind::QueueFull))
+    } else {
+        Ok(())
+    }
+}
 pub(super) fn error(kind: ManagementErrorKind) -> ManagementError {
     ManagementError {
         kind,
@@ -392,6 +399,27 @@ impl ManagementBudget {
             }
         }
     }
+
+    async fn admit_checked_until(
+        self: &Arc<Self>,
+        class: RequestClass,
+        check: &(dyn Fn() -> Result<()> + Send + Sync),
+        deadline: Instant,
+    ) -> Result<Admission> {
+        // Step B2.admission: 只取消未准入等待；Drop 清除本 waiter，不取消在途 HTTP。
+        check_deadline(Some(deadline))?;
+        let bounded_check = || {
+            check_deadline(Some(deadline))?;
+            check()
+        };
+        let admission =
+            tokio::time::timeout_at(deadline, self.admit_checked(class, &bounded_check))
+                .await
+                .map_err(|_| error(ManagementErrorKind::QueueFull))??;
+        // 即便 timeout 边界先返回 Ready，或 guard 耗时跨界，也不能开始新 HTTP。
+        check_deadline(Some(deadline))?;
+        Ok(admission)
+    }
 }
 struct Admission {
     budget: Arc<ManagementBudget>,
@@ -528,6 +556,28 @@ impl ManagementTransport {
         class: RequestClass,
         guard: &(dyn Fn() -> bool + Send + Sync),
     ) -> Result<ManagementResponse> {
+        self.send_inner(request, class, guard, None).await
+    }
+
+    pub async fn send_fenced_until(
+        &self,
+        request: ManagementRequest,
+        class: RequestClass,
+        guard: &(dyn Fn() -> bool + Send + Sync),
+        deadline: Instant,
+    ) -> Result<ManagementResponse> {
+        self.send_inner(request, class, guard, Some(deadline)).await
+    }
+
+    async fn send_inner(
+        &self,
+        request: ManagementRequest,
+        class: RequestClass,
+        guard: &(dyn Fn() -> bool + Send + Sync),
+        deadline: Option<Instant>,
+    ) -> Result<ManagementResponse> {
+        // Step B2.send: 原请求、初始登录和唯一一次 401 恢复共用同一绝对截止。
+        check_deadline(deadline)?;
         // 包括等待 refresh 锁的调用；不能让认证等待绕开 64 槽上限。
         let _request = self.budget.register_request()?;
         let pending = {
@@ -538,9 +588,10 @@ impl ManagementTransport {
             matches!(auth.auth, Auth::Pending)
         };
         if pending {
-            self.refresh_session(0).await?;
+            self.refresh_session_with_deadline(0, deadline).await?;
         }
         for attempt in 0..2 {
+            check_deadline(deadline)?;
             let (auth, generation) = {
                 let state = self.auth.lock().unwrap();
                 if state.failed {
@@ -561,7 +612,10 @@ impl ManagementTransport {
             };
             // Step P2: 每次发送均获取预算；普通响应等待不持有 auth 锁。
             // Step P13: 预算等待/401 恢复之后，同一次最终准入检查当前意图及认证熔断。
-            let admission = self.budget.admit_checked(class, &check).await?;
+            let admission = match deadline {
+                Some(end) => self.budget.admit_checked_until(class, &check, end).await?,
+                None => self.budget.admit_checked(class, &check).await?,
+            };
             let response = self.execute(&request, builder).await;
             drop(admission);
             // Step P3: 释放在途槽后才能单飞登录；仅明确 401 允许重放创建。
@@ -571,7 +625,8 @@ impl ManagementTransport {
                         self.fail_generation(generation);
                         return Err(error(ManagementErrorKind::AuthFailed));
                     }
-                    self.refresh_session(generation).await?;
+                    self.refresh_session_with_deadline(generation, deadline)
+                        .await?;
                 }
                 Ok(response) => {
                     if request.token_lookup && response.token_missing() {
@@ -596,8 +651,24 @@ impl ManagementTransport {
     }
 
     async fn refresh_session(&self, observed_generation: u64) -> Result<()> {
-        let refresh = self.refresh.lock().await;
-        self.refresh_session_locked(observed_generation, &refresh)
+        self.refresh_session_with_deadline(observed_generation, None)
+            .await
+    }
+
+    async fn refresh_session_with_deadline(
+        &self,
+        observed_generation: u64,
+        deadline: Option<Instant>,
+    ) -> Result<()> {
+        // Step B2.authentication: 锁等待与登录准入有界；不取消已经准入的登录。
+        check_deadline(deadline)?;
+        let refresh = match deadline {
+            Some(end) => tokio::time::timeout_at(end, self.refresh.lock())
+                .await
+                .map_err(|_| error(ManagementErrorKind::QueueFull))?,
+            None => self.refresh.lock().await,
+        };
+        self.refresh_session_locked_until(observed_generation, &refresh, deadline)
             .await
     }
 
@@ -605,8 +676,19 @@ impl ManagementTransport {
     async fn refresh_session_locked(
         &self,
         observed_generation: u64,
-        _refresh: &tokio::sync::MutexGuard<'_, ()>,
+        refresh: &tokio::sync::MutexGuard<'_, ()>,
     ) -> Result<()> {
+        self.refresh_session_locked_until(observed_generation, refresh, None)
+            .await
+    }
+
+    async fn refresh_session_locked_until(
+        &self,
+        observed_generation: u64,
+        _refresh: &tokio::sync::MutexGuard<'_, ()>,
+        deadline: Option<Instant>,
+    ) -> Result<()> {
+        check_deadline(deadline)?;
         {
             let state = self.auth.lock().unwrap();
             if state.failed {
@@ -629,7 +711,14 @@ impl ManagementTransport {
             SINGLE_BODY_LIMIT,
         )?;
         let builder = self.prepare_request(&request, None)?;
-        let _admission = self.budget.admit(RequestClass::Control).await?;
+        let _admission = match deadline {
+            Some(end) => {
+                self.budget
+                    .admit_checked_until(RequestClass::Control, &|| Ok(()), end)
+                    .await?
+            }
+            None => self.budget.admit(RequestClass::Control).await?,
+        };
         // 登录已经发出后取消也不能让下一位等待者无条件再打登录。
         let mut cancellation = RefreshCancellation {
             transport: self,
@@ -919,6 +1008,8 @@ impl Drop for RefreshCancellation<'_> {
 
 #[cfg(test)]
 pub(crate) mod assurance_tests;
+#[cfg(test)]
+mod balance_tests;
 #[cfg(test)]
 mod delivery_tests;
 #[cfg(test)]

@@ -321,11 +321,25 @@ impl<'a> ManagedTokens<'a> {
         request: ManagementRequest,
         class: RequestClass,
     ) -> Result<ManagementResponse> {
+        self.send_with_deadline(request, class, None).await
+    }
+    async fn send_with_deadline(
+        &self,
+        request: ManagementRequest,
+        class: RequestClass,
+        deadline: Option<tokio::time::Instant>,
+    ) -> Result<ManagementResponse> {
         // Step T5A.4: 固定owner，复用同一budget/认证与最终准入guard，不新建会话或重试器。
         let request = request.for_user(self.owner.user_id)?;
-        let response = match self.guard {
-            Some(g) => self.transport.send_fenced(request, class, g).await,
-            None => self.transport.send(request, class).await,
+        let always = || true;
+        let guard = self.guard.unwrap_or(&always);
+        let response = match deadline {
+            Some(end) => {
+                self.transport
+                    .send_fenced_until(request, class, guard, end)
+                    .await
+            }
+            None => self.transport.send_fenced(request, class, guard).await,
         }?;
         if response.status() != reqwest::StatusCode::OK {
             return Err(invalid());
@@ -355,11 +369,41 @@ impl<'a> ManagedTokens<'a> {
         .envelope()
     }
     pub async fn profile(&self) -> Result<TokenOwnerProfile> {
+        self.profile_with(RequestClass::Control, None).await
+    }
+    pub async fn observe_profile_until(
+        &self,
+        deadline: tokio::time::Instant,
+    ) -> Result<TokenOwnerProfile> {
+        self.profile_with(RequestClass::Observe, Some(deadline))
+            .await
+    }
+    pub async fn profile_until(&self, deadline: tokio::time::Instant) -> Result<TokenOwnerProfile> {
+        self.profile_with(RequestClass::Control, Some(deadline))
+            .await
+    }
+    async fn profile_with(
+        &self,
+        class: RequestClass,
+        deadline: Option<tokio::time::Instant>,
+    ) -> Result<TokenOwnerProfile> {
         // Step T5A.2: 每次核固定账号/角色；不把上次profile当作永久授权。
+        // Step B2.profile: 余额读取携带同一截止，并保留 owner/principal/角色验证。
         self.validate_owner()?;
         let body = self
-            .read("/api/user/self", SINGLE_BODY_LIMIT, RequestClass::Control)
-            .await?;
+            .send_with_deadline(
+                ManagementRequest::new(
+                    Method::GET,
+                    "/api/user/self",
+                    None,
+                    RequestSemantics::Read,
+                    SINGLE_BODY_LIMIT,
+                )?,
+                class,
+                deadline,
+            )
+            .await?
+            .envelope()?;
         parse_profile(body.get("data").ok_or_else(invalid)?, self.owner)
     }
     async fn groups_for_owner(&self) -> Result<Vec<String>> {

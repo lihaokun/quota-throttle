@@ -130,3 +130,9 @@ B2–B8（Native 有界传输、worker、runtime、HTTP、快照、前端和探�
 提交 `94362c46b1f7eeb9951f0562f1cbcbc9b295eb34` 的局部 C2 已通过。路径 A 独立机械检查及同 SHA 门禁通过；路径 B 从契约重新提取后对照 diff，未读取作者实现映射，遗漏/不一致/待决策项均 0；五维审核均通过。Rust 787/0（35 既有 ignored）、Node 60/0、浏览器 full 92/0，189 输入文件前后哈希一致。报告见 `audit-report.md`，处置见 `decisions.md`。
 
 B1 未新增 JSON wire 出口，相关 JSON/HTTP/UI 扩展属于 B2–B8 的后续验证范围；本记录不把整个十节预期表宣称为已实现或整批 §6.6 退出。
+
+## B2 实施对照（局部，尚待提交后 C2）
+
+已按 §5.3 实现 `newapi/users.rs::{QuotaUnit,quota_unit_until,add_user_quota_until}`，`tokens.rs::{profile_until,observe_profile_until,profile_with,send_with_deadline}`，以及 `transport.rs::{send_fenced_until,send_inner,admit_checked_until,refresh_session_with_deadline,refresh_session_locked_until}`。所有 deadline 为同一个 tokio Instant；旧调用 None 路径保留，HTTP execute/认证熔断/预算常量未改。
+
+T-B4/T-B5/T-B15 的实际位置为 `src/newapi/transport/balance_tests.rs`，14项（含128例独立预算资源PBT）覆盖矩阵与独立审查处置见 `b2-implementation-review.md`。模块静态审查剩余问题0；Rust全量801/0（35既有ignored）、Node60/0、浏览器full92/0，五项变异编译后均被语义断言捕获且恢复14/0。六个Step、共享cap、类型字段及源码范围机械项通过。本地提交后停C2，不能用模块结果提前宣称该SHA独审或整个子计划退出。B3–B8 仍待实现。
