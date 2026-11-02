@@ -136,3 +136,11 @@ B1 未新增 JSON wire 出口，相关 JSON/HTTP/UI 扩展属于 B2–B8 的后�
 已按 §5.3 实现 `newapi/users.rs::{QuotaUnit,quota_unit_until,add_user_quota_until}`，`tokens.rs::{profile_until,observe_profile_until,profile_with,send_with_deadline}`，以及 `transport.rs::{send_fenced_until,send_inner,admit_checked_until,refresh_session_with_deadline,refresh_session_locked_until}`。所有 deadline 为同一个 tokio Instant；旧调用 None 路径保留，HTTP execute/认证熔断/预算常量未改。
 
 T-B4/T-B5/T-B15 的实际位置为 `src/newapi/transport/balance_tests.rs`，14项（含128例独立预算资源PBT）覆盖矩阵与独立审查处置见 `b2-implementation-review.md`。模块静态审查剩余问题0；Rust全量801/0（35既有ignored）、Node60/0、浏览器full92/0，五项变异编译后均被语义断言捕获且恢复14/0。六个Step、共享cap、类型字段及源码范围机械项通过。本地提交后停C2，不能用模块结果提前宣称该SHA独审或整个子计划退出。B3–B8 仍待实现。
+
+## B2 C2 验证状态修正（2026-11-02）
+
+独立审核固定提交 `9619729` 后发现：原14项和128例PBT不足以钉住全部B2契约，**C2暂不通过**。profile两个入口丢掉deadline、初始Pending把deadline延长1s、截止`>=`改`>`、amount窄化i32四项单点变异，均编译后仍14/0。需要补公开入口截止接线、原end时刻、空闲且恰到期分支、大金额请求值保真断言；对应契约未变，本次不接受测试缺口为偏离。
+
+新PBT的实际域为class三种×1–499ms，路径始终两槽满、waiter从未获选；它本身有效，但不覆盖上述入口和边界。12条不变量→已有PBT→定向补足→缺口的完整矩阵见 `b2-c2-pbt-review.md`；原门禁绿色不得覆盖专项结论。第5批尚有B3/B7规定的四组PBT待实现，不把它们列为B2缺陷，也不宣称整个子计划退出。
+
+本次固定SHA门禁：Rust801/0（35既有ignored）、Node60/0、机械/SGM7通过；浏览器原full91/1未通过。原失败case定向5/0仅为诊断，reporter重复注册exit1，不替代full或关闭原因。191输入文件与SHA前后均相同；完整证据及处置见 `b2-c2-audit-report.md`、`decisions.md`。本轮没有修改被审源码或测试。
