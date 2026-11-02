@@ -21,6 +21,28 @@ const ago = ms => !Number.isFinite(ms) ? '未采样' : ms < 60000 ? `采样 ${Ma
 
 export function createRenderer(document, handlers) {
   const byId = id => document.getElementById(id);
+  // 最多保留一个正在激活的按钮；只保护所在区块，不缓存动作或旧 view model。
+  let gesture = null;
+  const press = (event, kind, id) => { const button = event.target.closest?.('button'); if (button && !button.disabled) gesture = {button, kind, id, released: false}; };
+  const release = (kind, id) => { if (gesture?.kind === kind && gesture.id === id) gesture.released = true; };
+  const clearInteraction = () => { gesture = null; };
+  const interactionActive = () => gesture !== null;
+  const settleInteractions = () => { if (gesture && (gesture.released || !gesture.button.isConnected)) clearInteraction(); };
+  const interactionListeners = [
+    [document, 'pointerdown', event => { if (event.isPrimary && event.button === 0) press(event, 'pointer', event.pointerId); }, true],
+    [document, 'pointerup', event => release('pointer', event.pointerId), true],
+    [document, 'pointercancel', event => { if (gesture?.kind === 'pointer' && gesture.id === event.pointerId) clearInteraction(); }, true],
+    [document, 'keydown', event => { if ([' ', 'Enter'].includes(event.key)) press(event, 'key', event.key); }, true],
+    [document, 'keyup', event => { if ([' ', 'Enter'].includes(event.key)) release('key', event.key); }, true],
+    // click 已选定分派路径，先释放不会丢该次真实 click；这里不重绘或执行业务动作。
+    [document, 'click', event => { if (gesture && (gesture.released || gesture.button.contains(event.target))) clearInteraction(); }, true],
+    [document, 'focusout', event => { if (gesture?.kind === 'key' && gesture.button === event.target) clearInteraction(); }, true],
+    [document, 'dragstart', clearInteraction, true],
+    [document.defaultView, 'blur', clearInteraction, false],
+  ];
+  for (const [target, type, listener, capture] of interactionListeners) target?.addEventListener(type, listener, capture);
+  const destroy = () => { clearInteraction(); for (const [target, type, listener, capture] of interactionListeners) target?.removeEventListener(type, listener, capture); };
+
   const text = (tag, value, cls) => node(document, tag, value, cls);
   const button = (label, fn, disabled = false, focusKey = '', cls = null) => {
     const b = node(document, 'button', label, cls); b.type = 'button'; b.disabled = disabled;
@@ -45,6 +67,7 @@ export function createRenderer(document, handlers) {
   // 区块重建守卫：内容戳不变就不碰 DOM；必须重建时保住打开的 ⋯ 菜单与展开的详情。
   function guard(root, stamp, build) {
     if (root.dataset.stamp === stamp) return;
+    if (gesture && root.contains(gesture.button)) return;
     const open = root.querySelector('.menu.open')?.dataset.key ?? null, expanded = new Set([...root.querySelectorAll('details[open]')].map(d => d.dataset.key));
     root.replaceChildren(); build(root); root.dataset.stamp = stamp;
     if (open !== null) for (const m of root.querySelectorAll('.menu')) if (m.dataset.key === open) { m.classList.add('open'); m.querySelector('.menu-btn').setAttribute('aria-expanded', 'true'); }
@@ -507,5 +530,5 @@ export function createRenderer(document, handlers) {
     const input = text('textarea'); input.readOnly = true; input.value = key; input.setAttribute('aria-label', '临时访问 Key');
     root.append(input, toolbar(button('复制已取得的 Key', onCopy), button('关闭并清除', onClose))); input.focus(); input.select();
   }
-  return { frame, form, clearForm, conflict, clearSecret, manualSecret, table, text, button, toolbar, pager, bars, modelRows, kfmt };
+  return { clearInteraction, settleInteractions, interactionActive, destroy, frame, form, clearForm, conflict, clearSecret, manualSecret, table, text, button, toolbar, pager, bars, modelRows, kfmt };
 }

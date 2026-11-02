@@ -500,7 +500,7 @@ T-B10 增加有界时钟测试：在原40s之后、60s之前完成的补足得�
 
 ## 7. 清单与审计同步
 
-- CI会检查的：先改三份schema，再生成contract.mjs，核七族 / 三枚举 / LIMITS.balanceCap；check:ui不能跳过。按§6计划Node **60→68**（8个新名称；client矩阵扩充不额外计名）、浏览器 **23→27个名称，92→108项**，同步sgm6_b_node_tests.txt、sgm6_b_browser_tests.json与reporter.test.mjs；如实现按真实行为合理拆分，必须同批列出新名与精确数量，不用宽松下界掩盖漏跑。
+- CI会检查的：先改三份schema，再生成contract.mjs，核七族 / 三枚举 / LIMITS.balanceCap；check:ui不能跳过。按§6计划Node **60→68**（8个新名称；client矩阵扩充不额外计名）、浏览器 **24→28个名称，96→112项**（B2 C2修正已新增一个交互回归，原23/92基线与历史审查数字保留）。同步sgm6_b_node_tests.txt、sgm6_b_browser_tests.json与reporter.test.mjs；如实现按真实行为合理拆分，必须同批列出新名与精确数量，不用宽松下界掩盖漏跑。
 - T-B14采用文中精确runtime测试名，按字典序加入sgm7_tests.txt；所有fixture / schema版本 / capacity根宽度同步，不改并发度以绕过门禁。
 - `record_wire`登记两新请求/回复；实际Rust成功样本用测试专用emit_balance_pair一次预留pair序号，输出同pid/序号的request_<族>-pid-id.json与response_<族>-pid-id.json，并在**balance-context子目录**写同response文件名的sidecar，内容只指向精确request_file（basename）。不改变其它族emit；子目录不进入既有顶层*.json schema扫描。mjs消费新回复时必须存在sidecar、验证basename/pid/序号/请求族对应，再读取**原请求body**交validateReply，缺失即失败，禁止从回复反造scope/amount/设置。错误样本沿原AdminError处理。补同一回复配错scope、amount、三设置、expected_revision的拒绝反例，证明配对有意义。
 - 维护sgm6_b_wires.mjs/.py：新增两请求/回复、字符串ID/null分支；实际Rust回复族13→15，UI schema族21→25、正例至少36，并有数字ID/缺null/错误组合反例。sidecar只是测试上下文，不新增产品wire，不含凭据。主architecture.md同步§4共享类型/consumer（本轮已补设计概述），handoff测试范围补至T-B17。
@@ -670,6 +670,14 @@ B2 随本次本地提交交 C2，不能把模块审查等同该 SHA 的提交后
 
 要求补最小入口/时刻/等号/大金额断言并杀死新增逃逸后复审，不强推大型状态机。现有128例PBT只覆盖固定双槽阻塞时的未选中waiter，不宣称B2或整个第5批的PBT完整。B3/B7尚待实施的四组性质不计为B2缺陷。本轮仅审核，未改被审源码，不进入B3、不推送或部署。
 
+### 10.10 B2 C2意见修正（2026-11-02）
+
+用户已要求修正。F1–F3以公开入口/精确原end/空闲等号/大整数JSON补齐，16项测试通过；原四逃逸及Observe/Control独立漏传、ID窄化共七项变异均编译后被捕获，恢复16/0。原128例限定PBT保持，不称全域或整批性质已完成。
+
+V1确定复现为手势中途重绘替换按钮导致click未到达；单按钮引用保护相关DOM，现有pump让周期work让位，最新授权守卫、state/expiry和在途work规则保留。独立专项复审通过，永久回归杀死DOM/yield回退。新完整清单24×4=96，最终Rust默认并行803/0（35既有ignored）、Node60/0、check:ui/SGM7通过、浏览器full一次96/96。修正期间Node fixture接口与CDP清理失败均保留，不放宽原断言/时限。
+
+方案 `docs/fixes/sgm8-b2-fix-verification-gaps.md`、执行及复审证据 `docs/audits/sgm-8-5-balance/b2-c2-fix-review.md` 随本次本地提交保存。提交后停C2固定SHA复核，B3–B8未开始，不推送或部署。旧C2报告作为历史保留。
+
 ## 11. C1 独立审查及后续复审材料
 
 - 工作区：`/home/haokun/projects/quota-throttle/.worktrees/source-groups-research`；分支 `research/source-groups-token-management`，后续仍归入 PR #5。
@@ -678,4 +686,4 @@ B2 随本次本地提交交 C2，不能把模块审查等同该 SHA 的提交后
 - 审查范围：v3按workflow §4.4逐项独立判断，不采信作者§10为通过证据；原v2已不通过，核所有IR处置与相关推论。用户已确认I10收窄，须复核第1项；D1仍单列用户确认，不代批准。
 - 重点：补足 1 → 1b → 7 的退出与副作用、所有者互斥 / Core / 槽位锁序、截止后的零发送、投递证据与 ≥500 不确定分类、10 分钟封锁、失败立即未知及回读失败不改补足结论、Busy 与 I8、v9 迁移 / 回滚、前端换算及契约清单、T-B1–T-B13 与变异覆盖。
 - 输出：逐项通过/不通过，问题级别、file:line依据、最小方案；由主代理记录与处置，独立审查者不修改业务代码。
-- 当前阶段：**C1 完成，I10 与 D1 已确认；B1 的 C2 已通过；B2 的 C2 因测试证据缺口暂不通过**。先补B2验证并复审，B3–B8未开始；不访问运行数据、不迁移运行库或部署。
+- 当前阶段：**C1/B1 C2已完成，B2 C2意见已修正且专项复审/全量门禁通过，随新提交交C2固定SHA复核**。B3–B8未开始；不访问运行数据、不迁移运行库或部署。

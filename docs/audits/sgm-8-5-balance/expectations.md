@@ -144,3 +144,9 @@ T-B4/T-B5/T-B15 的实际位置为 `src/newapi/transport/balance_tests.rs`，14�
 新PBT的实际域为class三种×1–499ms，路径始终两槽满、waiter从未获选；它本身有效，但不覆盖上述入口和边界。12条不变量→已有PBT→定向补足→缺口的完整矩阵见 `b2-c2-pbt-review.md`；原门禁绿色不得覆盖专项结论。第5批尚有B3/B7规定的四组PBT待实现，不把它们列为B2缺陷，也不宣称整个子计划退出。
 
 本次固定SHA门禁：Rust801/0（35既有ignored）、Node60/0、机械/SGM7通过；浏览器原full91/1未通过。原失败case定向5/0仅为诊断，reporter重复注册exit1，不替代full或关闭原因。191输入文件与SHA前后均相同；完整证据及处置见 `b2-c2-audit-report.md`、`decisions.md`。本轮没有修改被审源码或测试。
+
+## B2 C2意见修正验证（2026-11-02）
+
+F1–F3已通过两个公开profile×三阻塞点、四公开until×截止前/等号/后、原Pending/64槽精确end、大整数JSON等值断言补齐；16个测试通过，原四逃逸及三个同类单点变异编译后均被捕获，恢复16/0。PBT仍为原128例限定性质，不能称随机全路径或整批PBT完成。
+
+V1关联面板修复按单引用/现有pump落实；周期work让位但state/expiry继续、显式与在途work不抢占、最新权限守卫保留。新永久浏览器回归覆盖pointer/Space/cancel及Chromium-mobile可信touch，精确清单24×4=96。全量Rust默认并行803/0（35既有ignored），Node60/0、check:ui/SGM7通过，浏览器full一次96/96。独立专项复审无新阻塞项，提交后C2仍待固定SHA复核。详见 `b2-c2-fix-review.md`，原失败记录保留。

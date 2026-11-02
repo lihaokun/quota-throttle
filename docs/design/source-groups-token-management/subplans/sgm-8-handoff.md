@@ -4,7 +4,7 @@
 > 工作区：`/home/haokun/projects/quota-throttle/.worktrees/source-groups-research`（与 Claude 共享，不要改写历史、不要 stash）。
 > 分支：`research/source-groups-token-management`，对应 PR #5（https://github.com/lihaokun/quota-throttle/pull/5）。**本轮后续所有改动都合进 PR #5**，不另开 PR。
 > 最新审查安排（2026-11-02用户）：**改用subagent独立审核，不用等Claude**；原Claude审查为历史记录，C1/C2/C3停点仍保留。
-> 接手进度：I10 与 D1 的 60/70/75 配套已确认，C1 完成；B1 提交 `94362c4` 的局部 C2 已通过。**B2 提交 `9619729` 的 C2 暂不通过：1 major、2 minor 测试证据缺口，四项错误变异逃过原14项测试**，见 `docs/audits/sgm-8-5-balance/b2-c2-audit-report.md`。另有浏览器full91/1红门禁，定向5/0仅为诊断，根因未确定。当前B2产品代码未发现对应缺陷；下一步补最小测试、完整门禁及复审，暂不进入B3。B3–B8未实现，未推送或部署。
+> 接手进度：I10/D1已确认，B1的C2已通过。**B2旧提交 `9619729` 的C2意见已修正：后端16项测试及七个反向变异通过；V1确定复现后局部修复，永久浏览器回归能杀死两项回退；全量Rust803/0、Node60/0、浏览器full96/96。** 专项独审与证据见 `docs/audits/sgm-8-5-balance/b2-c2-fix-review.md`。修正随本地新提交交C2，下一步按新SHA复核，再进入B3；旧失败报告保留，B3–B8未实现，未推送或部署。
 
 ## 0. 铁律（违反任何一条都要停下来）
 
@@ -34,7 +34,7 @@
 
 > 2026-11-02 B1 局部进度：余额策略持久化、v8→v9 迁移及回归/PBT 已提交为 `94362c4`，提交后的 C2 独审通过，剩余问题 0。实施和三项变异证据见 `docs/audits/sgm-8-5-balance/b1-implementation-review.md`，C2 见同目录 `audit-report.md`。
 >
-> B2 已提交为 `9619729`，实现期14项测试/PBT128、全量与五项原变异通过；提交后 C2 专项证明这些证据不完整。先补 profile截止传递、Pending原截止时刻、截止等号、大金额payload保真四类反例，杀死四项新增逃逸变异再复审；此前不进入B3。
+> B2原实现为 `9619729`，C2发现四类逃逸与浏览器红门禁；这些意见现已按用户要求修正，具体实现、失败留存和全量验证见修正记录。不要把旧14项/92项数字当作当前清单；当前B2补测16项、UI完整96项。提交后仍需固定SHA复核。
 
 - 已完成：架构 v6（`2d48438`）；**第 1 步**（`7e5cf97`）：提交被拒就地反馈（规则 R：带状态码且不是 500 / 504 的错误 = 后端没有记录）、轮询 404 说明、`QueueFull` 警告带 `job`、pb2 断言修正、T1 按 8 类提交钉住 I8。
 - 已部署 `7e5cf97`：
@@ -60,7 +60,7 @@
      - guard 为假时报 `not_ready`。
      另有两处细节：改设置时库忙返回 503；锁定期内的拒绝不覆盖「结果不确定」记录。
   2. **C1 已完成**：D1 具体配套已获用户确认；最终报告完整列输入 SHA 与各路结果，不需再等 Claude。
-  3. B1 的提交后 C2 已通过；B2 的 C2 发现1 major/2 minor测试证据缺口，尚未闭环。下一步先补上述最小反例及验证，再独审；不能仅增加128的案例数或重复绿色门禁宣称完整。B2通过后才进入B3，继续剩余B3–B8、T1、夹具/清单/PBT与机械项；不直接推送或部署。
+  3. B1的C2已通过；B2的测试缺口和V1已修正，专项独审、反向验证及最终全量门禁通过，修正提交后停C2复核。旧128例PBT仍只证明限定性质，不能冒称整批PBT完整。新SHA通过后才进入B3，继续剩余B3–B8、T1、夹具/清单/PBT与机械项；不直接推送或部署。
   4. 同批更正 `CLAUDE.md` 中「new-api 管理面没有调用户余额的 API」一条（细化 §7）。
 - 要点：
   - 补足函数严格按 7 步（含 1b）。锁顺序为「所有者异步互斥 → Core（短暂）→ 槽位」，Core 与槽位不跨 `.await`。
@@ -155,7 +155,7 @@ git diff --check
 
 清单要同步：
 - `scripts/contract_audit/sgm6_b_node_tests.txt`：node 测试名精确一致。
-- `sgm6_b_browser_tests.json` 与 `tests/ui/reporter.test.mjs` 中的总数（当前 23 × 4 = 92）。
+- `sgm6_b_browser_tests.json` 与 `tests/ui/reporter.test.mjs` 中的总数（B2 C2修正后 24 × 4 = 96；旧92项报告为历史记录）。
 - `sgm7_tests.txt`：`runtime::tests::` 等测试名，按字典序。
 - `sgm6_b_mutations.mjs`：永久变异，「变更前」子串必须唯一。
 

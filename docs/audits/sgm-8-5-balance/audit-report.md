@@ -1,5 +1,7 @@
 # SGM-8 第 5 批 B1：C2 独立审核
 
+> 最新进度：B2 C2意见已修正，专项复审及全量门禁通过（Rust803/0、Node60/0、浏览器full96/96），[修正记录](b2-c2-fix-review.md)随本地新提交交C2。下文与旧B2失败报告均为各自固定SHA的历史结论，不替代新提交复核。
+
 > 后续审核状态（2026-11-02）：**B2 提交 `9619729` 的 C2 暂不通过**，1 major、2 minor 测试证据缺口，四项错误变异逃过原14项测试。详见 [B2 C2 汇总](b2-c2-audit-report.md) 与 [PBT完整性专项](b2-c2-pbt-review.md)。下文保留 B1 的历史通过结论，不代表 B2 或整个第5批通过。
 
 2026-11-02。被审提交：`94362c46b1f7eeb9951f0562f1cbcbc9b295eb34`；差异基线：`7e5cf97`；分支 `research/source-groups-token-management`，归 PR #5。

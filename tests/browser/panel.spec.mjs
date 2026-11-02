@@ -132,6 +132,97 @@ test('API fixture clipboard denial reuses one reveal and changing identity clear
   await act(page, '启用'); await expect(page.locator('#secret')).toBeHidden();
   expect(await page.evaluate(() => JSON.stringify({...sessionStorage, ...localStorage}))).not.toContain('SYNTHETIC');
 });
+test('active controls survive repaint and periodic work yields without early activation', async ({page, browserName}, testInfo) => {
+  await mockState(page);
+  await page.addInitScript(() => { Object.defineProperty(navigator, 'clipboard', {configurable: true, value: {writeText: async () => {throw new Error('denied');}}}); });
+  let reveals = 0, writes = 0, usageStarts = 0, holdUsage = false;
+  const releases = [];
+  await page.route('**/api/admin/v1/tokens/12/reveal', route => { reveals++; return route.fulfill({json: {schema_version: 1, token_id: '12', key: 'sk-SYNTHETIC0123456789abcdef'}}); });
+  await page.route('**/api/admin/v1/tokens/12/enabled', route => { writes++; return route.fulfill({status: 202, json: operation()}); });
+  await page.route('**/api/admin/v1/usage/query', async route => {
+    usageStarts++; const query = route.request().postDataJSON();
+    if (holdUsage) await new Promise(resolve => releases.push(resolve));
+    try { await route.fulfill({json: usageSnapshot(query)}); } catch { /* The fixture request can be cancelled by the next page. */ }
+  });
+  const modes = ['periodic-pointer', 'explicit-pointer', 'data-space', 'cancel-pointer'];
+  if (browserName === 'chromium' && testInfo.project.name === 'chromium-mobile') modes.push('touch-pointer');
+  for (const mode of modes) {
+    let touch = null, touchActive = false;
+    try {
+      holdUsage = false;
+      await page.goto('/');
+      await expect(page.locator('[data-focus-key="reveal:12"]')).toBeAttached();
+      await page.waitForFunction(async () => !(await import('/assets/app.mjs')).bootstrap(window).lanes.owners.work);
+      // 控制当前手势的交错点；暂停周期timer，后面显式调用真实tick，不靠随机调度撞窗口。
+      await page.evaluate(async () => {
+        const app = (await import('/assets/app.mjs')).bootstrap(window);
+        clearTimeout(app.lifecycle.timer); app.lifecycle.timer = null;
+        app.rankDue = Infinity; app.usageDue = Infinity; app.desired = null;
+      });
+      await act(page, '复制访问 Key');
+      await expect(page.getByLabel('临时访问 Key')).toBeVisible();
+      await page.waitForFunction(async () => !(await import('/assets/app.mjs')).bootstrap(window).lanes.owners.work);
+      await page.evaluate(async () => { const app = (await import('/assets/app.mjs')).bootstrap(window); await app.readState(); app.stateDue = Infinity; });
+      holdUsage = true;
+      const beforeUsage = usageStarts, beforeReveals = reveals;
+      await page.evaluate(async mode => {
+        const app = (await import('/assets/app.mjs')).bootstrap(window);
+        window.gestureCheck = {actions: 0, connected: null, old: null};
+        const original = app.action.bind(app);
+        app.action = (name, id) => { if (name === 'enableToken') window.gestureCheck.actions++; return original(name, id); };
+        const change = event => {
+          const button = event.target.closest?.('[data-focus-key="enableToken:12"]');
+          if (!button) return;
+          if (mode === 'data-space' && event.key !== ' ') return;
+          window.gestureCheck.old = button;
+          app.identities.data = {...app.identities.data, items: app.identities.data.items.map(i => ({...i, display_name: `Repainted ${mode}`}))};
+          if (mode === 'periodic-pointer') { app.usageDue = 0; app.tick(); }
+          else if (mode === 'explicit-pointer') app.queryUsage();
+          else app.paint();
+          window.gestureCheck.connected = button.isConnected;
+          document.removeEventListener(mode === 'data-space' ? 'keydown' : 'pointerdown', change, true);
+        };
+        document.addEventListener(mode === 'data-space' ? 'keydown' : 'pointerdown', change, true);
+      }, mode);
+      const button = page.locator('[data-focus-key="enableToken:12"]');
+      await button.locator('xpath=ancestor::div[contains(concat(" ", normalize-space(@class), " "), " menu ")][1]').locator('.menu-btn').click();
+      if (mode === 'data-space') { await button.focus(); await page.keyboard.down('Space'); }
+      else {
+        const box = await button.boundingBox(); expect(box).not.toBeNull();
+        const point = {x: box.x + box.width / 2, y: box.y + box.height / 2};
+        if (mode === 'touch-pointer') { touch = await page.context().newCDPSession(page); await touch.send('Input.dispatchTouchEvent', {type: 'touchStart', touchPoints: [point]}); touchActive = true; }
+        else { await page.mouse.move(point.x, point.y); await page.mouse.down(); }
+      }
+      expect(await page.evaluate(() => window.gestureCheck.connected)).toBe(true);
+      expect(await page.evaluate(() => window.gestureCheck.actions)).toBe(0);
+      await expect(page.locator('#secret')).toBeVisible();
+      await expect(page.locator('#editor')).toBeHidden();
+      if (mode === 'periodic-pointer') {
+        expect(await page.evaluate(async () => { const app = (await import('/assets/app.mjs')).bootstrap(window); return [app.lanes.owners.work === null, app.usageDue]; })).toEqual([true, 0]);
+        expect(usageStarts).toBe(beforeUsage);
+      }
+      if (mode === 'explicit-pointer') await expect.poll(() => usageStarts).toBe(beforeUsage + 1);
+      if (mode === 'data-space') await page.keyboard.up('Space');
+      else if (touch) { await touch.send('Input.dispatchTouchEvent', {type: 'touchEnd', touchPoints: []}); touchActive = false; }
+      else { if (mode === 'cancel-pointer') await page.mouse.move(1, 1); await page.mouse.up(); }
+      if (mode === 'cancel-pointer') {
+        expect(await page.evaluate(() => window.gestureCheck.actions)).toBe(0);
+        await expect(page.locator('#secret')).toBeVisible();
+        await page.evaluate(async () => (await import('/assets/app.mjs')).bootstrap(window).tick());
+        await expect(page.getByRole('cell', {name: `Repainted ${mode}`, exact: true})).toBeVisible();
+      } else {
+        await expect(page.locator('#secret')).toBeHidden();
+        expect(await page.evaluate(() => window.gestureCheck.actions)).toBe(1);
+        if (mode === 'explicit-pointer') await expect(page.locator('#editor')).toBeHidden();
+        else await expect(page.locator('#editor')).toBeVisible();
+      }
+      expect(reveals).toBe(beforeReveals); expect(writes).toBe(0);
+    } finally {
+      holdUsage = false; for (const release of releases.splice(0)) release();
+      if (touch) { try { if (touchActive) await touch.send('Input.dispatchTouchEvent', {type: 'touchCancel', touchPoints: []}); } finally { await touch.detach(); } }
+    }
+  }
+});
 test('API fixture late clipboard completion cannot recreate key after hiding', async ({page}) => {
   await mockState(page);
   await page.addInitScript(() => { Object.defineProperty(navigator, 'clipboard', {configurable: true, value: {writeText: () => new Promise((_, reject) => {window.rejectClipboard = reject;})}}); });

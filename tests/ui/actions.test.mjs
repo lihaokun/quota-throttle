@@ -234,7 +234,9 @@ test('rejected sensitive source form stays only until the page is hidden', () =>
   const editor = {action: 'createSource', sensitive: true}; t.app.editor = editor;
   t.app.submit('createSource', null, {type: 'glm', name: 'Synthetic', note: '', credential: 'FAKE_NOT_A_KEY', channel_type: '8', base_url: 'https://example.test/chat/completions', models_url: '', discovery_auth: 'bearer', model_selection: 'manual', models: '["m"]', quota_url: 'https://example.test/quota?type=2', global_headers: '[]', key_headers: '[]'});
   assert.equal(t.app.editor, editor); assert.equal(editor.rejection, '提交未完成：该凭据已对应来源 #7，没有覆盖配置（duplicate_source）'); assert.equal(t.cleared.length, 0);
-  Object.assign(t.app, {lanes: {invalidate() {}}, age: {fail() {}}, secret: null, desired: null}); t.app.renderer.clearSecret = () => {};
+  let interactionCleared = 0;
+  Object.assign(t.app, {lanes: {invalidate() {}}, age: {fail() {}}, secret: null, desired: null}); t.app.renderer.clearSecret = () => {}; t.app.renderer.clearInteraction = () => { interactionCleared++; };
   t.app.suspend();
   assert.equal(t.app.editor, null); assert.equal(t.cleared.length, 1);
+  assert.equal(interactionCleared, 1);
 });

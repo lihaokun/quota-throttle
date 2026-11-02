@@ -51,6 +51,20 @@ async fn finish<T>(task: tokio::task::JoinHandle<T>) -> T {
     panic!("bounded balance call did not finish");
 }
 
+async fn finish_at<T>(task: tokio::task::JoinHandle<T>, end: Instant) -> T {
+    // 只让已到期任务得到调度；绝不推进时钟去迁就被延长或漏传的截止。
+    assert_eq!(Instant::now(), end);
+    for _ in 0..100_000 {
+        tokio::task::yield_now().await;
+        if task.is_finished() {
+            assert_eq!(Instant::now(), end);
+            return task.await.unwrap();
+        }
+    }
+    task.abort();
+    panic!("balance call did not finish at its original deadline");
+}
+
 #[tokio::test]
 async fn add_user_quota_request_shape_and_delivery() {
     for (status, body, expected) in [
@@ -154,13 +168,25 @@ async fn balance_add_invalid_input_guard_and_connect_failure_never_write() {
         ManagementErrorKind::QueueFull,
     );
     assert_eq!(entries.load(Ordering::SeqCst), 0);
-    client
-        .add_user_quota_until(41, BALANCE_CAP, &|| true, deadline())
-        .await
-        .unwrap();
+    let large_inputs = [
+        (41, BALANCE_CAP),
+        (i64::from(i32::MAX) + 1, i64::from(i32::MAX) + 1),
+        (i64::MAX, BALANCE_CAP - 1),
+    ];
+    for (id, amount) in large_inputs {
+        client
+            .add_user_quota_until(id, amount, &|| true, deadline())
+            .await
+            .unwrap();
+        assert_eq!(
+            fake.calls.lock().unwrap().last().unwrap().body,
+            json!({"id":id,"action":"add_quota","mode":"add","value":amount}),
+            "valid large values must reach the wire without narrowing"
+        );
+    }
     assert_eq!(
         entries.load(Ordering::SeqCst),
-        1,
+        large_inputs.len(),
         "positive fixture proves entry hook works"
     );
     let mut cfg = fake.config(true);
@@ -173,7 +199,7 @@ async fn balance_add_invalid_input_guard_and_connect_failure_never_write() {
             .unwrap_err(),
         ManagementErrorKind::TransportUnknown,
     );
-    assert_eq!(entries.load(Ordering::SeqCst), 1);
+    assert_eq!(entries.load(Ordering::SeqCst), large_inputs.len());
 }
 
 #[tokio::test]
@@ -324,6 +350,155 @@ async fn balance_profiles_keep_owner_validation_and_observe_class() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn balance_profile_entrypoints_keep_deadline_through_all_waits() {
+    for observe in [false, true] {
+        for stage in 0..3 {
+            let entries = Arc::new(AtomicUsize::new(0));
+            let hook = entries.clone();
+            let fake = Fake::start(move |call| {
+                hook.fetch_add(1, Ordering::SeqCst);
+                match call.path.as_str() {
+                    "/api/user/login" => Reply::json(json!({"success":true,"data":{"id":41}})),
+                    "/api/user/self" => profile(41, 1, 100),
+                    _ => panic!("unexpected profile fixture path"),
+                }
+            })
+            .await;
+            let budget = ManagementBudget::new();
+            let client = Arc::new(
+                NewApiClient::with_budget(&fake.config(stage == 0), budget.clone()).unwrap(),
+            );
+            // 0=已认证的业务预算，1=Pending refresh锁，2=Pending登录预算。
+            let held = if stage == 1 {
+                Vec::new()
+            } else {
+                vec![
+                    budget.admit(RequestClass::Control).await.unwrap(),
+                    budget.admit(RequestClass::Control).await.unwrap(),
+                ]
+            };
+            let refresh = if stage == 1 {
+                Some(client.transport.refresh.lock().await)
+            } else {
+                None
+            };
+            let end = Instant::now() + Duration::from_secs(1);
+            let c = client.clone();
+            let task = tokio::spawn(async move {
+                let tokens = c.managed_tokens(TokenOwner {
+                    user_id: 41,
+                    scope: TokenOwnerScope::Issuer,
+                });
+                if observe {
+                    tokens.observe_profile_until(end).await
+                } else {
+                    tokens.profile_until(end).await
+                }
+            });
+            entered(|| budget.requests.available_permits() == QUEUE_LIMIT - 1).await;
+            if stage != 1 {
+                entered(|| !budget.state.lock().unwrap().queue.is_empty()).await;
+            }
+            tokio::time::advance(Duration::from_secs(1)).await;
+            assert_not_sent(
+                finish_at(task, end).await.unwrap_err(),
+                ManagementErrorKind::QueueFull,
+            );
+            assert_eq!(
+                entries.load(Ordering::SeqCst),
+                0,
+                "stage={stage}, observe={observe}"
+            );
+            assert!(!client.transport.auth.lock().unwrap().failed);
+            assert_eq!(budget.requests.available_permits(), QUEUE_LIMIT);
+            assert!(budget.state.lock().unwrap().queue.is_empty());
+            assert_eq!(budget.state.lock().unwrap().active, held.len());
+            drop(refresh);
+            drop(held);
+            let state = budget.state.lock().unwrap();
+            assert_eq!((state.active, state.background), (0, 0));
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn balance_public_deadline_before_equal_after_with_idle_budget() {
+    for relative_end in [-1i64, 0, 1] {
+        for action in 0..4 {
+            let entries = Arc::new(AtomicUsize::new(0));
+            let hook = entries.clone();
+            let fake = Fake::start(move |call| {
+                hook.fetch_add(1, Ordering::SeqCst);
+                match call.path.as_str() {
+                    "/api/user/manage" => Reply::json(json!({"success":true})),
+                    "/api/status" => Reply::json(json!({"success":true,"data":{"quota_per_unit":500000,"quota_display_type":"USD"}})),
+                    "/api/user/self" => profile(41, 1, 100),
+                    _ => panic!("unexpected deadline fixture path"),
+                }
+            }).await;
+            let client = Arc::new(NewApiClient::new(&fake.config(true)).unwrap());
+            let start = Instant::now();
+            let end = match relative_end {
+                -1 => start - Duration::from_secs(1),
+                0 => start,
+                _ => start + Duration::from_secs(1),
+            };
+            let c = client.clone();
+            let result = finish(tokio::spawn(async move {
+                let tokens = c.managed_tokens(TokenOwner {
+                    user_id: 41,
+                    scope: TokenOwnerScope::Issuer,
+                });
+                match action {
+                    0 => c.add_user_quota_until(41, 1, &|| true, end).await,
+                    1 => c.quota_unit_until(end).await.map(|_| ()),
+                    2 => tokens.profile_until(end).await.map(|_| ()),
+                    _ => tokens.observe_profile_until(end).await.map(|_| ()),
+                }
+            }))
+            .await;
+            if relative_end > 0 {
+                result.unwrap();
+                assert_eq!(
+                    entries.load(Ordering::SeqCst),
+                    1,
+                    "positive fixture must reach HTTP"
+                );
+            } else {
+                assert_not_sent(result.unwrap_err(), ManagementErrorKind::QueueFull);
+                assert_eq!(
+                    entries.load(Ordering::SeqCst),
+                    0,
+                    "action={action}, relative_end={relative_end}"
+                );
+                assert!(client
+                    .transport
+                    .budget
+                    .state
+                    .lock()
+                    .unwrap()
+                    .admissions
+                    .is_empty());
+                assert_eq!(
+                    Instant::now(),
+                    start,
+                    "equal/expired call must finish without advancing time"
+                );
+            }
+            assert_eq!(
+                client.transport.budget.requests.available_permits(),
+                QUEUE_LIMIT
+            );
+            let state = client.transport.budget.state.lock().unwrap();
+            assert_eq!(
+                (state.active, state.background, state.queue.len()),
+                (0, 0, 0)
+            );
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
 async fn balance_transport_deadlines_bound_waits_without_cancelling_login() {
     // 持续 Control 或每秒延长冷却都不能延长未被选中的 Observe 截止。
     for renewed_cooldown in [false, true] {
@@ -396,7 +571,7 @@ async fn balance_pending_login_budget_and_refresh_lock_are_bounded_without_fuse(
         }
         tokio::time::advance(Duration::from_secs(1)).await;
         assert_not_sent(
-            finish(task).await.err().unwrap(),
+            finish_at(task, end).await.err().unwrap(),
             ManagementErrorKind::QueueFull,
         );
         assert!(!transport.auth.lock().unwrap().failed);
@@ -440,7 +615,7 @@ async fn balance_admitted_login_finishes_after_deadline_and_waiter_does_not_canc
     entered(|| transport.budget.requests.available_permits() == QUEUE_LIMIT - 2).await;
     tokio::time::advance(Duration::from_secs(1)).await;
     assert_not_sent(
-        finish(waiter).await.err().unwrap(),
+        finish_at(waiter, end).await.err().unwrap(),
         ManagementErrorKind::QueueFull,
     );
     assert!(!holder.is_finished());
@@ -567,7 +742,7 @@ async fn balance_401_waits_share_original_deadline_before_login_admission() {
         }
         tokio::time::advance(Duration::from_secs(2)).await;
         assert_not_sent(
-            finish(task).await.unwrap_err(),
+            finish_at(task, end).await.unwrap_err(),
             ManagementErrorKind::QueueFull,
         );
         assert_eq!(Instant::now(), end);
@@ -606,7 +781,7 @@ async fn balance_auth_waiters_respect_64_slots_and_return_them_at_deadline() {
     tokio::time::advance(Duration::from_secs(1)).await;
     for task in tasks {
         assert_not_sent(
-            finish(task).await.err().unwrap(),
+            finish_at(task, end).await.err().unwrap(),
             ManagementErrorKind::QueueFull,
         );
     }

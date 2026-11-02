@@ -15,6 +15,7 @@
     "API fixture usage renders distinct unknown/string models, exact totals and model share rows",
     "API fixture slow usage survives a new five-second state publication",
     "API fixture clipboard denial reuses one reveal and changing identity clears the manual key",
+    "active controls survive repaint and periodic work yields without early activation",
     "API fixture late clipboard completion cannot recreate key after hiding",
     "missing browser capability shows safe reload screen without calling old or new API",
     "API fixture rapid model filter changes never display the late old report under the new title",

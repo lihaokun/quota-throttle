@@ -168,6 +168,7 @@ export class PanelApp {
     this.lifecycle.start();
   }
   suspend() {
+    this.renderer.clearInteraction();
     this.lanes.invalidate('state'); this.lanes.invalidate('work'); this.age.fail();
     this.renderer.clearSecret(); this.secret?.clear();
     if (this.editor?.sensitive) { this.renderer.clearForm(); this.editor = null; }
@@ -181,7 +182,7 @@ export class PanelApp {
     this.paint();
   }
   destroy() {
-    this.lifecycle.destroy(); this.lanes.destroy(); this.secret?.clear(); this.renderer.clearSecret(); this.renderer.clearForm();
+    this.lifecycle.destroy(); this.renderer.destroy(); this.lanes.destroy(); this.secret?.clear(); this.renderer.clearSecret(); this.renderer.clearForm();
     for (const [button, fn] of this.nav) button.removeEventListener('click', fn);
     for (const [id, event, listener] of [['refresh-state', 'click', this.refreshHandler], ['toggle-operations', 'click', this.toggleHandler], ['source-filters', 'submit', this.filterHandler]]) if (listener) this.document.getElementById(id)?.removeEventListener(event, listener);
     if (this.hashHandler) this.window.removeEventListener('hashchange', this.hashHandler);
@@ -211,9 +212,10 @@ export class PanelApp {
   }
   tick() {
     if (!this.lifecycle.active) return;
+    this.renderer.settleInteractions();
     this.secret?.expire(); this.paint(); const now = this.now();
     if (!this.lanes.owners.state && now >= this.stateDue) this.readState();
-    if (this.lanes.owners.work) return;
+    if (this.lanes.owners.work || this.renderer.interactionActive()) return;
     if (now < this.readNotBefore) return;
     if (!this.config && now >= this.configDue) { this.readConfig(); return; }
     if (!this.config) return;
