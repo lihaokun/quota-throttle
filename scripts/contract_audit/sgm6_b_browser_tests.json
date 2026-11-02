@@ -6,6 +6,10 @@
     {"name":"firefox-mobile","browserName":"firefox","viewport":{"width":390,"height":844}}
   ],
   "normal": [
+    "balance states explain causes and keep rejected refill inline",
+    "balance refill and policy save succeed with request binding",
+    "balance dry run disables writes and unavailable units disable amounts",
+    "balance empty owners hide controls and prefills preserve bounds",
     "real Rust listener serves HTML modules CSP and fresh empty catalog without API mocks",
     "API fixture navigation, safe text and shared protocol key controls",
     "API fixture source pause is single explicit write with frozen revision and stable operation ID",

@@ -24,7 +24,7 @@ test('u2 every route status matches the original HTTP response matrix including 
     setSourcePaused: 202, retireSource: 202, clearError: 202, setVolcanoPolicy: 202, createGroup: 201,
     checkGroup: 200, groupReferences: 200, setGroupPin: 202, planMember: 201, ensureMember: 202,
     retireMember: 202, operation: 200, retry: 200, identities: 200, identity: 200, createToken: 202,
-    setTokenEnabled: 202, deleteToken: 202, registerToken: 200, reveal: 200, nativePage: 200, usage: 200,
+    setTokenEnabled: 202, deleteToken: 202, registerToken: 200, reveal: 200, nativePage: 200, usage: 200, refillBalance: 200, setBalancePolicy: 200,
   };
   for (const [action, status] of Object.entries(expected)) assert.equal(route(action, {id: ['operation', 'retry'].includes(action) ? operation().operation_id : '1', owner_scope: 'issuer', page: 1}).status, status, action);
 });

@@ -1,4 +1,29 @@
-# SGM-8 第 5 批 B1：C2 审核处置
+# SGM-8 第5批审核处置（保留B1/B2历史）
+
+## B3–B8连续实施与最终独审处置（2026-11-03）
+
+用户最新授权B3–B8一次性连续完成，取消逐模块中间停点，最终统一交付；最终审核/固定SHA验证与部署前确认保留。不据旧文档的“B3未开始/模块后等待”重复索取实施许可，也不将授权扩大为部署或推送许可。
+
+| 项目 | 决策与结果 |
+|---|---|
+| G1：取消仅worker级、未串runtime stop/bridge waiter | 不接受为完整T-B16证据。补真实owned_job/watch stop、HTTP bridge中已等待的manual、Notify后才发生Native写；独立静态与基线/恢复执行关闭 |
+| G2：取消PBT固定owner/终态过窄 | 保留旧窄性质的历史说明，扩为随机双owner/source/五终态/下一次auto-manual并调用真实refill核同owner封锁及另一owner准入。128例独立执行通过，只声明有限终态+后续准入，不称任意并发trace证明 |
+| B3-M5变异先overflow/JoinError，未到原子代际断言 | 首次失败保留但不算有效捕获。测试先join回收并保留JoinResult，先断言during再检查JoinResult；产品未变。重跑基线/变异/恢复后明确非法MAX与预期3差异，B3最终8/8闭环 |
+| B4变异harness无界recv/提前unwrap | 修测试为有界接收、任何路径先stop/释放Condvar/join，再作立即首轮/继续轮次/Storage传播断言；生产未变。三变异编译后语义失败，基线2/0、恢复2/0；执行器最初误把自定义assert文案当非断言的记录也保留 |
+| HTTP50s测试回读卡在第三份预算 | 根因是暂停时钟测试只yield，显式在已确认add后推进1s；保留200/一次add，新增精确51s及读次数断言。旧45s外层变异编译后捕获、恢复1/0 |
+| H1：accepted_at只有helper直接测试 | 补真实TCP分阶段头4s/body9s、worker待锁、69s未结束/70s504零发送。仅调用处accepted_at→Instant::now变异编译后捕获、恢复1/0，关闭接线缺口 |
+| S1：Python schema单位尾换行漏检 | 加min/maxLength与not非法字符，独立验证USD\n及16字母+\n均拒绝，余额负例66→76。Rust/JS原本拒绝，未无故改解析器 |
+| B7静态封锁/退避余量不随capture更新 | 确认显示缺陷并修复：有lock/backoff时stamp纳入captured_at_ms，保留静态采样/手势保护。永久Node/浏览器定例与新变异通过；余额子集7/7 |
+| B7局部浏览器12/4失败 | app.now与Lanes.now不一致造成正确的时钟回拨拒绝，修测试共用时钟；原失败/零测试记录保留，局部16/16不代替正式full112/112 |
+| T-B13探针初始化与权限文案 | 修普通假账号password/display_name超20字符；权限说明改固定rc.20中英精确白名单，仍核正确New-Api-User/200false/余额不变，十项契约不放宽。固定stage脱敏诊断、旧失败保留，最终10/10，新增Python回归2/0 |
+| **B7最终raw金额保真F1（已关闭）** | 终审确认合法raw100001/200003只切auto被改为100000/200000，raw1/2无法关auto，不接受为偏离。现逐字段保留与冻结预填相同文本的原raw，只有编辑字段才换算；单位/版本guard先执行。真实open→submit回归、修后最后Node68/0/check:ui/full112/112、新永久变异及原审查者独立56/56复核通过。[八节修正报告](../../fixes/sgm8-balance-policy-raw-amount.md)和[终审](final-contract-review.md)归档 |
+| 最后全部JS变异 | **25/25**实际加载、指定语义失败并恢复，含F1；余额子集最新**8/8**。日志`/tmp/sgm8-balance-js-mutations-unrestricted.log`。此前沙箱子进程无输出失败保留且不算语义证据，未将历史23/24或子集拼作整轮 |
+
+完整模块位置、原始日志、隔离副本与哈希边界见[b3-b8-implementation-review.md](b3-b8-implementation-review.md)。Rust831/0+35ignored编译早于上述两处测试harness修正；旧full112/wire3386/组合16+4早于F1，历史时点继续保留。F1修后最后Node68/0/check:ui、8余额/25全部JS变异、独立56例和full112/112均有新证据，代码终审通过；独立专项恢复仍不冒充最终固定SHA全量。
+
+当前未接受新的产品语义偏离，代码契约独审与五维兜底通过，未关闭生产问题0，最后UI门禁已齐；仅最终固定SHA完整Rust/C2汇总pending。没有部署本轮工作树，本机及远端stable仍7e5cf97，部署仍须用户确认；配置、凭据、远端接入细节不进入本记录。
+
+以下各节为B1/B2当时的固定输入结论，保留失败与处置，不覆盖以上当前状态。
 
 ## B2 C2意见修正（2026-11-02，用户已授权）
 

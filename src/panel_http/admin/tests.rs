@@ -3,6 +3,7 @@ use super::*;
 use proptest::prelude::*;
 use serde_json::{json, Value};
 
+mod balance;
 mod http;
 pub(in crate::panel_http) mod support;
 
@@ -263,8 +264,10 @@ fn h2_route_matrix_and_allow_precedence_are_exact() {
         ("GET", "/native-tokens", "GET"),
         ("POST", "/tokens/register", "POST"),
         ("POST", "/usage/query", "POST"),
+        ("POST", "/balance/refill", "POST"),
+        ("PUT", "/balance/policy", "PUT"),
     ];
-    assert_eq!(paths.len(), 26);
+    assert_eq!(paths.len(), 28);
     for (method, path, allow) in paths {
         let path = format!("/api/admin/v1{path}");
         let q = path

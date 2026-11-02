@@ -51,6 +51,8 @@ export function route(action, args = {}) {
       integer(args.page, 1, LIMITS.nativePages);
       path = `/native-tokens?owner_scope=${args.owner_scope}&page=${args.page}`; family = 'nativePage'; break;
     case 'usage': path = '/usage/query'; method = 'POST'; family = 'usageSnapshot'; break;
+    case 'refillBalance': path = '/balance/refill'; method = 'POST'; family = 'balanceRefilled'; write = true; break;
+    case 'setBalancePolicy': path = '/balance/policy'; method = 'PUT'; family = 'balancePolicySaved'; write = true; break;
     default: throw new ProtocolError();
   }
   if (family === 'operation' && method !== 'GET' && action !== 'retry') status = 202;
@@ -105,6 +107,7 @@ export async function requestJson(descriptor, body, ticket, {
   check();
   let serialized = descriptor.method === 'GET' ? undefined : serializeBody(body);
   requireThat(descriptor.method !== 'GET' || body == null);
+  const requestContext = ['usage', 'refillBalance', 'setBalancePolicy'].includes(descriptor.action) ? JSON.parse(serialized) : descriptor.query;
   const headers = { 'X-QT-Panel': '1' };
   if (serialized !== undefined) headers['Content-Type'] = 'application/json';
   const timer = setTimer(() => ticket.controller.abort(), Math.max(0, ticket.deadline - now()));
@@ -124,7 +127,7 @@ export async function requestJson(descriptor, body, ticket, {
       throw new ClientError(error.error, response.status, error.existing_source_id ?? null);
     }
     requireThat(response.status === descriptor.status);
-    const projected = validateReply(descriptor.family, value, descriptor.action === 'usage' ? body : descriptor.query);
+    const projected = validateReply(descriptor.family, value, requestContext);
     check();
     return { value: projected, age: response.headers.get('X-QT-Snapshot-Age-Ms'), received: now() };
   } catch (error) {

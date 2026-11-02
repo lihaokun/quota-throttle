@@ -139,12 +139,21 @@ impl ReconcileWorker {
             ControlErrorCode::InvalidInput,
         )?;
         let mut worker = Self::new(store, client, config)?;
-        Arc::get_mut(&mut worker)
-            .ok_or_else(|| error(ControlErrorCode::Storage))?
-            .token_owners = Some(owners);
+        let configured = owners
+            .issuer
+            .iter()
+            .map(|(owner, _)| *owner)
+            .chain(owners.legacy)
+            .collect();
+        let unique = Arc::get_mut(&mut worker).ok_or_else(|| error(ControlErrorCode::Storage))?;
+        unique.balance.configure(configured)?;
+        unique.token_owners = Some(owners);
         Ok(worker)
     }
-    fn token_client(&self, scope: TokenOwnerScope) -> ControlResult<(&NewApiClient, TokenOwner)> {
+    pub(in crate::reconcile::worker) fn token_client(
+        &self,
+        scope: TokenOwnerScope,
+    ) -> ControlResult<(&NewApiClient, TokenOwner)> {
         let owners = self
             .token_owners
             .as_ref()

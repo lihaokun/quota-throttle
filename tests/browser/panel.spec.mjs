@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { createServer } from 'node:http';
-import { richState, identity, operation, usageSnapshot, volcanoState } from '../ui/fixtures.mjs';
+import { richState, identity, operation, usageSnapshot, volcanoState, balanceState } from '../ui/fixtures.mjs';
 
 test.beforeEach(async ({page}) => {
   page.on('pageerror', error => { throw error; });
@@ -19,6 +19,114 @@ async function act(page, name) {
   await item.click();
 }
 async function openNative(page) { await page.getByText('原生 Key 页（高级）', {exact: true}).click(); }
+async function mockBalance(page, mutate = () => {}) {
+  let captured = 0;
+  await mockState(page, state => { state.captured_at_ms = captured = Math.max(Date.now(), captured + 1); state.balance = balanceState(captured).balance; mutate(state); });
+}
+async function refreshBalance(page) {
+  await page.evaluate(async () => { const app = (await import('/assets/app.mjs')).bootstrap(window); await app.readState(); });
+}
+test('balance states explain causes and keep rejected refill inline', async ({page}) => {
+  let variant = 'mixed', sampled = null;
+  await mockBalance(page, s => {
+    if (variant === 'sample-only') { s.balance = structuredClone(sampled.balance); s.captured_at_ms = sampled.captured_at_ms + 5000; return; }
+    const a = s.balance.accounts[0];
+    if (variant === 'mixed' || variant === 'exhausted') {
+      s.balance.policy.auto_refill = false;
+      Object.assign(a, {quota: variant === 'mixed' ? 10 : 0, state: variant === 'mixed' ? 'low' : 'exhausted', locked_until_ms: s.captured_at_ms + 600000, backoff_until_ms: s.captured_at_ms + 600000,
+        last_refill: {at_ms: s.captured_at_ms - 1000, source: 'auto', outcome: 'rejected', amount: 1005000, error_code: 'remote_rejected'}});
+      s.balance.accounts.push({...a, owner_scope: 'legacy_admin', user_id: '3', state: 'unknown', unknown_reason: 'auth_failed'});
+    }
+    if (variant === 'waiting') Object.assign(a, {quota: 10, state: 'low'});
+    if (variant === 'missing') Object.assign(a, {quota: null, observed_at_ms: null, state: 'unknown'});
+    if (variant === 'clock') Object.assign(a, {observed_at_ms: s.captured_at_ms + 60000, state: 'unknown'});
+    if (variant === 'uncertain') Object.assign(a, {last_refill: {at_ms: s.captured_at_ms - 1000, source: 'manual', outcome: 'uncertain', amount: 1005000, error_code: 'transport_unknown'}});
+    if (variant === 'mixed') sampled = {balance: structuredClone(s.balance), captured_at_ms: s.captured_at_ms};
+  });
+  await page.route('**/api/admin/v1/balance/refill', route => route.fulfill({status: 503, json: {schema_version: 1, error: 'not_ready', existing_source_id: null}}));
+  await page.goto('/');
+  const chip = page.locator('[data-balance-chip]'), strip = page.locator('#balance-strip');
+  await expect(chip).toContainText('旧管理员：内部余额未知（new-api 账号认证失败（auth_failed））'); await expect(chip.locator('.dot')).toHaveClass('dot warn');
+  await expect(strip.locator('[data-balance-scope="issuer"]')).toContainText('内部余额偏低；自动补足已关闭；账号处于封锁期；自动补足退避中；上次补足明确拒绝：new-api 拒绝了请求（remote_rejected）');
+  await expect(strip).toContainText('封锁：采样时约剩 600 秒'); await expect(strip).toContainText('自动退避：采样时约剩 600 秒');
+  variant = 'sample-only'; await refreshBalance(page);
+  await expect(strip).toContainText('封锁：采样时约剩 595 秒'); await expect(strip).toContainText('自动退避：采样时约剩 595 秒');
+  await page.getByRole('button', {name: '补足签发账号余额', exact: true}).click(); await page.getByLabel('补足金额（USD）', {exact: true}).fill('2.01');
+  const editor = page.locator('#editor'); await editor.evaluate(node => { node.dataset.originalBalanceForm = 'yes'; });
+  await page.getByRole('button', {name: '确认提交', exact: true}).click(); await expect(editor).toBeVisible(); await expect(editor).toHaveAttribute('data-original-balance-form', 'yes');
+  await expect(page.locator('#editor-conflict')).toContainText('本次补足未发送；后端未就绪、请求截止或账号处于封锁期。约需等待');
+  await expect(page.getByLabel('补足金额（USD）', {exact: true})).toHaveValue('2.01'); await editor.getByRole('button', {name: '关闭', exact: true}).click();
+  variant = 'exhausted'; await refreshBalance(page); await expect(chip.locator('.dot')).toHaveClass('dot bad'); await expect(chip).toContainText('内部余额已用完，转发会被 new-api 挡住，与智谱 / 火山额度无关');
+  variant = 'waiting'; await refreshBalance(page); await expect(chip.locator('.dot')).toHaveClass('dot warn'); await expect(chip).toContainText('内部余额偏低；等待下一轮自动补足');
+  variant = 'missing'; await refreshBalance(page); await expect(chip).toContainText('尚未读到'); await expect(strip).toContainText('上次观察金额：未知');
+  variant = 'clock'; await refreshBalance(page); await expect(chip).toContainText('读取时间异常');
+  variant = 'uncertain'; await refreshBalance(page); await expect(strip).toContainText('上次补足：手动 · 结果不确定 · 尝试金额 $2.01 · 传输结果不确定（transport_unknown）');
+  variant = 'sufficient'; await refreshBalance(page); await expect(chip.locator('.dot')).toHaveClass('dot ok'); await expect(chip).toContainText('内部余额充足');
+  // 同一根快照保持 fresh，只推进余额样本的有效年龄；真实 paint/tick 必须清除旧绿点。
+  await page.waitForFunction(async () => !(await import('/assets/app.mjs')).bootstrap(window).lanes.owners.work);
+  await page.evaluate(async () => {
+    const app = (await import('/assets/app.mjs')).bootstrap(window); clearTimeout(app.lifecycle.timer); app.lifecycle.timer = null;
+    app.stateDue = app.rankDue = app.usageDue = Infinity; app.desired = null;
+    app.age.snapshot.balance.accounts[0].observed_at_ms = app.age.snapshot.captured_at_ms - 179999;
+    app.age.baseAge = 0; app.age.received = 0; app.now = () => 0;
+    app.lanes.now = () => app.now(); // 请求槽与观察共用同一测试时钟，避免人为制造时钟回拨。
+    app.tick();
+  });
+  await expect(chip.locator('.dot')).toHaveClass('dot ok');
+  await page.evaluate(async () => { const app = (await import('/assets/app.mjs')).bootstrap(window); app.now = () => 1; app.tick(); });
+  await expect(chip.locator('.dot')).toHaveClass('dot ok');
+  await page.evaluate(async () => { const app = (await import('/assets/app.mjs')).bootstrap(window); app.now = () => 2; app.tick(); });
+  await expect(page.locator('#connection')).not.toHaveClass(/stale/); await expect(chip.locator('.dot')).toHaveClass('dot warn'); await expect(chip).toContainText('读数已过期'); await expect(strip).toContainText('上次观察金额');
+  await page.getByRole('button', {name: '补足签发账号余额', exact: true}).click(); await expect(page.getByLabel('补足金额（USD）', {exact: true})).toHaveValue('');
+  await page.route('**/api/admin/v1/balance/refill', route => route.fulfill({status: 422, json: {schema_version: 1, error: 'invalid_input', existing_source_id: null}}));
+  await page.getByLabel('补足金额（USD）', {exact: true}).fill('1'); await page.getByRole('button', {name: '确认提交', exact: true}).click(); await expect(page.locator('#editor-conflict')).toContainText('补足金额不合法或超过'); await expect(page.locator('#editor-conflict')).not.toContainText('最多还能补约');
+  await editor.getByRole('button', {name: '关闭', exact: true}).click();
+  await page.evaluate(async () => { const app = (await import('/assets/app.mjs')).bootstrap(window); app.age.fail(); app.paint(); });
+  await expect(chip).toContainText('快照过期，以下是上次观察'); await expect(chip.locator('.dot')).toHaveClass('dot warn');
+});
+test('balance refill and policy save succeed with request binding', async ({page}) => {
+  await mockBalance(page); const sent = [];
+  await page.route('**/api/admin/v1/balance/refill', route => { const body = route.request().postDataJSON(); sent.push(body); return route.fulfill({json: {schema_version: 1, owner_scope: body.owner_scope, user_id: '9007199254740993', before: -1, amount: body.amount, after: null}}); });
+  await page.route('**/api/admin/v1/balance/policy', route => { const body = route.request().postDataJSON(); sent.push(body); return route.fulfill({json: {schema_version: 1, revision: body.expected_revision + 1, auto_refill: body.auto_refill, warn_below: body.warn_below, refill_to: body.refill_to}}); });
+  await page.goto('/'); await expect(page.locator('#balance-strip')).toContainText('user_id 9007199254740993');
+  await page.getByRole('button', {name: '补足签发账号余额', exact: true}).click(); await page.getByLabel('补足金额（USD）', {exact: true}).fill('2.01'); await page.getByRole('button', {name: '确认提交', exact: true}).click();
+  await expect(page.locator('#notice')).toContainText('已补足 $2.01'); await expect(page.locator('#editor')).toBeHidden();
+  expect(sent[0]).toEqual({schema_version: 1, owner_scope: 'issuer', amount: 1005000});
+  await page.getByRole('button', {name: '余额设置', exact: true}).click(); await page.getByLabel('自动补足', {exact: true}).uncheck(); await page.getByLabel('预警线（USD）', {exact: true}).fill('2.01'); await page.getByLabel('补足目标（USD）', {exact: true}).fill('4.02'); await page.getByRole('button', {name: '确认提交', exact: true}).click();
+  await expect(page.locator('#notice')).toContainText('余额设置已保存'); await expect(page.locator('#editor')).toBeHidden();
+  expect(sent[1]).toEqual({schema_version: 1, expected_revision: 1, auto_refill: false, warn_below: 1005000, refill_to: 2010000});
+  expect(await page.evaluate(async () => (await import('/assets/app.mjs')).bootstrap(window).pending.items.size)).toBe(0);
+});
+test('balance dry run disables writes and unavailable units disable amounts', async ({page}) => {
+  let dry = true, unit = null; const sent = [];
+  await mockBalance(page, s => { s.balance.unit = unit; });
+  await page.route('**/api/admin/v1/ui-config', route => route.fulfill({json: {schema_version: 1, dry_run: dry, public_api_base_url: null}}));
+  await page.route('**/api/admin/v1/balance/policy', route => { const body = route.request().postDataJSON(); sent.push(body); return route.fulfill({json: {schema_version: 1, revision: body.expected_revision + 1, auto_refill: body.auto_refill, warn_below: body.warn_below, refill_to: body.refill_to}}); });
+  await page.goto('/'); await expect(page.getByRole('button', {name: '余额设置', exact: true})).toBeDisabled(); await expect(page.getByRole('button', {name: '补足签发账号余额', exact: true})).toBeDisabled();
+  dry = false; await page.reload(); await page.getByRole('button', {name: '补足签发账号余额', exact: true}).click();
+  await expect(page.getByLabel('补足金额（USD）', {exact: true})).toBeDisabled(); await expect(page.getByRole('button', {name: '确认提交', exact: true})).toBeDisabled(); await expect(page.locator('#editor')).toContainText('美元换算暂不可用');
+  await page.locator('#editor').getByRole('button', {name: '关闭', exact: true}).click(); await page.getByRole('button', {name: '余额设置', exact: true}).click();
+  await expect(page.getByLabel('预警线（USD）', {exact: true})).toBeDisabled(); await expect(page.getByLabel('补足目标（USD）', {exact: true})).toBeDisabled(); await expect(page.getByLabel('自动补足', {exact: true})).toBeEnabled();
+  await page.getByLabel('预警线（USD）', {exact: true}).evaluate(input => { input.value = 'tampered disabled value'; });
+  await page.getByLabel('自动补足', {exact: true}).uncheck(); await page.getByRole('button', {name: '确认提交', exact: true}).click(); await expect(page.locator('#notice')).toContainText('余额设置已保存');
+  expect(sent).toEqual([{schema_version: 1, expected_revision: 1, auto_refill: false, warn_below: 100000000000000, refill_to: 1000000000000000}]);
+  unit = {quota_per_unit: 7.3, display_type: 'CNY'}; await refreshBalance(page); await expect(page.locator('#balance-strip')).toContainText('100000000000000 原始额度');
+  await page.getByRole('button', {name: '补足签发账号余额', exact: true}).click(); await expect(page.getByLabel('补足金额（USD）', {exact: true})).toBeDisabled(); await expect(page.getByRole('button', {name: '确认提交', exact: true})).toBeDisabled();
+});
+test('balance empty owners hide controls and prefills preserve bounds', async ({page}) => {
+  let variant = 'empty';
+  await mockBalance(page, s => {
+    if (variant === 'empty') { s.balance.accounts = []; return; }
+    const a = s.balance.accounts[0]; s.balance.policy.refill_to = 4000000000000000; Object.assign(a, {quota: -10, state: 'exhausted'});
+    s.balance.accounts.push({...a, owner_scope: 'legacy_admin', user_id: '3', quota: null, observed_at_ms: null, state: 'unknown'});
+    if (variant === 'fraction') { s.balance.unit.quota_per_unit = 7.3; s.balance.policy.warn_below = 1; s.balance.policy.refill_to = 2; Object.assign(a, {quota: 1, state: 'sufficient'}); }
+  });
+  await page.goto('/'); await expect(page.locator('#balance-strip')).toBeHidden(); await expect(page.locator('[data-balance-chip]')).toHaveCount(0); await expect(page.getByRole('button', {name: '余额设置', exact: true})).toHaveCount(0);
+  variant = 'negative'; await refreshBalance(page); await expect(page.getByRole('button', {name: '补足签发账号余额', exact: true})).toBeVisible(); await expect(page.getByRole('button', {name: '补足旧管理员余额', exact: true})).toBeVisible();
+  await page.getByRole('button', {name: '补足签发账号余额', exact: true}).click(); await expect(page.getByLabel('补足金额（USD）', {exact: true})).toHaveValue('8000000000.00'); await page.locator('#editor').getByRole('button', {name: '关闭', exact: true}).click();
+  await page.getByRole('button', {name: '补足旧管理员余额', exact: true}).click(); await expect(page.getByLabel('补足金额（USD）', {exact: true})).toHaveValue(''); await page.locator('#editor').getByRole('button', {name: '关闭', exact: true}).click();
+  variant = 'fraction'; await refreshBalance(page); await page.getByRole('button', {name: '补足签发账号余额', exact: true}).click(); await expect(page.getByLabel('补足金额（USD）', {exact: true})).toHaveValue('0.13');
+});
 test('real Rust listener serves HTML modules CSP and fresh empty catalog without API mocks', async ({page, request}) => {
   const errors = []; page.on('pageerror', error => errors.push(error.message));
   const response = await page.goto('/');

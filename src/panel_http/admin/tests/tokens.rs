@@ -112,11 +112,22 @@ async fn h2_tcp_token_create_native_local_reveal_enable_delete_use_original_serv
     server.finish().await;
 }
 
-/// 目录快照 + 本地身份页：被拒的首次提交前后必须完全相同（catalog 为 WAL 模式，不比较文件字节）。
-async fn observed(f: &TokenFixture, server: &AdminTestServer) -> (Value, Value) {
+/// 直接读目录、身份、store策略和余额槽位；不让发布缓存掩盖拒绝后的写入。
+async fn observed(f: &TokenFixture, server: &AdminTestServer) -> (Value, Value, Value, Value) {
     (
         serde_json::to_value(f.worker.snapshot().unwrap()).unwrap(),
         http(server, "GET", "/tokens", None, 200).await,
+        serde_json::to_value(
+            f.worker
+                .core
+                .lock()
+                .unwrap()
+                .store
+                .balance_policy()
+                .unwrap(),
+        )
+        .unwrap(),
+        f.worker.balance_test_last_refills().unwrap(),
     )
 }
 
@@ -256,6 +267,69 @@ async fn h2_first_submit_rejections_leave_no_record() {
         }
         assert_eq!(observed(&f, &server).await, before, "{method} {path}");
     }
+    // ⑨ 先真实更新，再用旧revision改另一值；拒绝不能覆盖目录库或内存策略。
+    let policy = json!({"schema_version":1,"expected_revision":1,"auto_refill":false,"warn_below":100,"refill_to":1000});
+    assert_eq!(
+        http(&server, "PUT", "/balance/policy", Some(&policy), 200).await["revision"],
+        2
+    );
+    let before = observed(&f, &server).await;
+    let mut stale = policy.clone();
+    stale["warn_below"] = json!(200);
+    assert_eq!(
+        http(&server, "PUT", "/balance/policy", Some(&stale), 409).await["error"],
+        "revision_conflict"
+    );
+    assert_eq!(observed(&f, &server).await, before);
+
+    // 入口计数先用真实成功add证明有效；不以未知路径panic后的空日志证明零发送。
+    let adds = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let profiles = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (add_count, profile_count) = (adds.clone(), profiles.clone());
+    *f.state.hook.lock().unwrap() = Some(Arc::new(move |r| {
+        if r.method == "POST" && r.path == "/api/user/manage" {
+            add_count.fetch_add(1, Ordering::SeqCst);
+        }
+        if r.method == "GET" && r.path == "/api/user/self" {
+            profile_count.fetch_add(1, Ordering::SeqCst);
+        }
+    }));
+    let positive = json!({"schema_version":1,"owner_scope":"issuer","amount":1});
+    f.state.balance_quotas.lock().unwrap().insert(41, 10000);
+    let quota_before = f.state.balance_quotas.lock().unwrap()[&41];
+    http(&server, "POST", "/balance/refill", Some(&positive), 200).await;
+    assert_eq!(adds.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        f.state.balance_quotas.lock().unwrap()[&41],
+        quota_before + 1
+    );
+    adds.store(0, Ordering::SeqCst);
+    profiles.store(0, Ordering::SeqCst);
+    // ⑩ amount本身合法，但before+amount超cap，必须到worker第4步才拒绝。
+    f.state.balance_quotas.lock().unwrap().insert(41, 10000);
+    let before = observed(&f, &server).await;
+    let excessive = json!({"schema_version":1,"owner_scope":"issuer","amount":crate::catalog::balance::BALANCE_CAP});
+    assert_eq!(
+        http(&server, "POST", "/balance/refill", Some(&excessive), 422).await["error"],
+        "invalid_input"
+    );
+    assert!(profiles.load(Ordering::SeqCst) > 0);
+    assert_eq!(adds.load(Ordering::SeqCst), 0);
+    assert_eq!(f.state.balance_quotas.lock().unwrap()[&41], 10000);
+    let after = observed(&f, &server).await;
+    assert_eq!(
+        (&after.0, &after.1, &after.2),
+        (&before.0, &before.1, &before.2)
+    );
+    assert_eq!(after.3[1], before.3[1]);
+    assert_eq!(after.3.as_array().unwrap().len(), 2);
+    assert_eq!(after.3[0]["owner_scope"], "issuer");
+    let at = after.3[0]["last_refill"]["at_ms"].as_i64().unwrap();
+    assert!(at >= before.3[0]["last_refill"]["at_ms"].as_i64().unwrap());
+    assert_eq!(
+        after.3[0]["last_refill"],
+        json!({"at_ms":at,"source":"manual","outcome":"not_sent","amount":null,"error_code":"invalid_input"})
+    );
     server.finish().await;
 }
 
@@ -298,4 +372,184 @@ async fn h2_tcp_legacy_only_register_reveal_and_manage_do_not_require_issuer() {
         .filter(|r| r.path.starts_with("/api/token/"))
         .all(|r| caller(r) == 1));
     server.finish().await;
+}
+
+#[tokio::test]
+async fn balance_http_success_and_failed_readback_bind_original_request() {
+    let f = tokens_fixture(SourceKind::Glm, &[1], true, true).await;
+    let server = AdminTestServer::start(f.worker.clone()).await;
+    for (scope, user) in [("issuer", 41), ("legacy_admin", 1)] {
+        f.state.balance_quotas.lock().unwrap().insert(user, -10);
+        let request = json!({"schema_version":1,"owner_scope":scope,"amount":19});
+        let response = http(&server, "POST", "/balance/refill", Some(&request), 200).await;
+        assert_eq!(
+            response,
+            json!({"schema_version":1,"owner_scope":scope,"user_id":user.to_string(),"before":-10,"amount":19,"after":9})
+        );
+        assert_eq!(f.state.balance_quotas.lock().unwrap()[&user], 9);
+    }
+    f.state
+        .balance_read_fail_after_add
+        .store(true, Ordering::SeqCst);
+    // 清掉计数，使下一次资料读取可用，而add确认后的回读才失败。
+    f.state.balance_adds.store(0, Ordering::SeqCst);
+    let request = json!({"schema_version":1,"owner_scope":"issuer","amount":5});
+    let response = http(&server, "POST", "/balance/refill", Some(&request), 200).await;
+    assert_eq!(
+        response,
+        json!({"schema_version":1,"owner_scope":"issuer","user_id":"41","before":9,"amount":5,"after":null})
+    );
+    let records = f.worker.balance_test_last_refills().unwrap();
+    assert_eq!(records[0]["last_refill"]["outcome"], "refilled");
+    assert_eq!(records[0]["last_refill"]["amount"], 5);
+    server.finish().await;
+}
+
+#[tokio::test]
+async fn balance_http_uncertain_is_504_and_preserves_lock_record() {
+    for (mode, status, code, outcome) in [
+        (1, 502, "remote_rejected", "rejected"),
+        (2, 504, "result_unconfirmed", "uncertain"),
+    ] {
+        let f = tokens_fixture(SourceKind::Glm, &[1], true, true).await;
+        f.state.balance_mode.store(mode, Ordering::SeqCst);
+        let server = AdminTestServer::start(f.worker.clone()).await;
+        let body = json!({"schema_version":1,"owner_scope":"issuer","amount":7});
+        assert_eq!(
+            http(&server, "POST", "/balance/refill", Some(&body), status).await["error"],
+            code
+        );
+        let before = f.worker.balance_test_last_refills().unwrap();
+        assert_eq!(before[0]["last_refill"]["outcome"], outcome);
+        assert_eq!(before[0]["last_refill"]["amount"], 7);
+        assert_eq!(f.state.balance_adds.load(Ordering::SeqCst), 1);
+        if mode == 2 {
+            assert_eq!(before[0]["last_refill"]["error_code"], "transport_unknown");
+            assert_eq!(
+                http(&server, "POST", "/balance/refill", Some(&body), 503).await["error"],
+                "not_ready"
+            );
+            assert_eq!(f.worker.balance_test_last_refills().unwrap(), before);
+            assert_eq!(f.state.balance_adds.load(Ordering::SeqCst), 1);
+        }
+        server.finish().await;
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn balance_http_refill_completes_after_old_connection_limit() {
+    use crate::panel_http::{admin_test_drive as drive, admin_test_until as until};
+    drive(async {
+        let f = tokens_fixture(SourceKind::Glm, &[1], true, true).await;
+        let hold = f
+            .worker
+            .balance_test_owner_lock(TokenOwnerScope::Issuer)
+            .await;
+        let server = Arc::new(AdminTestServer::start(f.worker.clone()).await);
+        let caller = server.clone();
+        let task = tokio::spawn(async move {
+            caller
+                .call(
+                    "POST",
+                    "/balance/refill",
+                    Some(&json!({"schema_version":1,"owner_scope":"issuer","amount":1})),
+                )
+                .await
+        });
+        until(|| f.worker.balance_test_waiters(TokenOwnerScope::Issuer) == 1).await;
+        let waiting_at = tokio::time::Instant::now();
+        tokio::time::advance(Duration::from_secs(50)).await;
+        assert!(!task.is_finished());
+        assert_eq!(f.state.balance_adds.load(Ordering::SeqCst), 0);
+        drop(hold);
+        // profile和add耗尽初始两份配额；确认add已结算后，显式推进第三次回读所需的1s。
+        // 只yield会把暂停时钟永远留在50s，令回读预算等待无法结束。
+        until(|| {
+            f.worker.balance_test_last_refills().unwrap()[0]["last_refill"]["outcome"] == "refilled"
+        })
+        .await;
+        assert_eq!(f.state.balance_adds.load(Ordering::SeqCst), 1);
+        assert_eq!(f.state.balance_reads.load(Ordering::SeqCst), 1);
+        assert!(!task.is_finished());
+        tokio::time::advance(Duration::from_secs(1)).await;
+        until(|| task.is_finished()).await;
+        let (status, response) = task.await.unwrap();
+        assert_eq!(status, 200);
+        assert_eq!(response["amount"], 1);
+        assert_eq!(f.state.balance_adds.load(Ordering::SeqCst), 1);
+        assert_eq!(f.state.balance_reads.load(Ordering::SeqCst), 2);
+        assert_eq!(waiting_at.elapsed(), Duration::from_secs(51));
+        Arc::try_unwrap(server).ok().unwrap().finish().await;
+    })
+    .await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn balance_http_refill_waiting_lock_stops_at_route_deadline_without_send() {
+    use crate::panel_http::{admin_test_drive as drive, admin_test_until as until};
+    drive(async {
+        let f = tokens_fixture(SourceKind::Glm, &[1], true, true).await;
+        let hold = f
+            .worker
+            .balance_test_owner_lock(TokenOwnerScope::Issuer)
+            .await;
+        let before = f.worker.balance_test_last_refills().unwrap();
+        let server = Arc::new(AdminTestServer::start(f.worker.clone()).await);
+        let caller = server.clone();
+        let task = tokio::spawn(async move {
+            caller
+                .call(
+                    "POST",
+                    "/balance/refill",
+                    Some(&json!({"schema_version":1,"owner_scope":"issuer","amount":1})),
+                )
+                .await
+        });
+        until(|| f.worker.balance_test_waiters(TokenOwnerScope::Issuer) == 1).await;
+        tokio::time::advance(Duration::from_secs(60)).await;
+        let (status, response) = task.await.unwrap();
+        assert_eq!(status, 504);
+        assert_eq!(response["error"], "result_unconfirmed");
+        until(|| f.worker.balance_test_waiters(TokenOwnerScope::Issuer) == 0).await;
+        drop(hold);
+        assert_eq!(f.state.balance_adds.load(Ordering::SeqCst), 0);
+        assert_eq!(f.worker.balance_test_last_refills().unwrap(), before);
+        Arc::try_unwrap(server).ok().unwrap().finish().await;
+    })
+    .await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn balance_http_slow_head_and_body_keep_original_accept_deadline() {
+    use crate::panel_http::{
+        admin_test_drive as drive, admin_test_until as until, AdminSlowRefillConnection,
+    };
+    drive(async {
+        let f = tokens_fixture(SourceKind::Glm, &[1], true, true).await;
+        let held = f
+            .worker
+            .balance_test_owner_lock(TokenOwnerScope::Issuer)
+            .await;
+        let before = f.worker.balance_test_last_refills().unwrap();
+        let connection = AdminSlowRefillConnection::start(f.worker.clone()).await;
+        until(|| f.worker.balance_test_waiters(TokenOwnerScope::Issuer) == 1).await;
+        assert_eq!(connection.accepted_at.elapsed(), Duration::from_secs(13));
+        // entered+60=accepted+73；必须以原accepted+75−5=accepted+70为业务截止。
+        tokio::time::advance(Duration::from_secs(56)).await;
+        assert!(!connection.response.is_finished());
+        assert_eq!(f.worker.balance_test_waiters(TokenOwnerScope::Issuer), 1);
+        tokio::time::advance(Duration::from_secs(1)).await;
+        until(|| connection.response.is_finished()).await;
+        assert_eq!(connection.accepted_at.elapsed(), Duration::from_secs(70));
+        until(|| f.worker.balance_test_waiters(TokenOwnerScope::Issuer) == 0).await;
+        assert_eq!(f.state.balance_adds.load(Ordering::SeqCst), 0);
+        assert_eq!(f.state.balance_reads.load(Ordering::SeqCst), 0);
+        assert_eq!(f.worker.balance_test_last_refills().unwrap(), before);
+        drop(held);
+        let (status, response) = connection.finish().await;
+        assert_eq!(status, 504);
+        assert_eq!(response["error"], "result_unconfirmed");
+        assert_eq!(f.state.balance_adds.load(Ordering::SeqCst), 0);
+    })
+    .await;
 }

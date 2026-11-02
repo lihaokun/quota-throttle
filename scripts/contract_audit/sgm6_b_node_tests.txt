@@ -58,3 +58,11 @@ operation poll 404 explains and keeps polling within the window
 rejection texts only name contract error codes
 pending discard removes the entry even when the storage write fails
 rejected sensitive source form stays only until the page is hidden
+balance state and replies validate
+quotaFromDollars rounds and bounds
+formatQuota preserves negatives units and grouping
+balance actions build exact bodies
+balance policy draft conflicts on revision
+balance submit success binds body and shows result
+balance submit refusals stay inline and unknown stays pending check
+balance forms disable unavailable currency and bound prefills

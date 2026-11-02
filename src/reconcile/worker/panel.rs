@@ -8,7 +8,7 @@ use serde::Serialize;
 use std::collections::BTreeMap;
 use std::sync::TryLockError;
 
-pub(crate) const PANEL_SCHEMA_VERSION: i64 = 1;
+pub(crate) const PANEL_SCHEMA_VERSION: i64 = 2;
 const DISPLAY_MAX_AGE_MS: i64 = OBSERVATION_MAX_AGE_SECS * 1000;
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -18,6 +18,7 @@ pub(crate) struct PanelSnapshot {
     pub backend_ready: bool,
     pub catalog: PanelCatalog,
     pub glm: GlmPanelView,
+    pub balance: super::balance::BalanceView,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -297,6 +298,7 @@ impl ReconcileWorker {
             backend_ready: core.backend.ready_at(at / 1000),
             catalog,
             glm,
+            balance: self.balance_view(at)?,
         })
     }
 }

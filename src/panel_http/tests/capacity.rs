@@ -302,7 +302,17 @@ fn h1_field_width_bounds_cover_optional_states_numbers_and_all_shared_enums() {
     let mut root = empty(JSON_SAFE);
     root.glm.cycle_id = Some(u64::MAX.to_string());
     root.glm.completed_at_ms = Some(JSON_SAFE);
-    let root_width = field_width_bound(&serde_json::to_value(root).unwrap());
+    let mut root = serde_json::to_value(root).unwrap();
+    root["balance"]["unit"] =
+        json!({"quota_per_unit":f64::MIN_POSITIVE,"display_type":"abcdefghijklmnop"});
+    root["balance"]["accounts"] = json!(["issuer", "legacy_admin"].map(|scope| json!({
+        "owner_scope":scope,"user_id":i64::MAX.to_string(),"state":"unknown",
+        "quota":-JSON_SAFE,"observed_at_ms":JSON_SAFE,"unknown_reason":"idempotency_conflict",
+        "locked_until_ms":JSON_SAFE,"backoff_until_ms":JSON_SAFE,
+        "last_refill":{"at_ms":JSON_SAFE,"source":"manual","outcome":"not_sent",
+            "amount":crate::catalog::balance::BALANCE_CAP,"error_code":"idempotency_conflict"}
+    })));
+    let root_width = field_width_bound(&root);
     assert!(root_width <= 64 * 1024);
     assert_eq!(
         serde_json::to_vec(&i64::MAX.to_string()).unwrap().len() + 1,

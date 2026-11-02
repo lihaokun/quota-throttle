@@ -4,6 +4,8 @@ use crate::newapi::transport::{tests::Recorded, ManagementBudget};
 use crate::reconcile::worker::token_service::TokenOwners;
 use std::collections::BTreeMap;
 use std::sync::atomic::AtomicI64;
+#[path = "token_service_tests/balance.rs"]
+mod balance;
 #[path = "token_service_tests/coverage.rs"]
 mod coverage;
 #[path = "token_service_tests/edges.rs"]
@@ -50,6 +52,12 @@ struct TokenState {
     unauthorized_create: AtomicBool,
     saw_unauthorized: AtomicBool,
     hook: Mutex<Option<RequestHook>>,
+    balance_adds: AtomicUsize,
+    balance_mode: AtomicUsize,
+    balance_reads: AtomicUsize,
+    balance_read_fail_after_add: AtomicBool,
+    balance_profile_fail: AtomicBool,
+    balance_quotas: Mutex<HashMap<i64, i64>>,
 }
 impl TokenState {
     fn new() -> Self {
@@ -69,9 +77,18 @@ impl TokenState {
             unauthorized_create: AtomicBool::new(false),
             saw_unauthorized: AtomicBool::new(false),
             hook: Mutex::new(None),
+            balance_adds: AtomicUsize::new(0),
+            balance_mode: AtomicUsize::new(0),
+            balance_reads: AtomicUsize::new(0),
+            balance_read_fail_after_add: AtomicBool::new(false),
+            balance_profile_fail: AtomicBool::new(false),
+            balance_quotas: Mutex::new(HashMap::new()),
         }
     }
     fn reply(&self, r: &Recorded) -> Reply {
+        if r.path == "/api/user/manage" {
+            self.balance_adds.fetch_add(1, Ordering::SeqCst);
+        }
         if let Some(hook) = self.hook.lock().unwrap().as_ref().cloned() {
             hook(r);
         }
@@ -83,9 +100,67 @@ impl TokenState {
             return ok(json!({"id":if r.body["username"]=="issuer" {41}else{1}}));
         }
         if r.path == "/api/user/self" {
+            self.balance_reads.fetch_add(1, Ordering::SeqCst);
+            if self.balance_profile_fail.load(Ordering::SeqCst)
+                || self.balance_read_fail_after_add.load(Ordering::SeqCst)
+                    && self.balance_adds.load(Ordering::SeqCst) > 0
+            {
+                return Reply {
+                    status: 503,
+                    ..Reply::json(json!({"success":false}))
+                };
+            }
+            let quota = self
+                .balance_quotas
+                .lock()
+                .unwrap()
+                .get(&user)
+                .copied()
+                .unwrap_or_else(|| self.quota.load(Ordering::SeqCst));
             return ok(
-                json!({"id":user,"role":if user==41 {self.role.load(Ordering::SeqCst)}else{100},"status":if self.active.load(Ordering::SeqCst){1}else{2},"group":"accounts","quota":self.quota.load(Ordering::SeqCst)}),
+                json!({"id":user,"role":if user==41 {self.role.load(Ordering::SeqCst)}else{100},"status":if self.active.load(Ordering::SeqCst){1}else{2},"group":"accounts","quota":quota}),
             );
+        }
+        if r.path == "/api/status" {
+            return ok(json!({"quota_per_unit":500000,"quota_display_type":"USD"}));
+        }
+        if r.path == "/api/user/manage" {
+            assert_eq!(r.method, "POST");
+            assert_eq!(r.body["action"], "add_quota");
+            assert_eq!(r.body["mode"], "add");
+            let id = r.body["id"].as_i64().unwrap();
+            let amount = r.body["value"].as_i64().unwrap();
+            assert!(id > 0 && amount > 0);
+            match self.balance_mode.load(Ordering::SeqCst) {
+                1 => return Reply::json(json!({"success":false})),
+                2 => {
+                    return Reply {
+                        status: 500,
+                        ..Reply::json(json!({"success":false}))
+                    }
+                }
+                3 => {
+                    return Reply {
+                        status: 429,
+                        body: "rate limited".into(),
+                        ..Reply::json(Value::Null)
+                    }
+                }
+                _ => {}
+            }
+            let mut values = self.balance_quotas.lock().unwrap();
+            let value = values
+                .entry(id)
+                .or_insert_with(|| self.quota.load(Ordering::SeqCst));
+            *value = value.checked_add(amount).unwrap();
+            return Reply {
+                delay: if self.balance_mode.load(Ordering::SeqCst) == 4 {
+                    Duration::from_secs(20)
+                } else {
+                    Duration::ZERO
+                },
+                ..Reply::json(json!({"success":true}))
+            };
         }
         if r.path == "/api/user/self/groups" {
             return ok(Value::Object(

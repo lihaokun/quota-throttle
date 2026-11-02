@@ -3,8 +3,10 @@ use super::output::{AdminReply, ModelOrigin, SourceCreated};
 use super::{AdminError, ExtraCode};
 use crate::catalog::control::ControlErrorCode;
 use crate::catalog::{SourceDraft, SourceSettings};
+use crate::reconcile::worker::balance::{RefillAmount, RefillSource};
 use crate::reconcile::worker::ReconcileWorker;
 use std::sync::Arc;
+use tokio::time::Instant;
 
 async fn create_source(
     worker: &ReconcileWorker,
@@ -60,10 +62,33 @@ async fn create_source(
 pub(super) async fn dispatch(
     worker: &Arc<ReconcileWorker>,
     request: AdminRequest,
+    deadline: Instant,
 ) -> Result<AdminReply, AdminError> {
     // Step H2.4: 固定callee和版本；目录201、持久202及查询200沿原回执，不额外执行/retry。
     use AdminRequest as R;
     Ok(match request {
+        R::RefillBalance { scope, amount } => {
+            let report = match worker
+                .refill(
+                    scope,
+                    RefillAmount::Exact(amount),
+                    RefillSource::Manual,
+                    Some(deadline),
+                )
+                .await
+            {
+                Ok(Some(report)) => report,
+                Ok(None) => return Ok(AdminReply::Internal),
+                Err(error) if error.code == ControlErrorCode::TransportUnknown => {
+                    return Err(AdminError::extra(ExtraCode::ResultUnconfirmed));
+                }
+                Err(error) => return Err(error.into()),
+            };
+            AdminReply::BalanceRefilled(report)
+        }
+        R::SetBalancePolicy { revision, draft } => {
+            AdminReply::BalancePolicySaved(worker.set_balance_policy(revision, draft)?)
+        }
         R::CreateSource(source) => return create_source(worker, source).await,
         R::SourceModels(id) => AdminReply::Models(worker.source_models(id)?),
         R::CreateGroup(group) => AdminReply::Group(worker.create_group(group)?),

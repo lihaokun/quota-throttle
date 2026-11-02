@@ -28,7 +28,7 @@ def check(freeze):
     probe = ast.parse(read("scripts/probes/groups_runtime_probe.py"))
     checks = next(ast.literal_eval(node.value) for node in probe.body
                   if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "CHECKS" for t in node.targets))
-    assert len(checks) == len(set(checks)) == 15
+    assert len(checks) == len(set(checks)) == 16
     marks = [node.args[0].value for node in ast.walk(probe)
              if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
              and node.func.id == "mark" and node.args and isinstance(node.args[0], ast.Constant)]
@@ -51,7 +51,7 @@ def check(freeze):
             "src/config.rs", "src/orchestrator.rs", "src/status.rs", "src/catalog", "src/catalog.rs",
             "src/source_policy", "src/source_policy.rs", "src/ledger", "src/ledger.rs",
             "docs/design/source-groups-token-management/schemas")
-    print(f"SGM7: R1–R5; shared types/budget; {len(names)} exact runnable Rust tests; manifests only: 15 C checks + 4 unmocked browsers;" +
+    print(f"SGM7: R1–R5; shared types/budget; {len(names)} exact runnable Rust tests; manifests only: 16 C checks + 4 unmocked browsers;" +
           (" legacy policies/schema frozen." if freeze else " frozen checks require local git --freeze."))
 
 

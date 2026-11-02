@@ -11,6 +11,9 @@ const bucketModelCapacity = /pub\(crate\) const MAX_BUCKET_MODELS: usize = ([0-9
 if (!bucketModelCapacity) throw new Error('Missing authoritative joint model capacity');
 const pd = panel.$defs, rd = response.$defs;
 const enums = {
+  balanceState: pd.balance_account.properties.state.enum,
+  refillSource: pd.balance_refill.properties.source.enum,
+  refillOutcome: pd.balance_refill.properties.outcome.enum,
   sourceKind: pd.kind.enum, lifecycle: pd.membership.properties.lifecycle.enum,
   observedStatus: pd.membership.properties.observed_status.enum, regime: pd.panel_group.properties.regime.enum,
   statusDirective: pd.panel_membership.properties.status_directive.enum, createState: identity.properties.create_state.enum,
@@ -28,6 +31,7 @@ const enums = {
   localSettingKind: operation.allOf.find(v => v.then?.properties?.total_targets?.const === 0).if.properties.kind.enum,
 };
 const limits = {
+  balanceCap: pd.balance_amount.maximum,
   jsonSafe: pd.revision.maximum, sources: pd.catalog.properties.sources.maxItems,
   groups: pd.catalog.properties.groups.maxItems, memberships: pd.catalog.properties.memberships.maxItems,
   models: rd.SourceModels.properties.models.maxItems, identities: rd.IdentityPage.properties.items.maxItems,
@@ -40,6 +44,9 @@ const limits = {
   offsetMin: pd.policy.properties.utc_offset_minutes.minimum, offsetMax: pd.policy.properties.utc_offset_minutes.maximum,
 };
 const shapes = {
+  balance: pd.balance, balancePolicy: pd.balance_policy, quotaUnit: pd.quota_unit,
+  balanceAccount: pd.balance_account, balanceRefill: pd.balance_refill,
+  balanceRefilled: rd.BalanceRefilled, balancePolicySaved: rd.BalancePolicySaved,
   state: panel, config, source: pd.source, group: pd.group, membership: pd.membership,
   panelSource: pd.panel_source, panelGroup: pd.panel_group, panelMembership: pd.panel_membership,
   catalog: pd.catalog, glm: pd.glm, quota: pd.quota, window: pd.window, assessment: pd.assessment,

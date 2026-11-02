@@ -20,7 +20,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "deploy"))
 from initialize_groups import BootstrapError, Native, initialize_fresh, stop_owned
 
 MODELS = ["gpt-4o-mini", "gpt-4o"]
-CHECKS = ["fresh_start_and_real_backend", "model_discovery_and_no_duplicate_source",
+CHECKS = ["fresh_start_and_real_backend", "initial_internal_balances_refilled",
+          "model_discovery_and_no_duplicate_source",
           "disabled_creation_then_group_check", "independent_shared_group_priority",
           "stale_and_invalid_commands_write_nothing",
           "same_key_both_protocols_and_streams", "ordinary_owner_group_model_isolation",
@@ -41,6 +42,29 @@ class ReadUnavailable(ProbeError):
 def ensure(value, label):
     if not value:
         raise ProbeError(label)
+
+
+def initial_balances_ready(snapshot, owners):
+    ensure(snapshot["schema_version"] == 2, "balance_snapshot_version")
+    balance = snapshot["balance"]
+    ensure(balance["policy"] == {
+        "revision": 1, "auto_refill": True, "warn_below": 100_000_000_000_000,
+        "refill_to": 1_000_000_000_000_000,
+    }, "default_balance_policy")
+    accounts = balance["accounts"]
+    ensure([(account["owner_scope"], account["user_id"]) for account in accounts]
+           == [(scope, str(ident)) for scope, ident in owners], "balance_owner_identity_and_order")
+    return balance["unit"] is not None and all(
+        account["state"] == "sufficient" and account["quota"] == balance["policy"]["refill_to"]
+        and account["unknown_reason"] is None and account["observed_at_ms"] is not None
+        and account["locked_until_ms"] is None and account["backoff_until_ms"] is None
+        and account["last_refill"] is not None
+        and account["last_refill"]["source"] == "auto"
+        and account["last_refill"]["outcome"] == "refilled"
+        and account["last_refill"]["error_code"] is None
+        and 0 < account["last_refill"]["amount"] <= balance["policy"]["refill_to"]
+        for account in accounts
+    )
 
 
 def until(read, predicate=lambda value: bool(value), seconds=180):
@@ -388,6 +412,18 @@ def run(native_binary, app_binary, browser):
         credentials = tomllib.loads((target / "config.toml").read_text())
         root = Native(api_port)
         root.login("qtadmin", credentials["new_api"]["root_password"], 100)
+        stage = "initial_internal_balance"
+        owners = [("issuer", credentials["source_groups"]["issuer"]["user_id"]),
+                  ("legacy_admin", credentials["source_groups"]["legacy_admin_user_id"])]
+        initial = until(panel.state, lambda value: initial_balances_ready(value, owners))
+        target_quota = initial["balance"]["policy"]["refill_to"]
+        ensure(initial["balance"]["accounts"][0]["last_refill"]["amount"]
+               == target_quota - 1_000_000_000_000, "issuer_initial_refill_amount")
+        for _scope, ident in owners:
+            profile = root.api("GET", f"/api/user/{ident}")
+            ensure(profile["id"] == ident and profile["quota"] == target_quota,
+                   "initial_refill_native_account_readback")
+        mark("initial_internal_balances_refilled")
         stage = "catalog_and_groups"
         a, settings = source("volcano-A", "volcano")
         b, _ = source("volcano-B", "volcano")

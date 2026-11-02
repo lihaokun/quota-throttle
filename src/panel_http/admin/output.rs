@@ -1,5 +1,6 @@
 use super::{AdminError, ExtraCode};
 use crate::catalog::admin::SourceModelsView;
+use crate::catalog::balance::BalancePolicy;
 use crate::catalog::control::OperationView;
 use crate::catalog::groups::GroupReferences;
 use crate::catalog::tokens::TokenIdentityView;
@@ -7,6 +8,7 @@ use crate::catalog::{GroupView, ManagedTokenId, MembershipView, SourceView};
 use crate::ledger::analytics::UsageSnapshot;
 use crate::newapi::tokens::{NativeTokenPage, RevealedToken, TokenOwnerScope};
 use crate::panel_http::{publication, Response};
+use crate::reconcile::worker::balance::RefillReport;
 use crate::reconcile::worker::token_service::GroupCheckReport;
 use serde::Serialize;
 
@@ -27,6 +29,7 @@ pub(super) struct SourceCreated {
     pub model_origin: ModelOrigin,
 }
 pub(super) enum AdminReply {
+    Internal,
     SourceCreated(SourceCreated),
     Models(SourceModelsView),
     Group(GroupView),
@@ -49,6 +52,8 @@ pub(super) enum AdminReply {
         secret: RevealedToken,
     },
     Usage(UsageSnapshot),
+    BalanceRefilled(RefillReport),
+    BalancePolicySaved(BalancePolicy),
 }
 fn response<T: Serialize>(status: &'static str, value: &T) -> Result<Response, AdminError> {
     Ok(Response {
@@ -62,6 +67,49 @@ fn response<T: Serialize>(status: &'static str, value: &T) -> Result<Response, A
 }
 pub(super) fn encode(reply: AdminReply) -> Result<Response, AdminError> {
     match reply {
+        AdminReply::Internal => Ok(Response::error(crate::panel_http::HttpErrorCode::Internal)),
+        AdminReply::BalanceRefilled(v) => {
+            #[derive(Serialize)]
+            struct BalanceRefilled {
+                schema_version: u8,
+                owner_scope: TokenOwnerScope,
+                user_id: String,
+                before: i64,
+                amount: i64,
+                after: Option<i64>,
+            }
+            response(
+                "200 OK",
+                &BalanceRefilled {
+                    schema_version: 1,
+                    owner_scope: v.owner_scope,
+                    user_id: v.user_id.to_string(),
+                    before: v.before,
+                    amount: v.amount,
+                    after: v.after,
+                },
+            )
+        }
+        AdminReply::BalancePolicySaved(v) => {
+            #[derive(Serialize)]
+            struct BalancePolicySaved {
+                schema_version: u8,
+                revision: i64,
+                auto_refill: bool,
+                warn_below: i64,
+                refill_to: i64,
+            }
+            response(
+                "200 OK",
+                &BalancePolicySaved {
+                    schema_version: 1,
+                    revision: v.revision,
+                    auto_refill: v.auto_refill,
+                    warn_below: v.warn_below,
+                    refill_to: v.refill_to,
+                },
+            )
+        }
         AdminReply::SourceCreated(v) => response("201 Created", &v),
         AdminReply::Models(v) => response("200 OK", &v),
         AdminReply::Group(group) => {

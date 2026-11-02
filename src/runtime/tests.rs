@@ -123,7 +123,7 @@ async fn r3_startup_stop_joins_tasks_even_when_startup_already_completed() {
     let (stop, shutdown) = watch::channel(false);
     let completed = Arc::new(AtomicUsize::new(0));
     let mut tasks = JoinSet::new();
-    for _ in 0..5 {
+    for _ in 0..6 {
         let mut rx = shutdown.clone();
         let completed = completed.clone();
         tasks.spawn(async move {
@@ -139,7 +139,7 @@ async fn r3_startup_stop_joins_tasks_even_when_startup_already_completed() {
     )
     .await;
     assert_eq!(result, Ok(()));
-    assert_eq!(completed.load(Ordering::SeqCst), 5);
+    assert_eq!(completed.load(Ordering::SeqCst), 6);
 }
 
 #[tokio::test]
@@ -285,6 +285,230 @@ async fn r5_fresh_ledger_waits_for_collection_instead_of_terminating_service() {
     );
 }
 
+#[tokio::test(start_paused = true)]
+async fn balance_loop_runs_immediately_survives_business_errors_and_stops() {
+    use crate::catalog::control::ControlError;
+    let (stop, shutdown) = watch::channel(false);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counter = calls.clone();
+    let gate = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+    let release = gate.clone();
+    let (entered, mut ready) = tokio::sync::mpsc::unbounded_channel();
+    let started_at = Instant::now();
+    let task = tokio::spawn(balance_loop_jobs(
+        move || {
+            let (counter, gate, entered) = (counter.clone(), gate.clone(), entered.clone());
+            async move {
+                let round = counter.fetch_add(1, Ordering::SeqCst);
+                entered.send((round, Instant::now())).unwrap();
+                if round == 0 {
+                    return Err(ControlError {
+                        code: ControlErrorCode::QueueFull,
+                    });
+                }
+                // 实际同步工作持有blocking句柄；stop不能提早宣布完成。
+                let mut opened = gate.0.lock().unwrap();
+                while !*opened {
+                    opened = gate.1.wait(opened).unwrap();
+                }
+                Ok(())
+            }
+        },
+        shutdown,
+    ));
+    async fn receive(
+        ready: &mut tokio::sync::mpsc::UnboundedReceiver<(usize, Instant)>,
+        advance: bool,
+    ) -> Option<(usize, Instant)> {
+        for _ in 0..100_000 {
+            match ready.try_recv() {
+                Ok(value) => return Some(value),
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => return None,
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {}
+            }
+            for _ in 0..8 {
+                tokio::task::yield_now().await;
+            }
+            if advance {
+                tokio::time::advance(Duration::from_millis(10)).await;
+            }
+        }
+        None
+    }
+    let first = receive(&mut ready, false).await;
+    let second = receive(&mut ready, true).await;
+    stop.send_replace(true);
+    for _ in 0..20 {
+        tokio::task::yield_now().await;
+    }
+    let early = task.is_finished();
+    *release.0.lock().unwrap() = true;
+    release.1.notify_all();
+    for _ in 0..100_000 {
+        if task.is_finished() {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    let joined = if task.is_finished() {
+        Some(task.await)
+    } else {
+        task.abort();
+        None
+    };
+    assert!(
+        matches!(joined, Some(Ok(Ok(())))),
+        "balance loop must finish after stop and release"
+    );
+    assert_eq!(
+        first,
+        Some((0, started_at)),
+        "the first round must run immediately"
+    );
+    assert!(
+        second.is_some_and(|(round, at)| round == 1 && at >= started_at + BALANCE_INTERVAL),
+        "business failure must not end the loop or shorten its interval"
+    );
+    assert_eq!(BALANCE_INTERVAL, Duration::from_secs(60));
+    assert!(
+        !early,
+        "balance stop must await the actual synchronous work"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    let (_, shutdown) = watch::channel(true);
+    balance_loop_jobs(
+        || async { panic!("stopped balance loop must not start a round") },
+        shutdown,
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn balance_loop_propagates_real_refill_storage_failure() {
+    use crate::catalog::BalancePolicyDraft;
+    use crate::newapi::managed_channels::NativeRecoveryCheck;
+    use crate::newapi::transport::tests::{Fake, Reply};
+    use crate::reconcile::planner::{BackendReadiness, SUPPORTED_BACKEND_VERSION};
+    use serde_json::json;
+    use std::sync::atomic::AtomicI64;
+
+    let quota = Arc::new(AtomicI64::new(10_000));
+    let native = quota.clone();
+    let adds = Arc::new(AtomicUsize::new(0));
+    let entered_adds = adds.clone();
+    let profiles = Arc::new(AtomicUsize::new(0));
+    let entered_profiles = profiles.clone();
+    let fake = Fake::start(
+        move |request| match (request.method.as_str(), request.path.as_str()) {
+            ("GET", "/api/status") => Reply::json(json!({"success":true,"data":{
+                "quota_per_unit":500000,"quota_display_type":"USD"
+            }})),
+            ("GET", "/api/user/self") => {
+                entered_profiles.fetch_add(1, Ordering::SeqCst);
+                Reply::json(json!({"success":true,"data":{
+                    "id":1,"role":100,"status":1,"group":"default",
+                    "quota":native.load(Ordering::SeqCst)
+                }}))
+            }
+            ("POST", "/api/user/manage") => {
+                entered_adds.fetch_add(1, Ordering::SeqCst);
+                assert_eq!(request.body["id"], 1);
+                assert_eq!(request.body["action"], "add_quota");
+                assert_eq!(request.body["mode"], "add");
+                native.fetch_add(request.body["value"].as_i64().unwrap(), Ordering::SeqCst);
+                Reply::json(json!({"success":true}))
+            }
+            _ => panic!("unexpected balance runtime fixture request"),
+        },
+    )
+    .await;
+    let dir = tempfile::Builder::new()
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir()
+        .unwrap();
+    let path = dir.path().join("catalog.sqlite3");
+    let store = CatalogStore::open(&path).unwrap();
+    let cfg = config::decode(SAMPLE).unwrap().policy;
+    let client = Arc::new(NewApiClient::new(&fake.config(true)).unwrap());
+    let worker = ReconcileWorker::new_with_token_owners(
+        store,
+        client,
+        cfg,
+        TokenOwners::new(None, Some(1)).unwrap(),
+    )
+    .unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    worker
+        .publish_backend(BackendReadiness::from_preflight(
+            SUPPORTED_BACKEND_VERSION,
+            NativeRecoveryCheck::Disabled,
+            true,
+            now - 1,
+            now + 60,
+        ))
+        .unwrap();
+    // 真正的延迟外键提交失败使store不可用；不是模拟round返回Storage。
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE balance_runtime_parent(id INTEGER PRIMARY KEY);
+         CREATE TABLE balance_runtime_child(id INTEGER REFERENCES balance_runtime_parent(id) DEFERRABLE INITIALLY DEFERRED);
+         CREATE TRIGGER balance_runtime_fault AFTER UPDATE ON balance_policy
+         BEGIN INSERT INTO balance_runtime_child VALUES(1); END;",
+    )
+    .unwrap();
+    assert_eq!(
+        worker
+            .set_balance_policy(
+                1,
+                BalancePolicyDraft {
+                    auto_refill: false,
+                    warn_below: 100_000_000_000_000,
+                    refill_to: 1_000_000_000_000_000,
+                },
+            )
+            .unwrap_err()
+            .code,
+        ControlErrorCode::Storage
+    );
+    let (stop, shutdown) = watch::channel(false);
+    let mut tasks = JoinSet::new();
+    tasks.spawn(balance_loop(worker.clone(), shutdown.clone()));
+    let joined = Arc::new(AtomicUsize::new(0));
+    let done = joined.clone();
+    tasks.spawn(async move {
+        let mut shutdown = shutdown;
+        stopped(&mut shutdown).await;
+        done.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    });
+    assert_eq!(
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            supervise(tasks, stop, std::future::pending()),
+        )
+        .await,
+        Ok(Err(RuntimeError::Storage))
+    );
+    assert_eq!(joined.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        profiles.load(Ordering::SeqCst),
+        1,
+        "round observation must reach refill step 2"
+    );
+    assert_eq!(adds.load(Ordering::SeqCst), 0);
+    assert_eq!(quota.load(Ordering::SeqCst), 10_000);
+    let attempts = worker.balance_test_last_refills().unwrap();
+    assert_eq!(attempts[0]["owner_scope"], "legacy_admin");
+    assert_eq!(attempts[0]["last_refill"]["source"], "auto");
+    assert_eq!(attempts[0]["last_refill"]["outcome"], "not_sent");
+    assert_eq!(attempts[0]["last_refill"]["error_code"], "storage");
+    assert!(attempts[0]["last_refill"]["amount"].is_null());
+}
+
 #[test]
 fn control_warning_names_the_maintenance_job() {
     use crate::catalog::control::ControlError;
@@ -311,7 +535,8 @@ fn control_warning_names_the_maintenance_job() {
         let busy = ControlError {
             code: ControlErrorCode::QueueFull,
         };
-        assert_eq!(control::<()>("volcano_policy", Err(busy)), Ok(None));
+        assert_eq!(control::<()>("volcano_policy", Err(busy.clone())), Ok(None));
+        assert_eq!(control::<()>("balance", Err(busy)), Ok(None));
         let storage = ControlError {
             code: ControlErrorCode::Storage,
         };
@@ -324,6 +549,7 @@ fn control_warning_names_the_maintenance_job() {
     assert!(text.contains("来源分组维护暂未完成"), "{text}");
     assert!(text.contains("volcano_policy"), "{text}");
     assert!(text.contains("QueueFull"), "{text}");
+    assert!(text.contains("balance"), "{text}");
     // Storage 直接终止服务，不发这条警告。
     assert!(!text.contains("glm_policy"), "{text}");
 }

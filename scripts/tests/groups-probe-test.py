@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """C harness must fail closed and clean only its own resources."""
 import os
+import copy
 from pathlib import Path
 import sys
 import tempfile
@@ -12,6 +13,38 @@ import groups_runtime_probe as probe
 
 
 class CleanupTests(unittest.TestCase):
+    def test_initial_balances_require_refill_evidence_and_exact_owners(self):
+        owners = [("issuer", 2), ("legacy_admin", 1)]
+        target = 1_000_000_000_000_000
+        snapshot = {"schema_version": 2, "balance": {
+            "policy": {"revision": 1, "auto_refill": True,
+                       "warn_below": 100_000_000_000_000, "refill_to": target},
+            "unit": {"quota_per_unit": 500000, "display_type": "USD"},
+            "accounts": [{"owner_scope": scope, "user_id": str(ident), "state": "sufficient",
+                          "quota": target, "observed_at_ms": 1, "unknown_reason": None,
+                          "locked_until_ms": None, "backoff_until_ms": None,
+                          "last_refill": {"source": "auto", "outcome": "refilled",
+                                          "amount": target - 1000, "error_code": None}}
+                         for scope, ident in owners]}}
+        self.assertTrue(probe.initial_balances_ready(snapshot, owners))
+        for field, value in (("quota", 1_000_000_000_000), ("state", "unknown"),
+                             ("last_refill", None), ("unknown_reason", "not_ready")):
+            incomplete = copy.deepcopy(snapshot)
+            incomplete["balance"]["accounts"][0][field] = value
+            self.assertFalse(probe.initial_balances_ready(incomplete, owners))
+        for field, value in (("amount", 0), ("source", "manual"), ("outcome", "uncertain")):
+            incomplete = copy.deepcopy(snapshot)
+            incomplete["balance"]["accounts"][0]["last_refill"][field] = value
+            self.assertFalse(probe.initial_balances_ready(incomplete, owners))
+        malformed = copy.deepcopy(snapshot)
+        malformed["balance"]["accounts"].reverse()
+        with self.assertRaises(probe.ProbeError):
+            probe.initial_balances_ready(malformed, owners)
+        malformed = copy.deepcopy(snapshot)
+        malformed["schema_version"] = 1
+        with self.assertRaises(probe.ProbeError):
+            probe.initial_balances_ready(malformed, owners)
+
     def test_group_selection_waits_for_real_priority_readback(self):
         panel = probe.Panel(19995)
         def state(observed, dirty):

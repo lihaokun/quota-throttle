@@ -14,6 +14,10 @@ use tokio::time::{timeout_at, Instant, MissedTickBehavior};
 mod admin;
 #[cfg(test)]
 pub(crate) use admin::tests::support::Running as AdminTestServer;
+#[cfg(test)]
+pub(crate) use admin::tests::support::SlowRefillConnection as AdminSlowRefillConnection;
+#[cfg(test)]
+pub(crate) use admin::tests::support::{drive as admin_test_drive, until as admin_test_until};
 mod publication;
 mod request;
 mod ui;
@@ -23,6 +27,7 @@ pub(crate) use ui::UiOptions;
 
 const MAX_CONNECTIONS: usize = 16;
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(45);
+const REFILL_CONNECTION_TIMEOUT: Duration = Duration::from_secs(75);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 const PUBLISH_INTERVAL: Duration = Duration::from_secs(5);
 const STATE_PATH: &str = "/api/admin/v1/state";
@@ -244,7 +249,7 @@ impl PanelServer {
                                 let business_client = business_client.clone();
                                 let ui = ui.clone();
                                 clients.spawn(async move {
-                                    let _ = timeout_at(accepted_at + CONNECTION_TIMEOUT, serve_connection(stream, permit, origin, cache, business_client, ui, accepted_at)).await;
+                                    serve_connection(stream, permit, origin, cache, business_client, ui, accepted_at).await;
                                 });
                             }
                         }
@@ -309,9 +314,20 @@ async fn serve_connection(
             Err(RequestError::Closed) => return,
         };
     let head_only = head.method == "HEAD";
-    let response = match request::authorize(&head, &origin) {
-        Err(code) => Response::error(code),
-        Ok(()) => {
+    if let Err(code) = request::authorize(&head, &origin) {
+        respond(
+            &mut stream,
+            Response::error(code),
+            head_only,
+            connection_end,
+        )
+        .await;
+        return;
+    }
+    // Step B5.connection: 授权后的精确路由才延长；慢头占用的时间不重置。
+    let connection_end = connection_deadline(&head, accepted_at);
+    let _ = timeout_at(connection_end, async {
+        let response = {
             let deadline = (head_completed_at + request::BODY_TIMEOUT).min(connection_end);
             match request::read_body(
                 &mut stream,
@@ -349,9 +365,21 @@ async fn serve_connection(
                     }
                 }
             }
+        };
+        respond(&mut stream, response, head_only, connection_end).await;
+    })
+    .await;
+}
+fn connection_deadline(head: &request::RequestHead, accepted_at: Instant) -> Instant {
+    accepted_at
+        + if head.method == "POST"
+            && head.path == "/api/admin/v1/balance/refill"
+            && head.query.is_none()
+        {
+            REFILL_CONNECTION_TIMEOUT
+        } else {
+            CONNECTION_TIMEOUT
         }
-    };
-    respond(&mut stream, response, head_only, connection_end).await;
 }
 async fn respond<W: AsyncWrite + Unpin>(
     stream: &mut W,

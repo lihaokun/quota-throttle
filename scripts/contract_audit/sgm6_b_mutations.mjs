@@ -20,6 +20,14 @@ writeFileSync(`${evidence}/snapshot.sha256`, inputs.sort().join('\n') + '\n');
 const file = name => `src/panel_http/ui/${name}.mjs`;
 const js = (name, module, before, after, testFile, testName) => ({name, path: file(module), before, after, testFile: `tests/ui/${testFile}.test.mjs`, testName});
 const mutations = [
+  js('balance-rounding-truncates', 'core', 'const quota = (BigInt(2) * numerator + denominator) / (BigInt(2) * denominator);', 'const quota = numerator / denominator;', 'balance', 'quotaFromDollars rounds and bounds'),
+  js('balance-rounding-uses-float', 'core', 'const quota = (BigInt(2) * numerator + denominator) / (BigInt(2) * denominator);', 'const quota = BigInt(Math.round(Number(text) * unit.quota_per_unit));', 'balance', 'quotaFromDollars rounds and bounds'),
+  js('balance-age-not-projected', 'core', "age > 180000 || !Number.isFinite(age) ? 'expired'", "!Number.isFinite(age) ? 'expired'", 'balance', 'balance state and replies validate'),
+  js('balance-static-deadline-stamp', 'render', 'vm.snapshot?.balance.accounts.some(a => a.locked_until_ms !== null || a.backoff_until_ms !== null) ? vm.snapshot.captured_at_ms : null', 'null', 'balance', 'balance state and replies validate'),
+  js('balance-policy-reconverts-untouched-amounts', 'core', 'const policyAmount = key => !usd(unit) || fields[key] === balanceDollarsFloor(original[key], unit) ? original[key] : quotaFromDollars(fields[key], unit);', 'const policyAmount = key => !usd(unit) ? original[key] : quotaFromDollars(fields[key], unit);', 'balance', 'balance submit success binds body and shows result'),
+  js('balance-wrong-policy-revision', 'core', "draft.entity === 'balance' ? [p.revision]", "draft.entity === 'balance' ? [p.control_revision]", 'balance', 'balance policy draft conflicts on revision'),
+  js('balance-reply-loses-body', 'client', "['usage', 'refillBalance', 'setBalancePolicy'].includes(descriptor.action)", "descriptor.action === 'usage'", 'balance', 'balance submit success binds body and shows result'),
+  js('balance-rejection-closes-form', 'app', 'if (editor && this.editor === editor) editor.rejection = text; else this.notice = text;', 'this.closeEditor(editor); this.notice = text;', 'balance', 'balance submit refusals stay inline and unknown stays pending check'),
   js('refresh-failure-revives', 'core', 'fail() { this.expired = true; }', 'fail() { this.expired = false; }', 'core', 'u4 refresh failure at age 4s expires old publication and same publication cannot revive'),
   js('drop-generation', 'core', 'ticket.generation === this.generations[ticket.lane]', 'true', 'core', 'u3 invalidation retains owner until settle; old finally never releases new owner; hidden writes keep receipt'),
   js('old-finally-clears-owner', 'core', 'finish(ticket) { if (this.owns(ticket)) this.owners[ticket.lane] = null; }', 'finish(ticket) { this.owners[ticket.lane] = null; }', 'core', 'u3 invalidation retains owner until settle; old finally never releases new owner; hidden writes keep receipt'),
@@ -49,8 +57,10 @@ function execute(m, label) {
   return m.testFile ? run(process.execPath, ['--test', '--experimental-test-isolation=none', '--test-reporter=tap', `--test-name-pattern=^${m.testName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, m.testFile], label)
     : run('cargo', ['test', '--locked', '--offline', m.testName, '--', '--exact', '--nocapture'], label);
 }
-const originalSourceHashes = new Map([...new Set(mutations.map(m => m.path))].map(path => [path, hash(readFileSync(sourceRoot + path))]));
-for (const m of mutations) {
+const selectedMutations = process.argv.includes('--balance-only') ? mutations.filter(m => m.name.startsWith('balance-')) : process.argv.includes('--js-only') ? mutations.filter(m => m.testFile) : mutations;
+assert.ok(selectedMutations.length > 0);
+const originalSourceHashes = new Map([...new Set(selectedMutations.map(m => m.path))].map(path => [path, hash(readFileSync(sourceRoot + path))]));
+for (const m of selectedMutations) {
   const original = readFileSync(root + m.path, 'utf8'); assert.equal(original.split(m.before).length, 2, `${m.name}: unique mutation site`);
   const originalHash = hash(original);
   const baseline = execute(m, `${m.name}-baseline`); assert.equal(baseline.status, 0, `${m.name}: baseline failed`);
@@ -76,4 +86,4 @@ for (const m of mutations) {
   console.log(`${m.name}: compiled/loaded, one semantic failure, restored and re-executed`);
 }
 for (const [path, expected] of originalSourceHashes) assert.equal(hash(readFileSync(sourceRoot + path)), expected, `source workspace changed: ${path}`);
-console.log(`Actual mutations captured: ${mutations.length}; logs ${evidence}`);
+console.log(`Actual mutations captured: ${selectedMutations.length}; logs ${evidence}`);

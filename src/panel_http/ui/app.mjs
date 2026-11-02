@@ -1,4 +1,4 @@
-import { Lanes, SnapshotAge, observations, backoff, PendingOperations, freezeDraft, buildAction, draftConflict, ActionError, ProtocolError, identityUsageFilter, operationId, decimal, id, modelLabel, modelFilter, allFilters, makeUsageQuery, volcanoUsageQuery, validateQuery, validateUsage, formatTime } from './core.mjs';
+import { Lanes, SnapshotAge, observations, backoff, PendingOperations, freezeDraft, buildAction, draftConflict, ActionError, ProtocolError, identityUsageFilter, operationId, decimal, id, modelLabel, modelFilter, allFilters, makeUsageQuery, volcanoUsageQuery, validateQuery, validateUsage, formatTime, usd, formatQuota, balanceDollarsFloor, balanceRefillPrefill, balanceMaximum, BALANCE_EXPLANATION, balanceOwnerLabel } from './core.mjs';
 import { route, requestJson, ClientError, rejected } from './client.mjs';
 import { createRenderer } from './render.mjs';
 import { prepareChart } from './charts.mjs';
@@ -206,7 +206,7 @@ export class PanelApp {
       const original = this.editor.draft?.value;
       const currentIdentity = this.editor.draft?.entity === 'identity' && this.identities.data?.items.find(i => i.token_id === original.token_id);
       const conflict = this.editor.draft?.entity === 'identity' ? currentIdentity && (currentIdentity.revision !== original.revision || currentIdentity.deleted_at !== original.deleted_at) : this.editor.draft && this.age.snapshot && draftConflict(this.editor.draft, this.age.snapshot, this.editor.action);
-      this.renderer.conflict(conflict ? '对象已有新版本。请关闭后重新打开，不会覆盖当前草稿或自动重发。' : (this.editor.rejection ?? null), this.editor.readOnlyAction ? this.lanes.owners.work !== null : this.readOnly || !!conflict);
+      this.renderer.conflict(conflict ? '对象已有新版本。请关闭后重新打开，不会覆盖当前草稿或自动重发。' : (this.editor.rejection ?? null), this.editor.readOnlyAction ? this.lanes.owners.work !== null : this.readOnly || !!conflict || !!this.editor.amountUnavailable);
     }
     this.renderUsage?.();
   }
@@ -246,6 +246,7 @@ export class PanelApp {
       return false;
     }
     const ticket = this.lanes.acquire('work', key, descriptor.write); if (!ticket) return false;
+    if (descriptor.action === 'refillBalance') ticket.deadline = ticket.started + 70000;
     try {
       this.paint();
       const result = await requestJson(descriptor, body, ticket, {fetchImpl: this.fetchImpl, now: this.now,
@@ -349,6 +350,8 @@ export class PanelApp {
       }); return;
     }
     if (this.readOnly) return;
+    if (action === 'refillBalance') { this.openRefill(id); return; }
+    if (action === 'setBalancePolicy') { this.openBalancePolicy(); return; }
     if (['setSourcePaused', 'retireSource', 'discoverModels', 'clearError', 'setVolcanoPolicy'].includes(action) && source) {
       const draft = freezeDraft('source', source);
       if (action === 'setVolcanoPolicy') { this.openPolicy(draft); return; }
@@ -386,7 +389,10 @@ export class PanelApp {
         const current = this.identities.data?.items.find(i => i.token_id === draft.value.token_id);
         if (current && (current.revision !== draft.value.revision || current.deleted_at !== draft.value.deleted_at)) throw new ActionError('身份已有新版本，请重新打开并确认。分页未包含此身份不代表它已删除。');
       }
-      const result = buildAction(action, draft, fields, this.age.snapshot, previewOperationId);
+      const balanceAction = ['refillBalance', 'setBalancePolicy'].includes(action);
+      const context = balanceAction && editor?.balanceContext ? {...editor.balanceContext, views: observations(this.age, this.now()).balanceViews} : null;
+      const result = buildAction(action, draft, fields, this.age.snapshot, previewOperationId, context);
+      if (balanceAction && editor) editor.submittedAt = this.age.snapshot.captured_at_ms + this.age.age(this.now());
       const routeId = result.targetId ?? (action === 'createToken' ? null : draft?.value?.source?.source_id);
       const descriptor = route(action, routeId ? {id: routeId} : {});
       if (editor) editor.rejection = null;
@@ -405,21 +411,34 @@ export class PanelApp {
       } else {
         this.work(descriptor, result.body, value => {
           this.closeEditor(editor);
-          this.notice = action === 'createSource' ? `来源 #${value.source.source_id} 已保存，模型来源 ${value.model_origin}。等待新目录快照。` : action === 'checkGroup' ? `核验结果：${value.ready ? '就绪' : `未就绪 · ${value.error_code}`}。` : action === 'planMember' ? '成员计划已保存。请等待新目录显示，再显式 Ensure。' : '已保存，等待目录或手动刷新本地身份。';
+          this.notice = action === 'refillBalance' ? `已补足 ${formatQuota(value.amount, context.unit)}` : action === 'setBalancePolicy' ? '余额设置已保存' : action === 'createSource' ? `来源 #${value.source.source_id} 已保存，模型来源 ${value.model_origin}。等待新目录快照。` : action === 'checkGroup' ? `核验结果：${value.ready ? '就绪' : `未就绪 · ${value.error_code}`}。` : action === 'planMember' ? '成员计划已保存。请等待新目录显示，再显式 Ensure。' : '已保存，等待目录或手动刷新本地身份。';
         }, error => {
-          if (rejected(error)) { this.rejectSubmit(editor, error); return; }
+          if (rejected(error)) { this.rejectSubmit(editor, error, action, context?.owner_scope); return; }
           this.closeEditor(editor);
-          this.notice = `${this.message(error)} 回执丢失不证明未写入：来源需重新填写凭据后显式提交核对；组/成员按唯一关系核对，不按名称认领。`;
+          this.notice = action === 'refillBalance' ? '结果待核对：请看该账号的上次补足结果及其时间' : action === 'setBalancePolicy' ? '结果待核对：请看当前余额设置及修订号' : `${this.message(error)} 回执丢失不证明未写入：来源需重新填写凭据后显式提交核对；组/成员按唯一关系核对，不按名称认领。`;
         });
       }
-    } catch (error) { this.notice = this.message(error); this.paint(); }
+    } catch (error) {
+      if (error instanceof ActionError && ['refillBalance', 'setBalancePolicy'].includes(action) && editor && this.editor === editor) editor.rejection = this.message(error);
+      else this.notice = this.message(error);
+      this.paint();
+    }
   }
   closeEditor(editor) { if (editor && this.editor === editor) { this.renderer.clearForm(); this.editor = null; } }
-  rejectSubmit(editor, error) {
-    const text = this.rejectionText(error);
+  rejectSubmit(editor, error, action = editor?.action, scope = editor?.balanceContext?.owner_scope) {
+    const text = this.rejectionText(error, action, scope);
     if (editor && this.editor === editor) editor.rejection = text; else this.notice = text;
   }
-  rejectionText(error) {
+  rejectionText(error, action = null, scope = null) {
+    if (action === 'refillBalance' && ['not_ready', 'invalid_input'].includes(error.code)) {
+      const view = observations(this.age, this.now()).balanceViews.get(scope), unit = this.age.snapshot.balance.unit;
+      if (error.code === 'not_ready') {
+        const until = view?.fresh && view.locked_until_ms !== null ? view.locked_until_ms - (this.age.snapshot.captured_at_ms + this.age.age(this.now())) : null;
+        return `本次补足未发送；后端未就绪、请求截止或账号处于封锁期。${until !== null && until > 0 ? `约需等待 ${Math.ceil(until / 1000)} 秒。` : '等待信息未知。'}（not_ready）`;
+      }
+      const maximum = balanceMaximum(view);
+      return `补足金额不合法或超过单次 / 余额上限。${maximum === null ? '' : `按上次观察，最多还能补约 ${formatQuota(maximum, unit)}，以服务端新鲜读数为准。`}（invalid_input）`;
+    }
     // 不写「未执行」：核验组在 409 时远端注册可能已经做了。
     return `提交未完成：${error.existingSourceId ? `该凭据已对应来源 #${error.existingSourceId}，没有覆盖配置` : Object.hasOwn(REJECTION_TEXT, error.code) ? REJECTION_TEXT[error.code] : '后端拒绝了请求'}（${error.code}）`;
   }
@@ -435,6 +454,23 @@ export class PanelApp {
     return [field('daily_token_limit', '每日 Token 上界（空表示不设置）', policy.daily_token_limit === null ? '' : String(policy.daily_token_limit)), field('failure_threshold', '连续失败阈值', String(policy.failure_threshold)), field('reset_minute', '每日重置分钟（01:00 = 60）', String(policy.reset_minute)), field('utc_offset_minutes', '重置时区偏移分钟（UTC+8 = 480）', String(policy.utc_offset_minutes))];
   }
   openPolicy(draft) { this.confirm('setVolcanoPolicy', '火山来源每日策略', draft, {}, '仅改变火山来源策略，不改 GLM。未初始化时使用运行版本 0。', this.policyFields(draft.value.volcano.policy)); }
+  openRefill(scope) {
+    const state = this.age.snapshot, balance = state.balance, view = observations(this.age, this.now()).balanceViews.get(scope);
+    if (!view) throw new ActionError('账号范围已失效，请重新打开。');
+    const unit = freezeDraft('balanceUnit', balance.unit).value, unavailable = !usd(unit);
+    this.editor = {action: 'refillBalance', amountUnavailable: unavailable, balanceContext: Object.freeze({unit, owner_scope: scope})};
+    this.renderer.form(`补足${balanceOwnerLabel(scope)}余额`, [explain(BALANCE_EXPLANATION), explain(unavailable ? '美元换算暂不可用，金额和补足提交已禁用。' : '建议金额来自上次观察；服务端仍会重新读取。'), {...field('amount', '补足金额（USD）', balanceRefillPrefill(balance.policy, view, unit)), disabled: unavailable, maxLength: 353}], '确认提交', values => this.submit('refillBalance', null, {...values, owner_scope: scope}));
+    this.paint();
+  }
+  openBalancePolicy() {
+    const balance = this.age.snapshot.balance;
+    if (!balance.accounts.length) throw new ActionError('尚未配置余额账号。');
+    const draft = freezeDraft('balance', balance.policy), unit = freezeDraft('balanceUnit', balance.unit).value, unavailable = !usd(unit);
+    this.editor = {action: 'setBalancePolicy', draft, balanceContext: Object.freeze({unit})};
+    this.renderer.form('余额设置', [explain(BALANCE_EXPLANATION), ...(unavailable ? [explain('美元换算暂不可用，金额保留原值，仅可修改自动补足开关。')] : []), field('auto_refill', '自动补足', draft.value.auto_refill, 'checkbox'),
+      {...field('warn_below', '预警线（USD）', balanceDollarsFloor(draft.value.warn_below, unit)), disabled: unavailable, maxLength: 353}, {...field('refill_to', '补足目标（USD）', balanceDollarsFloor(draft.value.refill_to, unit)), disabled: unavailable, maxLength: 353}], '确认提交', values => this.submit('setBalancePolicy', draft, values));
+    this.paint();
+  }
   openSource(type) {
     this.secret?.clear(); this.lanes.invalidate('work'); this.editor = {action: 'createSource', sensitive: true};
     const fields = [explain('整个来源配置仅在本次提交中使用，不持久化到浏览器；隐藏页面会清除表单。'),
@@ -639,7 +675,7 @@ export function bootstrap(window) {
   // Step U10: 能力失败不回退旧接口，也不引入隐藏后台写者。
   if (instance) return instance;
   try {
-    if (['fetch', 'AbortController', 'structuredClone', 'TextEncoder', 'TextDecoder'].some(name => typeof window[name] !== 'function') || typeof String.prototype.isWellFormed !== 'function') throw new Error('required browser capability unavailable');
+    if (['fetch', 'AbortController', 'structuredClone', 'TextEncoder', 'TextDecoder', 'BigInt'].some(name => typeof window[name] !== 'function') || typeof String.prototype.isWellFormed !== 'function') throw new Error('required browser capability unavailable');
     instance = new PanelApp(window); instance.start(); return instance;
   } catch {
     try { instance?.destroy(); } catch { /* Continue to the static fail-closed screen. */ }

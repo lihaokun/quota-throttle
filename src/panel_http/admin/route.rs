@@ -33,6 +33,8 @@ pub(super) enum Route {
     NativeTokens(TokenOwnerScope, usize),
     RegisterToken,
     Usage,
+    RefillBalance,
+    SetBalancePolicy,
 }
 pub(super) fn id(s: &str) -> Result<i64, AdminFailure> {
     if s.is_empty() || s.starts_with('0') || !s.bytes().all(|b| b.is_ascii_digit()) {
@@ -93,6 +95,7 @@ pub(super) fn parse(
     let parts: Vec<_> = suffix.split('/').collect();
     let allow = match parts.as_slice() {
         ["sources"]
+        | ["balance", "refill"]
         | ["groups"]
         | ["memberships"]
         | ["tokens", "register"]
@@ -107,6 +110,7 @@ pub(super) fn parse(
         | ["tokens", _, "reveal"] => "POST",
         ["sources", _, "models"] => "GET, PUT",
         ["sources", _, "paused"]
+        | ["balance", "policy"]
         | ["sources", _, "volcano-policy"]
         | ["groups", _, "pin"]
         | ["tokens", _, "enabled"] => "PUT",
@@ -182,6 +186,8 @@ pub(super) fn parse(
             Route::NativeTokens(scope, page)
         }
         ("POST", ["usage", "query"]) => Route::Usage,
+        ("POST", ["balance", "refill"]) => Route::RefillBalance,
+        ("PUT", ["balance", "policy"]) => Route::SetBalancePolicy,
         _ => return Err(AdminFailure::Http(HttpErrorCode::Internal, None)),
     };
     Ok(result)

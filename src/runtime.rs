@@ -5,7 +5,9 @@ use crate::catalog::CatalogStore;
 use crate::newapi::transport::ManagementBudget;
 use crate::newapi::NewApiClient;
 use crate::panel_http::PanelServer;
-use crate::reconcile::worker::{token_service::TokenOwners, ReconcileWorker};
+use crate::reconcile::worker::{
+    balance::BALANCE_INTERVAL, token_service::TokenOwners, ReconcileWorker,
+};
 use std::fmt;
 use std::future::Future;
 use std::path::Path;
@@ -81,6 +83,18 @@ fn control<T>(
             Ok(None)
         }
     }
+}
+
+#[cfg(test)]
+pub(crate) async fn balance_test_owned_job<T, F>(
+    shutdown: watch::Receiver<bool>,
+    job: F,
+) -> RuntimeResult<Option<T>>
+where
+    T: Send + 'static,
+    F: Future<Output = T> + Send + 'static,
+{
+    owned_job(shutdown, job).await
 }
 fn repair_outcome<T>(result: crate::ledger::analytics::AnalyticsResult<T>) -> RuntimeResult<()> {
     use crate::catalog::ledger::LedgerError;
@@ -164,6 +178,43 @@ async fn maintenance(
         };
         repair_outcome(result)?;
         if !delay(&mut shutdown, MAINTENANCE_INTERVAL).await {
+            return Ok(());
+        }
+    }
+}
+
+async fn balance_loop(
+    worker: Arc<ReconcileWorker>,
+    shutdown: watch::Receiver<bool>,
+) -> RuntimeResult<()> {
+    balance_loop_jobs(
+        move || {
+            let current = worker.clone();
+            async move { current.balance_round().await }
+        },
+        shutdown,
+    )
+    .await
+}
+
+async fn balance_loop_jobs<F, R>(
+    mut round: F,
+    mut shutdown: watch::Receiver<bool>,
+) -> RuntimeResult<()>
+where
+    F: FnMut() -> R,
+    R: Future<Output = crate::catalog::control::ControlResult<()>> + Send + 'static,
+{
+    // Step B4: 首轮立即执行；独立余额轮结束后才等待，不积压tick。
+    loop {
+        if *shutdown.borrow() {
+            return Ok(());
+        }
+        let Some(result) = owned_job(shutdown.clone(), round()).await? else {
+            return Ok(());
+        };
+        control("balance", result)?;
+        if !delay(&mut shutdown, BALANCE_INTERVAL).await {
             return Ok(());
         }
     }
@@ -278,6 +329,7 @@ async fn start(
         shutdown.clone(),
     ));
     tasks.spawn(maintenance(worker.clone(), process, shutdown.clone()));
+    tasks.spawn(balance_loop(worker.clone(), shutdown.clone()));
     tasks.spawn(async move {
         panel
             .serve_ui(worker, loaded.ui, shutdown)

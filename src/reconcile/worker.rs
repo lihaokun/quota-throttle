@@ -20,6 +20,7 @@ use tokio::sync::{watch, Mutex as AsyncMutex, Notify, Semaphore};
 
 mod admin;
 mod analytics;
+pub(crate) mod balance;
 mod collection;
 mod management;
 pub(crate) mod panel;
@@ -84,6 +85,7 @@ pub struct ReconcileWorker {
     query_slots: Arc<Semaphore>,
     repair_cursor: AsyncMutex<Option<crate::catalog::ledger::AttributionCursor>>,
     token_owners: Option<token_service::TokenOwners>,
+    balance: balance::Balance,
 }
 #[derive(Debug, Default, Clone, Copy)]
 pub struct RoundReport {
@@ -204,6 +206,7 @@ impl ReconcileWorker {
         policy_config: Arc<Config>,
     ) -> ControlResult<Arc<Self>> {
         crate::catalog::glm_round::validate_config(&policy_config)?;
+        let balance = balance::Balance::new(store.balance_policy()?);
         Ok(Arc::new(Self {
             core: Mutex::new(Core {
                 input_epoch: 0,
@@ -241,6 +244,7 @@ impl ReconcileWorker {
             query_slots: Arc::new(Semaphore::new(1)),
             repair_cursor: AsyncMutex::new(None),
             token_owners: None,
+            balance,
         }))
     }
     fn mutate<T>(

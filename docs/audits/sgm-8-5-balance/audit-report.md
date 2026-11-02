@@ -1,6 +1,8 @@
 # SGM-8 第 5 批 B1：C2 独立审核
 
-> 最新进度：B2 C2意见已修正，专项复审及全量门禁通过（Rust803/0、Node60/0、浏览器full96/96），[修正记录](b2-c2-fix-review.md)随本地新提交交C2。下文与旧B2失败报告均为各自固定SHA的历史结论，不替代新提交复核。
+> 当前总入口（2026-11-03）：B3–B8已连续实施，用户取消模块间停点；[最终代码契约独审](final-contract-review.md)通过、未关闭生产问题0。F1已修并独立56例关闭；修后最后Node68/0/check:ui/full112/112、余额8/8、全部JS25/25通过。仅最终固定SHA完整Rust/C2汇总pending，**不宣称固定SHA C2/整批退出已完成**。见[实施汇总](b3-b8-implementation-review.md)、[F1修正](../../fixes/sgm8-balance-policy-raw-amount.md)、[处置](decisions.md)、[十节实施对照](expectations.md)。部署前确认保留，stable部署未变。
+
+> B2历史进度：C2意见修正后的专项复审及门禁曾通过（Rust803/0、Node60/0、浏览器full96/96），见[修正记录](b2-c2-fix-review.md)。下文与旧B2失败报告均为各自固定SHA的历史结论，不替代新提交复核。
 
 > 后续审核状态（2026-11-02）：**B2 提交 `9619729` 的 C2 暂不通过**，1 major、2 minor 测试证据缺口，四项错误变异逃过原14项测试。详见 [B2 C2 汇总](b2-c2-audit-report.md) 与 [PBT完整性专项](b2-c2-pbt-review.md)。下文保留 B1 的历史通过结论，不代表 B2 或整个第5批通过。
 

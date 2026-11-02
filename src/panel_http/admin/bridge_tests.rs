@@ -25,6 +25,67 @@ fn code(response: &Response) -> Value {
     serde_json::from_slice::<Value>(&response.body).unwrap()["error"].clone()
 }
 
+#[tokio::test(start_paused = true)]
+async fn balance_refill_handoff_uses_sixty_seconds_and_keeps_all_four_slots() {
+    drive(async {
+        let f = fixture(false);
+        let (client, mut supervisor) = Supervisor::new(f.worker.clone());
+        let started = Instant::now();
+        let mut waiters = Vec::new();
+        let mut pending = Vec::new();
+        for _ in 0..4 {
+            let client = client.clone();
+            waiters.push(tokio::spawn(async move {
+                client
+                    .admit(
+                        AdminRequest::RefillBalance {
+                            scope: crate::newapi::tokens::TokenOwnerScope::Issuer,
+                            amount: 1,
+                        },
+                        started,
+                        started + Duration::from_secs(75),
+                    )
+                    .await
+            }));
+            pending.push(supervisor.receiver.recv().await.unwrap());
+        }
+        assert!(pending
+            .iter()
+            .all(|p| p.deadline == started + Duration::from_secs(60)));
+        tokio::time::advance(Duration::from_secs(50)).await;
+        assert!(waiters.iter().all(|w| !w.is_finished()));
+        assert_eq!(client.slots.available_permits(), 0);
+        assert_eq!(code(&begin(&client, 99).await.unwrap()), "queue_full");
+        tokio::time::advance(Duration::from_secs(10)).await;
+        for waiter in waiters {
+            assert_eq!(code(&waiter.await.unwrap()), "result_unconfirmed");
+        }
+        assert_eq!(client.slots.available_permits(), 0);
+        drop(pending);
+        assert_eq!(client.slots.available_permits(), 4);
+
+        // 慢头+body已经占用13s，原连接截止减5s比业务+60s先到。
+        let entered = Instant::now();
+        let call = tokio::spawn(async move {
+            client
+                .admit(
+                    AdminRequest::RefillBalance {
+                        scope: crate::newapi::tokens::TokenOwnerScope::Issuer,
+                        amount: 1,
+                    },
+                    entered,
+                    entered - Duration::from_secs(13) + Duration::from_secs(75),
+                )
+                .await
+        });
+        let pending = supervisor.receiver.recv().await.unwrap();
+        assert_eq!(pending.deadline, entered + Duration::from_secs(57));
+        drop(pending);
+        assert_eq!(code(&call.await.unwrap()), "internal");
+    })
+    .await;
+}
+
 #[tokio::test]
 async fn h2_completed_jobs_keep_all_four_slots_until_supervisor_consumes_result() {
     let f = fixture(false);

@@ -1,4 +1,4 @@
-import { ENUMS as E, LIMITS as L, VERSIONS as V } from './contract.mjs';
+import { ENUMS as E, LIMITS as L, VERSIONS as V, WIRE_FIELDS } from './contract.mjs';
 
 export class ProtocolError extends Error {
   constructor() { super('响应不兼容，请刷新界面或检查服务版本。'); this.name = 'ProtocolError'; }
@@ -105,7 +105,32 @@ function assessment(value) {
   return a;
 }
 const glm = record('glm', { cycle_id: nullable(cycle), completed_at_ms: nullable(integer), sources: array(quota, L.sources), groups: array(assessment, L.groups) });
-const stateFields = record('state', { schema_version: version('state'), captured_at_ms: integer, backend_ready: boolean, catalog, glm });
+// B7: 新余额族的字段白名单来自生成契约；结构通过后再检查跨字段关系。
+function strictRecord(name, fields) {
+  const validate = record(name, fields);
+  return value => { const out = validate(value); requireThat(Object.keys(value).every(key => WIRE_FIELDS[name].includes(key))); return out; };
+}
+const balanceAmount = value => integer(value, 1, L.balanceCap);
+const balancePolicyFields = strictRecord('balancePolicy', { revision, auto_refill: boolean, warn_below: revision, refill_to: balanceAmount });
+function balancePolicy(value) { const p = balancePolicyFields(value); requireThat(p.warn_below < p.refill_to); return p; }
+const quotaUnit = strictRecord('quotaUnit', {
+  quota_per_unit: value => { requireThat(typeof value === 'number' && Number.isFinite(value) && value > 0); return value; },
+  display_type: value => { string(value); requireThat(/^[A-Za-z0-9]{1,16}$/.test(value)); return value; },
+});
+const balanceRefillFields = strictRecord('balanceRefill', { at_ms: integer, source: enumeration('refillSource'), outcome: enumeration('refillOutcome'), amount: nullable(balanceAmount), error_code: enumeration('controlError') });
+function balanceRefill(value) {
+  const r = balanceRefillFields(value);
+  requireThat(r.outcome === 'refilled' ? r.amount !== null && r.error_code === null : r.error_code !== null && (r.outcome === 'not_sent' || r.amount !== null));
+  requireThat(r.outcome !== 'uncertain' || r.error_code === 'transport_unknown');
+  return r;
+}
+const balanceAccount = strictRecord('balanceAccount', {
+  owner_scope: enumeration('ownerScope'), user_id: id, state: enumeration('balanceState'), quota: nullable(signed),
+  observed_at_ms: nullable(integer), unknown_reason: enumeration('controlError'), locked_until_ms: nullable(integer),
+  backoff_until_ms: nullable(integer), last_refill: nullable(balanceRefill),
+});
+const balance = strictRecord('balance', { policy: balancePolicy, unit: nullable(quotaUnit), accounts: array(balanceAccount, 2) });
+const stateFields = record('state', { schema_version: version('state'), captured_at_ms: integer, backend_ready: boolean, catalog, glm, balance });
 
 // Step U2: 只投影白名单字段；未知或私有字段不进入界面状态，不引入通用 schema 引擎。
 export function validateState(value) {
@@ -122,6 +147,19 @@ export function validateState(value) {
   }
   for (const q of state.glm.sources) requireThat(sources.get(q.source_id)?.type === 'glm');
   for (const a of state.glm.groups) requireThat(groups.get(a.group_id)?.type === 'glm');
+  const accounts = state.balance.accounts;
+  unique(accounts, a => a.owner_scope); unique(accounts, a => a.user_id);
+  requireThat(accounts.length < 2 || accounts[0].owner_scope === 'issuer');
+  for (const a of accounts) {
+    requireThat((a.quota === null) === (a.observed_at_ms === null));
+    requireThat(a.unknown_reason === null || a.state === 'unknown');
+    requireThat([a.locked_until_ms, a.backoff_until_ms].every(t => t === null || t > state.captured_at_ms));
+    if (a.state !== 'unknown') {
+      const age = state.captured_at_ms - a.observed_at_ms;
+      requireThat(a.quota !== null && a.observed_at_ms !== null && age >= 0 && age <= 180000);
+      requireThat(a.state === (a.quota <= 0 ? 'exhausted' : a.quota < state.balance.policy.warn_below ? 'low' : 'sufficient'));
+    }
+  }
   return state;
 }
 const configFields = record('config', { schema_version: version('config'), dry_run: boolean, public_api_base_url: nullable(string) });
@@ -231,6 +269,8 @@ const groupReferences = record('groupReferences', {
 const reveal = record('reveal', { schema_version: version('reveal'), token_id: id, key: v => { string(v); requireThat(/^sk-[A-Za-z0-9]{16,128}$/.test(v)); return v; } });
 const httpError = record('httpError', { schema_version: version('httpError'), error: enumeration('httpError') });
 const adminError = record('adminError', { schema_version: version('adminError'), error: enumeration('adminError'), existing_source_id: nullable(id) });
+const balanceRefilled = strictRecord('balanceRefilled', { schema_version: version('balanceRefilled'), owner_scope: enumeration('ownerScope'), user_id: id, before: signed, amount: balanceAmount, after: nullable(signed) });
+const balancePolicySaved = strictRecord('balancePolicySaved', { schema_version: version('balancePolicySaved'), revision, auto_refill: boolean, warn_below: revision, refill_to: balanceAmount });
 export function validateError(value) {
   const e = Object.hasOwn(value ?? {}, 'existing_source_id') ? adminError(value) : httpError(value);
   if (Object.hasOwn(e, 'existing_source_id')) requireThat((e.error === 'duplicate_source') === (e.existing_source_id !== null));
@@ -252,6 +292,16 @@ export function validateReply(family, value, query = {}) {
     case 'groupReferences': { const v = groupReferences(value); requireThat(v.group_id === query.id); return v; }
     case 'reveal': { const v = reveal(value); requireThat(v.token_id === query.id); return v; }
     case 'usageSnapshot': return validateUsage(value, query);
+    case 'balanceRefilled': {
+      const v = balanceRefilled(value);
+      requireThat(v.owner_scope === query.owner_scope && v.amount === query.amount); return v;
+    }
+    case 'balancePolicySaved': {
+      const v = balancePolicySaved(value);
+      requireThat(v.warn_below < v.refill_to && ['auto_refill', 'warn_below', 'refill_to'].every(key => v[key] === query[key]));
+      requireThat(Number.isSafeInteger(query.expected_revision) && query.expected_revision >= 1 && (v.revision === query.expected_revision || query.expected_revision < L.jsonSafe && v.revision === query.expected_revision + 1));
+      return v;
+    }
     default: throw new ProtocolError();
   }
 }
@@ -301,10 +351,19 @@ export class SnapshotAge {
   age(now) { const elapsed = now - this.received; return Number.isFinite(elapsed) && elapsed >= 0 ? this.baseAge + elapsed : Infinity; }
   fresh(now) { if (this.age(now) >= 10000) this.expired = true; return this.snapshot !== null && !this.expired; }
 }
+export function balanceObservations(snapshot, observation) {
+  return new Map((snapshot?.balance.accounts ?? []).map(account => {
+    const age = account.observed_at_ms === null ? null : snapshot.captured_at_ms - account.observed_at_ms + observation.age;
+    const reason = !observation.fresh ? 'snapshot' : account.unknown_reason !== null ? account.unknown_reason : age === null ? 'missing' : age < 0 ? 'clock' : age > 180000 || !Number.isFinite(age) ? 'expired' : account.state === 'unknown' ? 'unknown' : null;
+    const fresh = reason === null;
+    return [account.owner_scope, { ...account, effective_state: fresh ? account.state : 'unknown', reason, fresh }];
+  }));
+}
 export function observations(age, now) {
   const state = age.snapshot, fresh = age.fresh(now), elapsed = age.age(now);
   const sourceViews = new Map(), groupViews = new Map();
-  if (!state) return { fresh: false, age: elapsed, sourceViews, groupViews };
+  const balanceViews = balanceObservations(state, {fresh, age: elapsed});
+  if (!state) return { fresh: false, age: elapsed, sourceViews, groupViews, balanceViews };
   const capture = state.captured_at_ms;
   const timeCurrent = time => fresh && time !== null && time <= capture && capture - time + elapsed <= 30000;
   const quotas = new Map(state.glm.sources.map(q => [q.source_id, q]));
@@ -337,7 +396,7 @@ export function observations(age, now) {
     }
     groupViews.set(g.group_id, { current, imminent_members: current ? g.imminent_members : null, pin_release: current ? g.pin_release : null });
   }
-  return { fresh, age: elapsed, sourceViews, groupViews };
+  return { fresh, age: elapsed, sourceViews, groupViews, balanceViews };
 }
 
 export function modelLabel(value) {
@@ -526,14 +585,57 @@ export class PendingOperations {
 const idValue = id;
 
 export function freezeDraft(entity, recordValue) { return freeze({ entity, value: structuredClone(recordValue) }); }
+export const BALANCE_EXPLANATION = '所有组的访问 Key 共用这个账号的 new-api 内部余额；这里的设置对所有组及已配置的两个账号生效，与智谱 / 火山套餐额度无关。预警线应远大于约 10 分钟的消耗。';
+export const balanceOwnerLabel = scope => scope === 'issuer' ? '签发账号' : '旧管理员';
+export function usd(unit) { return unit !== null && unit?.display_type === 'USD' && Number.isFinite(unit.quota_per_unit) && unit.quota_per_unit > 0; }
+function decimalRatio(number) {
+  const [coefficient, exponent = '0'] = number.toString().split('e'), [whole, fraction = ''] = coefficient.split('.');
+  const shift = Number(exponent) - fraction.length, digits = BigInt(whole + fraction), power = BigInt(10) ** BigInt(Math.abs(shift));
+  return shift >= 0 ? {p: digits * power, q: BigInt(1)} : {p: digits, q: power};
+}
+export function quotaFromDollars(text, unit) {
+  ensureAction(usd(unit), '美元换算暂不可用，请等待有效 USD 单位后重新打开。');
+  ensureAction(typeof text === 'string' && text.length <= 353 && /^(0|[1-9][0-9]{0,349})(\.[0-9]{1,2})?$/.test(text), '金额须为非负十进制数字，最多两位小数、350 位整数。');
+  const [whole, fraction = ''] = text.split('.'), cents = BigInt(whole) * BigInt(100) + BigInt(fraction.padEnd(2, '0'));
+  const {p, q} = decimalRatio(unit.quota_per_unit), numerator = cents * p, denominator = BigInt(100) * q;
+  const quota = (BigInt(2) * numerator + denominator) / (BigInt(2) * denominator);
+  ensureAction(quota >= BigInt(1) && quota <= BigInt(L.balanceCap), '换算后的额度必须大于零且不超过单次补足上限。');
+  return Number(quota);
+}
+const centsText = cents => `${cents / BigInt(100)}.${(cents % BigInt(100)).toString().padStart(2, '0')}`;
+export function formatQuota(quota, unit) {
+  if (quota === null) return '未知';
+  if (!usd(unit)) return `${quota} 原始额度`;
+  const {p, q} = decimalRatio(unit.quota_per_unit), amount = BigInt(quota < 0 ? -quota : quota) * BigInt(100) * q;
+  const cents = (BigInt(2) * amount + p) / (BigInt(2) * p), [whole, fraction] = centsText(cents).split('.');
+  return `${quota < 0 ? '-' : ''}$${whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}.${fraction}`;
+}
+export function balanceDollarsFloor(quota, unit) {
+  if (!usd(unit)) return '';
+  const {p, q} = decimalRatio(unit.quota_per_unit), cents = BigInt(quota) * BigInt(100) * q / p;
+  return cents > BigInt(0) ? centsText(cents) : '';
+}
+export function balanceRefillPrefill(policy, account, unit) {
+  if (!account?.fresh || account.quota === null || !usd(unit)) return '';
+  const needed = BigInt(policy.refill_to) - BigInt(account.quota), cap = BigInt(L.balanceCap);
+  return balanceDollarsFloor(Number(needed < BigInt(0) ? BigInt(0) : needed > cap ? cap : needed), unit);
+}
+export function balanceMaximum(account) {
+  if (!account?.fresh || account.quota === null) return null;
+  const remaining = BigInt(L.balanceCap) - BigInt(account.quota), cap = BigInt(L.balanceCap);
+  return Number(remaining < BigInt(0) ? BigInt(0) : remaining > cap ? cap : remaining);
+}
 function currentEntity(draft, state, action) {
+  ensureAction(draft && ['source', 'group', 'membership', 'balance'].includes(draft.entity), '请选择正确的编辑对象。');
   const original = draft.value;
   let latest;
   if (draft.entity === 'source') latest = state.catalog.sources.find(p => p.source.source_id === original.source.source_id);
   if (draft.entity === 'group') latest = state.catalog.groups.find(p => p.group.group_id === original.group.group_id);
   if (draft.entity === 'membership') latest = state.catalog.memberships.find(p => p.membership.membership_id === original.membership.membership_id);
+  if (draft.entity === 'balance') latest = state.balance.policy;
   ensureAction(latest !== undefined, '对象已不在当前目录，请重新载入。');
-  const stamp = p => draft.entity === 'source' ? [p.source.config_revision, ...(['clearError', 'setVolcanoPolicy'].includes(action) ? [p.volcano?.runtime?.revision ?? 0] : [])] : draft.entity === 'group' ? [p.group.revision, ...(action === 'setGroupPin' ? [p.policy_revision] : [])] : [p.control_revision];
+  const stamp = p => draft.entity === 'balance' ? [p.revision] : draft.entity === 'source' ? [p.source.config_revision, ...(['clearError', 'setVolcanoPolicy'].includes(action) ? [p.volcano?.runtime?.revision ?? 0] : [])] : draft.entity === 'group' ? [p.group.revision, ...(action === 'setGroupPin' ? [p.policy_revision] : [])] : [p.control_revision];
+  if (draft.entity === 'balance') ensureAction(Number.isSafeInteger(original.revision) && original.revision >= 1, '余额策略版本无效，请重新打开。');
   ensureAction(JSON.stringify(stamp(latest)) === JSON.stringify(stamp(original)), '对象已有新版本，请重新载入并确认，不会自动重发。');
   return original;
 }
@@ -545,11 +647,32 @@ function parsePolicy(fields) {
     failure_threshold: decimal(fields.failure_threshold, 1, L.failureThreshold), reset_minute: decimal(fields.reset_minute, 0, L.resetMinute),
     utc_offset_minutes: decimal(fields.utc_offset_minutes, L.offsetMin, L.offsetMax) });
 }
-export function buildAction(action, draft, fields, state, op = null) {
+export function buildAction(action, draft, fields, state, op = null, balanceContext = null) {
   // Step U6: 固定动作白名单和分类版本；不提供任意 priority/status/owner-user 字段。
   const base = { schema_version: 1 }, operationBase = expected_revision => ({ ...base, operation_id: operationId(op), expected_revision: revision(expected_revision) });
   let body, targetId = null, kind = null;
-  if (action === 'createSource') {
+  if (['refillBalance', 'setBalancePolicy'].includes(action)) {
+    ensureAction(balanceContext && balanceContext.views instanceof Map && Object.hasOwn(balanceContext, 'unit'), '余额确认上下文已失效，请重新打开。');
+    const unit = balanceContext.unit, currentUnit = state.balance.unit;
+    ensureAction(unit === null ? currentUnit === null : currentUnit !== null && unit.display_type === currentUnit.display_type && unit.quota_per_unit === currentUnit.quota_per_unit, '美元换算已变化，请重新打开并确认。');
+    if (action === 'refillBalance') {
+      const scope = balanceContext.owner_scope;
+      ensureAction(E.ownerScope.includes(scope) && fields.owner_scope === scope && state.balance.accounts.some(a => a.owner_scope === scope), '账号范围已失效，请重新打开。');
+      const amount = quotaFromDollars(fields.amount, unit), maximum = balanceMaximum(balanceContext.views.get(scope));
+      ensureAction(maximum === null || amount <= maximum, '金额超过按上次观察计算的近似上限，请重新确认。');
+      body = {...base, owner_scope: scope, amount};
+    } else {
+      ensureAction(draft?.entity === 'balance', '请选择余额设置。');
+      const original = currentEntity(draft, state, action);
+      ensureAction(typeof fields.auto_refill === 'boolean', '请选择自动补足开关。');
+      // 两位小数预填可能丢失raw精度；未改文字（含不足一分时的空串）保留冻结原值。
+      const policyAmount = key => !usd(unit) || fields[key] === balanceDollarsFloor(original[key], unit) ? original[key] : quotaFromDollars(fields[key], unit);
+      const warn = policyAmount('warn_below'), target = policyAmount('refill_to');
+      ensureAction(warn > 0 && warn < target && target <= L.balanceCap, '预警线必须大于零且小于补足目标，目标不得超过上限。');
+      body = {...base, expected_revision: original.revision, auto_refill: fields.auto_refill, warn_below: warn, refill_to: target};
+    }
+    body = freeze(body);
+  } else if (action === 'createSource') {
     const type = enumeration('sourceKind')(fields.type), selection = enumeration('modelSelection')(fields.model_selection);
     const upstream = { channel_type: decimal(fields.channel_type, 1), base_url: string(fields.base_url),
       model_discovery: fields.models_url === '' ? null : { url: string(fields.models_url), auth: enumeration('discoveryAuth')(fields.discovery_auth) } };

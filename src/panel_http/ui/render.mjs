@@ -1,4 +1,4 @@
-import { formatTime, matchNative, safeAdd } from './core.mjs';
+import { formatTime, matchNative, safeAdd, formatQuota, balanceOwnerLabel, BALANCE_EXPLANATION } from './core.mjs';
 import { barModel } from './charts.mjs';
 
 export function node(document, tag, text = null, className = null) {
@@ -18,6 +18,32 @@ const left = ms => {
   return d ? `${d} 天 ${h} 小时后重置` : h ? `${h} 小时 ${m} 分后重置` : `${m} 分后重置`;
 };
 const ago = ms => !Number.isFinite(ms) ? '未采样' : ms < 60000 ? `采样 ${Math.max(0, Math.floor(ms / 1000))} 秒前` : ms < 3600000 ? `采样 ${Math.floor(ms / 60000)} 分钟前` : `采样 ${Math.floor(ms / 3600000)} 小时前`;
+const balanceErrors = {
+  invalid_input: '输入不合法', not_found: '对象不存在', revision_conflict: '对象或后端状态已变化', idempotency_conflict: '操作 ID 冲突',
+  queue_full: '后端正忙', not_ready: '后端未就绪或请求截止', binding_drift: '账号身份不一致', ambiguous_create: '创建结果不确定',
+  auth_failed: 'new-api 账号认证失败', remote_rejected: 'new-api 拒绝了请求', invalid_response: 'new-api 返回异常',
+  rate_limited: 'new-api 管理接口限流', transport_unknown: '传输结果不确定', storage: '目录存储异常',
+};
+const balanceError = code => `${balanceErrors[code]}（${code}）`;
+const refillOutcomes = {refilled: '已补足', not_sent: '未发送', rejected: '明确拒绝', uncertain: '结果不确定'};
+function balanceStatus(account, policy) {
+  const state = account.effective_state;
+  if (state === 'unknown') {
+    const reason = {snapshot: '快照过期，以下是上次观察', missing: '尚未读到', clock: '读取时间异常', expired: '读数已过期', unknown: '读取结果未知'}[account.reason] ?? balanceError(account.reason);
+    return `内部余额未知（${reason}）`;
+  }
+  if (state === 'sufficient') return '内部余额充足';
+  const causes = [];
+  if (!policy.auto_refill) causes.push('自动补足已关闭');
+  if (account.locked_until_ms !== null) causes.push('账号处于封锁期');
+  if (account.backoff_until_ms !== null) causes.push('自动补足退避中');
+  if (account.last_refill && account.last_refill.outcome !== 'refilled') causes.push(`上次补足${refillOutcomes[account.last_refill.outcome]}：${balanceError(account.last_refill.error_code)}`);
+  if (!causes.length) causes.push('等待下一轮自动补足');
+  return `${state === 'low' ? '内部余额偏低' : '内部余额已用完，转发会被 new-api 挡住，与智谱 / 火山额度无关'}；${causes.join('；')}`;
+}
+const balanceColor = state => state === 'sufficient' ? 'ok' : state === 'exhausted' ? 'bad' : 'warn';
+const balanceStamp = vm => [vm.snapshot?.balance, [...vm.observation.balanceViews.values()].map(a => [a.owner_scope, a.effective_state, a.reason, a.fresh]), vm.readOnly,
+  vm.snapshot?.balance.accounts.some(a => a.locked_until_ms !== null || a.backoff_until_ms !== null) ? vm.snapshot.captured_at_ms : null];
 
 export function createRenderer(document, handlers) {
   const byId = id => document.getElementById(id);
@@ -436,17 +462,45 @@ export function createRenderer(document, handlers) {
       const m = snap.catalog.memberships.find(x => x.membership.membership_id === p.selected_member_id);
       return [p.group.group_id, p.group.name, m ? snap.catalog.sources.find(s => s.source.source_id === m.membership.source_id)?.source.name ?? null : null, p.pinned_member_id !== null];
     });
-    const stamp = JSON.stringify([!!snap, snap?.backend_ready, vm.observation.fresh, groupsState, vm.config?.public_api_base_url ?? null, vm.config?.dry_run ?? null]);
+    const stamp = JSON.stringify([!!snap, snap?.backend_ready, vm.observation.fresh, groupsState, vm.config?.public_api_base_url ?? null, vm.config?.dry_run ?? null, balanceStamp(vm)]);
     guard(root, stamp, root => {
       const chip = (...children) => { const c = text('div', null, 'chip'); c.append(...children); return c; };
       const ok = snap && vm.observation.fresh && snap.backend_ready, dot = span(null, `dot ${!snap ? '' : ok ? 'ok' : 'bad'}`);
       root.append(chip(dot, span('后端', 'k'), span(!snap ? '连接中' : !vm.observation.fresh ? '快照过期' : snap.backend_ready ? '就绪' : '未就绪', 'v')));
+      const balances = [...vm.observation.balanceViews.values()], order = ['exhausted', 'unknown', 'low', 'sufficient'];
+      const worst = order.find(state => balances.some(a => a.effective_state === state));
+      if (worst) {
+        const causes = balances.filter(a => a.effective_state === worst).map(a => `${balanceOwnerLabel(a.owner_scope)}：${balanceStatus(a, snap.balance.policy)}`);
+        const balanceChip = chip(span(null, `dot ${balanceColor(worst)}`), span(causes.join('；'), 'v')); balanceChip.dataset.balanceChip = 'true'; root.append(balanceChip);
+      }
       for (const [, name, selected, pinned] of groupsState) root.append(chip(span(`当前组 ${name}`, 'k'), span(`${selected ?? '无选择'}${pinned ? ' 📌' : ''}`, selected ? 'v ok' : 'v')));
       if (vm.config?.public_api_base_url) {
         const address = `${vm.config.public_api_base_url}/v1`, copy = button(address, () => handlers.copyAddress(address), false, 'chip:copy', 'copy'); copy.title = '点击复制';
         root.append(chip(span('客户端连接', 'k'), copy));
       }
       if (vm.config?.dry_run) { const c = chip(span('dry run', 'v'), span('写入与敏感复制已禁用', 'k')); c.classList.add('warn'); root.append(c); }
+    });
+  }
+  function balanceStrip(vm) {
+    let root = byId('balance-strip');
+    if (!root) { root = text('section', null, 'card'); root.id = 'balance-strip'; root.setAttribute('aria-label', '内部余额'); byId('notice').before(root); }
+    root.hidden = !vm.snapshot?.balance.accounts.length;
+    guard(root, JSON.stringify(balanceStamp(vm)), root => {
+      if (root.hidden) return;
+      const balance = vm.snapshot.balance, captured = vm.snapshot.captured_at_ms;
+      root.append(text('h2', 'new-api 内部余额'), text('p', BALANCE_EXPLANATION, 'note'));
+      root.append(toolbar(action('setBalancePolicy', '余额设置', null, vm.readOnly, 'pbtn'), span(`策略修订号 ${balance.policy.revision} · 自动补足${balance.policy.auto_refill ? '已开启' : '已关闭'}`, 'note')));
+      root.append(text('p', `预警线 ${formatQuota(balance.policy.warn_below, balance.unit)} · 补足目标 ${formatQuota(balance.policy.refill_to, balance.unit)}`, 'note'));
+      for (const account of vm.observation.balanceViews.values()) {
+        const row = text('article'), label = balanceOwnerLabel(account.owner_scope), status = text('p'); row.dataset.balanceScope = account.owner_scope;
+        row.append(text('h3', `${label} · user_id ${account.user_id}`));
+        status.append(span(null, `dot ${balanceColor(account.effective_state)}`), span(balanceStatus(account, balance.policy))); row.append(status);
+        row.append(text('p', `${account.fresh ? '余额' : '上次观察金额'}：${formatQuota(account.quota, balance.unit)} · 读取时间：${account.observed_at_ms === null ? '尚未读到' : formatTime(account.observed_at_ms, 'ms')}`));
+        const last = account.last_refill;
+        row.append(text('p', last ? `上次补足：${last.source === 'auto' ? '自动' : '手动'} · ${refillOutcomes[last.outcome]} · 尝试金额 ${formatQuota(last.amount, balance.unit)}${last.error_code === null ? '' : ` · ${balanceError(last.error_code)}`} · ${formatTime(last.at_ms, 'ms')}` : '上次补足：无记录', 'note'));
+        for (const [field, title] of [['locked_until_ms', '封锁'], ['backoff_until_ms', '自动退避']]) if (account[field] !== null) row.append(text('p', `${title}：采样时约剩 ${Math.ceil((account[field] - captured) / 1000)} 秒`, 'note'));
+        row.append(toolbar(action('refillBalance', `补足${label}余额`, account.owner_scope, vm.readOnly, 'pbtn'))); root.append(row);
+      }
     });
   }
   function operations(vm) {
@@ -489,6 +543,7 @@ export function createRenderer(document, handlers) {
     const notices = [vm.notice ? ['ban ban-info', vm.notice] : null, vm.config?.dry_run ? ['ban ban-warn', 'Dry run：写入与敏感复制已禁用。'] : null].filter(Boolean);
     guard(byId('notice'), JSON.stringify(notices), root => { for (const [cls, message] of notices) root.append(text('div', message, cls)); });
     chips(vm);
+    balanceStrip(vm);
     if (vm.page === 'sources') sources(vm); if (vm.page === 'groups') groups(vm);
     if (vm.operationsOpen) operations(vm);
     updateLive(vm);
@@ -509,6 +564,8 @@ export function createRenderer(document, handlers) {
       if (field.type === 'select') for (const [value, labelText] of field.options) { const option = text('option', labelText); option.value = value; input.append(option); }
       if (field.type === 'checkbox') input.checked = field.value === true; else input.value = field.value ?? '';
       if (field.readOnly) input.readOnly = true;
+      if (field.disabled) input.disabled = true;
+      if (field.maxLength) input.maxLength = field.maxLength;
       if (field.required) input.required = true;
       input.addEventListener('change', () => onChange?.(field.name, input.value));
       inputs.set(field.name, input); label.append(input); f.append(label);

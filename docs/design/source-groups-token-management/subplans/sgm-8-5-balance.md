@@ -1,6 +1,6 @@
 # 细化设计 — SGM-8 / 第 5 批：签发账号内部余额
 
-> 状态：**细化稿 v3，C1 完成，进入逐模块实现**（2026-11-02）：独立复审剩余 blocker/major/minor 均 0，Step0 文本独立核对通过；用户已确认 I10 及 D1 的 60/70/75 配套。[最终报告](../../../audits/sgm-8-5-balance/c1-v3-independent-review.md)、历史及处置见 §10。实现测试与本地提交后停 C2，未获部署许可。
+> 状态（2026-11-03）：**v3/C1已确认，B1–B8已实施，最终代码契约独审通过、未关闭生产问题0。** F1已修复并独立56例关闭；修后最后Node68/0、check:ui、full浏览器112/112、余额8/8及全部JS25/25变异通过。仅最终固定SHA完整Rust/C2汇总仍pending。用户最新授权B3–B8连续完成，取消逐模块中间停点，最终统一交付；部署确认保留。证据时点见§10.11、[实施汇总](../../../audits/sgm-8-5-balance/b3-b8-implementation-review.md)、[最终代码独审](../../../audits/sgm-8-5-balance/final-contract-review.md)。代码独审不代替固定SHA C2。
 > 架构依据：`sgm-8-cleanup.md` v6 §2.9（2026-11-01 用户确认；§4.4 第 1 项三轮审查后通过）、§2.6 I5 / I8 / I9 / I10、§6 第 1b 步。
 > 本稿对 §2.9 的细化与偏差见 §1 末尾。所有 file:line 以提交 `7e5cf97` 为准。
 
@@ -12,7 +12,7 @@
 | B2 | new-api调用：有界准入/认证等待、观测资料、换算信息、add_quota | `newapi/transport.rs`、`newapi/tokens.rs`、`newapi/users.rs`（新） |
 | B3 | 余额槽位、观测轮、补足函数（7 步）、自动补足、改设置、快照视图 | `reconcile/worker/balance.rs`（新）、`reconcile/worker.rs`、`reconcile/worker/token_service.rs` |
 | B4 | 独立后台任务 `balance_loop` | `runtime.rs` |
-| B5 | 两个同步写路由：`POST /balance/refill`、`PUT /balance/policy`；路由截止传给 worker；补足路由超时链配套（待定项） | `panel_http.rs`、`panel_http/admin/{route,input,bridge,dispatch,output}.rs` |
+| B5 | 两个同步写路由：`POST /balance/refill`、`PUT /balance/policy`；路由截止传给 worker；已批准60/70/75配套 | `panel_http.rs`、`panel_http/admin/{route,input,bridge,dispatch,output}.rs` |
 | B6 | 快照 v2：新增根字段 `balance` | `reconcile/worker/panel.rs`、`panel_http/tests.rs`、三份 schema |
 | B7 | 前端：契约、校验、两个动作、余额栏、状态栏 chip | `panel_http/ui/{contract,core,client,app,render}.mjs`、`scripts/contract_audit/sgm6_b_contract.mjs` |
 | B8 | 文档与探针：更正 CLAUDE.md、rc.20 `add_quota` 探针 | `CLAUDE.md`、`scripts/probes/newapi_balance_probe.py`（新） |
@@ -29,7 +29,7 @@
 
 **C1 回到架构原文**：换算不可用时禁用金额输入，只展示原始额度（F-M1）；不确定补足由 HTTP 层返回 504 `result_unconfirmed`（B-m3），不新增偏差。**D1 已确认**：用户提出「加大预算到 60s」后，批准 §5.6 仅补足路由的 60s 业务 / 70s 客户端 / 75s 连接配套，架构 §2.9 已同步；原「仅改措辞、保留现有时限」建议未采纳。
 
-**本稿的确认与检查点**：用户已确认 v1/I10/D1，C1 完成；2026-11-02 改为 subagent 独立审核，无须等 Claude，原 Claude 报告仍作历史依据。现在按 workflow 逐模块实现和测试；本地提交后停 C2，在该 SHA 独立审查代码与测试、通过才推送；PR #5 CI 全绿后停 C3，取得部署确认才部署。fermat 首轮原生写仍必须明确确认。本轮更换审查方式不取消三个停点。
+**本稿的确认与检查点（最新用户覆盖）**：v1/I10/D1与C1均已完成，已改为subagent独立审核。用户随后授权B3–B8一次性连续完成，取消逐模块中间停点；本批实现、修正、验证和独审连续收敛后统一交付，不把旧§10历史停点作为再次等待的依据。最终固定SHA审核/门禁与部署前明确确认仍需完成，PR #5范围不变；本机及远端首轮原生写没有提前获部署许可。
 
 ## 2. 关键事实与复用点
 
@@ -406,7 +406,7 @@ T-B10 增加有界时钟测试：在原40s之后、60s之前完成的补足得�
 **`balanceObservations(snapshot, observation) -> private view`**：每次既有1s tick调用paint时，在core的observations中计算余额投影。对各账号，展示年龄=`captured_at_ms-observed_at_ms+observation.age`（该age已含保守服务端/客户端延迟）；负年龄、严格>180000ms、根快照不fresh或原账号已unknown，都只降为unknown，不能把后端unknown本地升级。保留原quota/时间为历史，输出effective_state/reason/fresh，不改原wire。chip、余额栏、预填、近似上限与错误提示共用此投影；渲染戳纳入effective状态/原因/新鲜度，避免只依赖根fresh。无需逐毫秒重建DOM，只有投影类别变化才触发guard重绘。论证：所有使用点以同一保守年龄降级，179999/180000有效、180001未知，根快照仍fresh也不能保留绿点。
 
 **`currentEntity` / `buildAction`**：签名追加私有可选第六参数balanceContext（其它动作不使用）；两个余额动作由app.submit传入本次balanceObservations及冻结换算上下文，缺失为ActionError。设置动作先ensureAction(draft.entity==='balance')；currentEntity独立比较policy.revision，不落入control_revision。refillBalance校验范围，按投影新鲜度作可选近似金额预校验，生成原DTO、kind=null；setBalancePolicy生成原expected_revision及设置、kind=null。此context不进入HTTP请求或wire。
-金额可输入时用上述精确换算；换算不可用时设置动作只读取checkbox，warn_below/refill_to从冻结策略原样带回，忽略禁用文本。打开时冻结换算上下文，提交时比例变化则ActionError重新确认。最后检查设置不等式。金额近似预校验须由caller传入当前balanceObservations的新鲜性，不能直接用wire中的旧state；读数投影未知时跳过近似上限，仍由后端新鲜读取决定。论证：版本戳防旧覆盖，单位缺失不改金额，所有用户校验先于发送。
+金额可输入时，对设置中的每个金额字段分别比较用户文本与冻结原始值对应的原预填文本：未编辑（包括原值小于一美分导致的空初值）保留冻结raw，只有修改字段才用上述精确换算，避免仅改开关或no-op时悄悄改变合法的非美分网格额度。换算不可用时设置动作只读取checkbox，warn_below/refill_to从冻结策略原样带回，忽略禁用文本。打开时冻结换算上下文，提交时比例变化则ActionError重新确认。最后检查设置不等式。金额近似预校验须由caller传入当前balanceObservations的新鲜性，不能直接用wire中的旧state；读数投影未知时跳过近似上限，仍由后端新鲜读取决定。论证：版本戳防旧覆盖，未编辑/单位缺失均不改原金额，所有用户校验先于发送。
 
 #### 5.8.3 `client.mjs`
 - **功能 / 调用关系**：buildAction → route → requestJson → validateReply。refillBalance：POST /balance/refill、family balanceRefilled、write；setBalancePolicy：PUT /balance/policy、family balancePolicySaved、write；均status200。
@@ -480,7 +480,7 @@ T-B10 增加有界时钟测试：在原40s之后、60s之前完成的补足得�
 | `formatQuota preserves negatives units and grouping` | 原负数/分组/非USD/null向量；精确十进制预填不向上、极小正比例不格式化为Infinity；格式文本不能反用于输入 |
 | `balance actions build exact bodies` | 精确DTO、金额disabled时开关可改且旧金额保留、错draft.entity/错scope拒绝 |
 | `balance policy draft conflicts on revision` | revision变化ActionError，不允许undefined===undefined漏过 |
-| `balance submit success binds body and shows result` | submitApp+真实route/requestJson/validateReply接线，两新动作200成功、正确提示、不进pending；错scope/amount/值为协议错误 |
+| `balance submit success binds body and shows result` | submitApp+真实route/requestJson/validateReply接线，两新动作200成功、正确提示、不进pending；错scope/amount/值为协议错误；真实openBalancePolicy→submit验证USD非美分网格合法raw策略的no-op/仅开关/单字段修改保持未编辑字段，含raw1/2空初值、单位/版本变化及主动清空拒绝 |
 | `balance submit refusals stay inline and unknown stays pending check` | not_ready等候提示、超额近似值、设置409、金额本地ActionError就地；504/transport/协议错误为相应未知文案；editor换后不改新表单 |
 | `balance forms disable unavailable currency and bound prefills` | unit=null/非USD金额禁用，开关可改；读数null空白；负数目标=cap预填截顶、美元向下到分、无格式符 |
 
@@ -520,7 +520,7 @@ T-B10 增加有界时钟测试：在原40s之后、60s之前完成的补足得�
 
 ## 9. 完整性自检
 
-**实施前Step0（IR-m3）**：已准备 `docs/audits/sgm-8-5-balance/expectations.md` 十节草稿；C1技术修订通过后须独立从本稿及修订架构核对后才实现。机械项覆盖schema字段/enum/字符串ID、B步骤注释、共享常量/生成字段、旧GLM/火山策略零改动和精确测试清单。PBT至少128例分别覆盖未知/年龄只降级、独立整数商余数参考、每笔before+amount（退款不纳入实际硬cap）、同owner取消/封锁事件与不同owner隔离。位置待实现，本文不声称测试已写或通过。
+**Step0与实施对照（IR-m3）**：`docs/audits/sgm-8-5-balance/expectations.md` 十节预期已在实施前独立核对，现回填实际位置。机械项覆盖schema字段/enum/字符串ID、B步骤注释、共享常量/生成字段、旧GLM/火山策略零改动和精确清单。B3/B7规定的PBT均已写入并在对应门禁运行，精确名称/128例生成域/独立参考见§10.12；这不构成无穷全域证明。F1修复与代码独审已通过，最后UI及固定SHA退出条件仍以§10.11为准。
 
 以下为v3作者文本核对，独立审查结论另记；不代表实现/测试通过：
 
@@ -678,7 +678,42 @@ V1确定复现为手势中途重绘替换按钮导致click未到达；单按钮�
 
 方案 `docs/fixes/sgm8-b2-fix-verification-gaps.md`、执行及复审证据 `docs/audits/sgm-8-5-balance/b2-c2-fix-review.md` 随本次本地提交保存。提交后停C2固定SHA复核，B3–B8未开始，不推送或部署。旧C2报告作为历史保留。
 
+### 10.11 B3–B8连续实施与当前最终验证（2026-11-03）
+
+最新用户授权覆盖旧逐模块停点：B3–B8一次性连续完成，模块间不再等待；最终统一交付和部署前确认保留。实现位置如下，历史B1/B2失败/修正记录不删除：
+
+| 需求 | 已完成位置与验证 |
+|---|---|
+| B3 / T-B6–9、16、17 | `reconcile/worker/balance.rs`及构造/owner接线；`token_service_tests/balance.rs`10项真实Store/传输集成；`balance/tests.rs`4项取消/私有故障定例与3项128例PBT。T-B16已串真实owned_job/watch stop、HTTP bridge中的同owner手动等待者和实际延后Native写；G1/G2经独立静态与执行复核关闭 |
+| B4 / T-B14 | `runtime.rs`第六受管余额任务，立即首轮、轮末等60s；两项runtime测试含真实deferred-FK store不可用→refill→round→loop→监督器Storage链。3项错误变异独立编译后语义捕获、恢复2/0 |
+| B5 / T-B10、T1⑨⑩ | HTTP两路由、60/70/75绝对截止接线，旧45s/16连接/4业务槽保留；真实慢头4s+body9s在accepted+70s得到504/零发送。旧45s外层回退与调用处重置锚点两项变异均基线1/0→语义0/1→恢复1/0；T1直接读策略/槽位记录并精确断言允许的not_sent差异 |
+| B6 | `worker/panel.rs`快照v2、三份schema、生成字段/枚举与capacity；Rust成功wire同pid/pair原请求sidecar，mjs/py按原请求核scope/amount/设置/版本；Python单位尾换行漏检已补约束和负例 |
+| B7 / T-B11、12 | `ui/{core,client,app,render}.mjs`；8个指定Node名称集中`tests/ui/balance.test.mjs`，4个指定浏览器名称×4。精确十进制、年龄只降级、请求绑定、静态封锁余量及F1未编辑raw金额保真均已实施；F1真实open→submit回归、独立56例及新变异已关闭，修后最后full112/112通过 |
+| B8 / T-B13 | `newapi_balance_probe.py`严格10项已真实10/10；`groups_runtime_probe.py`16项含首轮自动补足与原生回读；原双协议及GLM/火山策略流程通过。固定binary、新tmp/随机端口/假账号、清理与脱敏阶段诊断已验证 |
+
+已取得门禁：Rust默认并发831/0（35既有ignored），F1修后Node68/0及check:ui；旧full浏览器112/112、UI43正例/25族/76余额反例、JS核2050实际Rust回复/15族、Python核3386报文/20请求族/15回复族；Native专用10/10，真实组合16/16+4/4无API mocks浏览器，测试进程均清理。B3关键8/8、B4关键3/3、HTTP两项反向验证闭环；F1修后余额变异子集**8/8**及全部JS最后整轮**25/25**已实际通过，日志`/tmp/sgm8-balance-js-mutations-unrestricted.log`，原沙箱子进程无输出失败保留。
+
+**输入时点与未完成项**：Rust主full编译早于`balance/tests.rs`先join再断言publication及`runtime/tests.rs`有界接收/先释放Condvar再断言两项测试harness修正，生产Rust未改且独立恢复已过；最终固定SHA完整Rust/C2汇总仍待安排。旧full112/wires/组合早于F1，其历史时点保留；F1修后最后full112/112已有新日志`/tmp/sgm8-balance-browser-final.log`及`/tmp/quota-throttle-sgm6-b-browser-ZPlYy1/report.json`。F1真实open→submit永久回归、最后Node68/0/check:ui、8余额/25全部JS变异及原审查者独立56/56复核均已通过；[八节修正报告](../../../fixes/sgm8-balance-policy-raw-amount.md)与[最终代码独审](../../../audits/sgm-8-5-balance/final-contract-review.md)已归档，未关闭生产问题0。本机与远端stable仍7e5cf97，未部署本轮工作树。
+
+原始日志、各失败原因、模块独审、变异输入/恢复哈希与资源清理见[实施汇总](../../../audits/sgm-8-5-balance/b3-b8-implementation-review.md)和[处置记录](../../../audits/sgm-8-5-balance/decisions.md)。
+
+### 10.12 最终Named PBT覆盖矩阵
+
+每组128例；名称与生成域取已实现测试，参考模型独立于生产函数。下列“最终矩阵”指本批已声明性质的位置/范围，不表示pending退出项已完成。
+
+| 模块/精确测试名 | 实现位置 | 生成范围与保证边界 |
+|---|---|---|
+| B1 `balance_pb_policy_trace_matches_independent_revision_model` | `catalog/balance_tests.rs` | 1..23步，小金额0..11/修订模式/重开；独立策略版本模型。是窄状态轨迹，迁移/真实失败另靠定例 |
+| B2 `balance_deadline_pbt_unselected_waiter_never_leaks_or_calls_guard` | `newapi/transport/balance_tests.rs` | class三种×1..499ms，固定两槽占满、waiter未被选；只证资源归还/截止/guard未调用，入口接线等由补测覆盖 |
+| B3 `balance_projection_pbt_age_failure_and_signed_values` | `worker/balance/tests.rs` | quota±JSON_SAFE、age=-10..180010、failure/missing；独立分类模型核未知/历史读数/ID |
+| B3 `refill_bounds_pbt_actual_http_matches_wide_integer_reference` | 同上 | before±JSON_SAFE、exact=-1..cap+1、target2..cap、refund0..999、auto/manual；独立i128 oracle与真实HTTP/add计数，只约束单笔及before+amount，允许退款后实际越cap |
+| B3 `cancelled_attempt_pbt_seals_one_owner_before_release` | 同上 | 双owner/source/合法金额/五种取消或交付终态/后续auto-manual；独立封锁模型后调用真实refill验证同owner与另一owner准入。不是任意长度并发trace穷举；晚写/回读取消另有T-B16确定性集成 |
+| B7 `quotaFromDollars rounds and bounds` 内fast-check | `tests/ui/balance.test.mjs` | cents1..1e8、tenths1..1e6；独立整数商余数半上舍入。极小比例、科学记数/350位域/cap等由固定向量补足 |
+| B7 `balance state and replies validate` 内fast-check | 同上 | baseAge0..190000、至多30个0..3000ms增量、failure；独立累计年龄的unknown单向模型，根fresh边界另有定例/浏览器 |
+
 ## 11. C1 独立审查及后续复审材料
+
+本节原C1输入基线/待定描述为当时审查材料，设计历史保留；当前实现/终审状态见§10.11，不再以“B3–B8未开始”作为下一步。
 
 - 工作区：`/home/haokun/projects/quota-throttle/.worktrees/source-groups-research`；分支 `research/source-groups-token-management`，后续仍归入 PR #5。
 - 代码基线：`7e5cf97`。本稿尚未提交，请读取工作区文件，不用 `git show` 代替；本次只记录确认及准备材料，没有代码改动或新提交。
@@ -686,4 +721,4 @@ V1确定复现为手势中途重绘替换按钮导致click未到达；单按钮�
 - 审查范围：v3按workflow §4.4逐项独立判断，不采信作者§10为通过证据；原v2已不通过，核所有IR处置与相关推论。用户已确认I10收窄，须复核第1项；D1仍单列用户确认，不代批准。
 - 重点：补足 1 → 1b → 7 的退出与副作用、所有者互斥 / Core / 槽位锁序、截止后的零发送、投递证据与 ≥500 不确定分类、10 分钟封锁、失败立即未知及回读失败不改补足结论、Busy 与 I8、v9 迁移 / 回滚、前端换算及契约清单、T-B1–T-B13 与变异覆盖。
 - 输出：逐项通过/不通过，问题级别、file:line依据、最小方案；由主代理记录与处置，独立审查者不修改业务代码。
-- 当前阶段：**C1/B1 C2已完成，B2 C2意见已修正且专项复审/全量门禁通过，随新提交交C2固定SHA复核**。B3–B8未开始；不访问运行数据、不迁移运行库或部署。
+- 当前阶段：**B1–B8已实施，F1修复、最终代码契约独审与最后UI门禁通过；最终固定SHA完整Rust/C2汇总pending**。取消模块间等待，连续完成已授权工作；不把工作树代码独审等同固定SHA C2，不迁移运行库或部署。

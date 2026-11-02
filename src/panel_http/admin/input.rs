@@ -1,5 +1,6 @@
 use super::route::{self, Route};
 use super::{bad_request, invalid_input, AdminFailure};
+use crate::catalog::balance::{BalancePolicyDraft, BALANCE_CAP};
 use crate::catalog::control::{canonical_models, ControlCommand, OperationId, StatusDirective};
 use crate::catalog::{
     GroupDraft, GroupId, ManagedTokenId, MembershipId, SourceId, SourceKind, VolcanoPolicy,
@@ -210,6 +211,14 @@ pub(super) enum AdminRequest {
         name: String,
     },
     Usage(UsageQuery),
+    RefillBalance {
+        scope: TokenOwnerScope,
+        amount: i64,
+    },
+    SetBalancePolicy {
+        revision: i64,
+        draft: BalancePolicyDraft,
+    },
 }
 impl AdminRequest {
     pub(super) fn writes(&self) -> bool {
@@ -226,6 +235,7 @@ impl AdminRequest {
     }
     pub(super) fn budget(&self) -> Duration {
         let seconds = match self {
+            Self::RefillBalance { .. } => 60,
             Self::Usage(_) => 15,
             Self::CreateSource(s) if !matches!(&s.selection, ModelSelection::Manual(_)) => 30,
             Self::DiscoverModels { .. }
@@ -294,6 +304,26 @@ body!(Register {
     native_token_id: String,
     display_name: String
 });
+body!(RefillBalance {
+    #[serde(deserialize_with = "string_enum")]
+    owner_scope: TokenOwnerScope,
+    amount: i64
+});
+body!(SetBalancePolicy {
+    expected_revision: i64,
+    auto_refill: bool,
+    warn_below: i64,
+    refill_to: i64
+});
+
+fn balance_amount(value: i64) -> Result<i64, AdminFailure> {
+    safe(value, 1)?;
+    if value > BALANCE_CAP {
+        Err(invalid_input())
+    } else {
+        Ok(value)
+    }
+}
 
 pub(super) fn decode(route: Route, bytes: &[u8]) -> Result<AdminRequest, AdminFailure> {
     let command = |id: String, command| -> Result<AdminRequest, AdminFailure> {
@@ -485,5 +515,28 @@ pub(super) fn decode(route: Route, bytes: &[u8]) -> Result<AdminRequest, AdminFa
             }
         }
         Route::Usage => AdminRequest::Usage(usage::decode(bytes)?),
+        Route::RefillBalance => {
+            let d: RefillBalance = json(bytes)?;
+            AdminRequest::RefillBalance {
+                scope: d.owner_scope,
+                amount: balance_amount(d.amount)?,
+            }
+        }
+        Route::SetBalancePolicy => {
+            let d: SetBalancePolicy = json(bytes)?;
+            let warn_below = safe(d.warn_below, 1)?;
+            let refill_to = balance_amount(d.refill_to)?;
+            if warn_below >= refill_to {
+                return Err(invalid_input());
+            }
+            AdminRequest::SetBalancePolicy {
+                revision: revision(d.expected_revision)?,
+                draft: BalancePolicyDraft {
+                    auto_refill: d.auto_refill,
+                    warn_below,
+                    refill_to,
+                },
+            }
+        }
     })
 }

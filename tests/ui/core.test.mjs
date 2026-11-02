@@ -25,7 +25,7 @@ test('u2 projection strips unknown fields and rejects missing or ill-typed obser
   const p = validateState(s);
   assert.equal(p.private_config, undefined); assert.equal(p.catalog.sources[0].source.secret, undefined);
   for (const mutate of [
-    v => { delete v.backend_ready; }, v => { v.schema_version = 2; }, v => { v.catalog.sources[0].source.config_revision = 0; },
+    v => { delete v.backend_ready; }, v => { v.schema_version = 3; }, v => { v.catalog.sources[0].source.config_revision = 0; },
     v => { v.glm.sources[0].five_hour.percentage = -1; }, v => { v.glm.sources[0].state = 'observed-new'; },
     v => { v.catalog.sources.push(v.catalog.sources[0]); }, v => { v.catalog.memberships[0].membership.source_id = '999'; },
     v => { v.catalog.sources[0].source.type = 'volcano'; }, v => { v.glm.cycle_id = '18446744073709551616'; },

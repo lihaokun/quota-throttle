@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
+#[derive(Clone)]
 pub(crate) struct Recorded {
     pub method: String,
     pub path: String,
@@ -41,6 +42,9 @@ pub(crate) struct Fake {
 pub(crate) fn queued_requests(budget: &ManagementBudget) -> usize {
     budget.state.lock().unwrap().queue.len()
 }
+pub(crate) fn fixture_cooldown(budget: &ManagementBudget, delay: Duration) {
+    budget.cool_down(delay);
+}
 impl Drop for Fake {
     fn drop(&mut self) {
         self.task.abort();
@@ -48,6 +52,13 @@ impl Drop for Fake {
 }
 impl Fake {
     pub async fn start(handler: impl Fn(&Recorded) -> Reply + Send + Sync + 'static) -> Self {
+        Self::start_async(move |record| std::future::ready(handler(&record))).await
+    }
+    pub async fn start_async<F, Fut>(handler: F) -> Self
+    where
+        F: Fn(Recorded) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = Reply> + Send + 'static,
+    {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         assert!(![3000, 3001].contains(&port));
@@ -79,7 +90,7 @@ impl Fake {
                             let mut first = raw.lines().next().unwrap().split_whitespace();
                             let record = Recorded { method: first.next().unwrap().into(), path: first.next().unwrap().into(),
                                 body: serde_json::from_slice(&buffer[header_end..]).unwrap_or(Value::Null), raw, at: Instant::now() };
-                            let reply = handler(&record);
+                            let reply = handler(record.clone()).await;
                             log.lock().unwrap().push(record);
                             let header = format!("HTTP/1.1 {} Test\r\nContent-Length: {}\r\nConnection: close\r\n{}\r\n", reply.status, reply.body.len(), reply.headers);
                             if socket.write_all(header.as_bytes()).await.is_err() { return; }

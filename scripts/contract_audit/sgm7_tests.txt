@@ -11,6 +11,8 @@ reconcile::worker::tests::token_service_tests::runtime_cooperation::r7_manual_pa
 reconcile::worker::tests::token_service_tests::runtime_cooperation::r7_pbt_automatic_gate_never_blocks_manual_invalidation
 reconcile::worker::tests::token_service_tests::runtime_cooperation::r7_registration_short_lease_rejects_before_http_but_verification_keeps_original_rule
 reconcile::worker::tests::token_service_tests::runtime_cooperation::r7_token_step_and_reveal_exclude_automatic_publication_and_release_guard
+runtime::tests::balance_loop_propagates_real_refill_storage_failure
+runtime::tests::balance_loop_runs_immediately_survives_business_errors_and_stops
 runtime::tests::control_warning_names_the_maintenance_job
 runtime::tests::r1_bad_configuration_is_rejected_without_secret_echo
 runtime::tests::r1_load_requires_private_regular_bounded_file

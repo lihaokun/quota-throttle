@@ -163,7 +163,7 @@ impl Supervisor {
                 if let Some(response) = refusal(&closing, deadline) {
                     return response;
                 }
-                match dispatch::dispatch(&worker, request)
+                match dispatch::dispatch(&worker, request, deadline)
                     .await
                     .and_then(output::encode)
                 {

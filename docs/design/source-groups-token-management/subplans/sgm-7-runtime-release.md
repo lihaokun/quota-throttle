@@ -14,7 +14,7 @@ G1–G3 由既有 worker/策略/collector 完成，G4–G6 由已验收面板完
 
 运行配置只读普通文件、无叶端 symlink、权限无 group/other；解析错误输出固定安全文字，不输出 TOML 行或密码。来源目录只能来自 catalog，非空旧 keys 在 serve 下拒绝。status_addr 必须回环、端口非零；调用根沿 UiOptions 校验，不能由 Host 推导。manage 必须存在、目录为私有绝对目录、base 为同端口 http 回环根、版本固定原支持版本。GLM 原参数经过原 validate_config，轮询周期限制 5–3600 秒。
 
-`RuntimeError` 是私有固定错误类别，启动/存储/后台任务错误不包含配置、远端正文或密钥。watch<bool> 是唯一停止信号，JoinSet 只持本次启动的五项任务，任务不增加第二业务权威。
+`RuntimeError` 是私有固定错误类别，启动/存储/后台任务错误不包含配置、远端正文或密钥。watch<bool> 是唯一停止信号，JoinSet 只持本次启动的任务，任务不增加第二业务权威。SGM-7 原为五项；[SGM-8 第5批](sgm-8-5-balance.md) §5.5 新增独立余额循环后为六项。
 
 ## 3 启动与函数契约
 
@@ -26,7 +26,7 @@ G1–G3 由既有 worker/策略/collector 完成，G4–G6 由已验收面板完
 
 ### R2 start
 
-先绑定唯一 PanelServer（原 Host/Origin 规则），打开私有 catalog；失败即回收已取得资源。复用 NewApiProcess 的下载/健康/启动功能，但新增受管来源模式明确给子进程设置 SQL_DSN=local、LOG_SQL_DSN=local、SQLITE_PATH 指向自己的目录、ERROR_LOG_ENABLED=true；不修改已运行进程环境，也不重启或修改外部实例。验证配置/PID/exe/cwd/listener 的真实本地绑定后才使用管理凭据。服务入口不隐式创建账号、修改余额或改 NewAPI options，首次初始化由显式新安装流程完成。
+先绑定唯一 PanelServer（原 Host/Origin 规则），打开私有 catalog；失败即回收已取得资源。复用 NewApiProcess 的下载/健康/启动功能，但新增受管来源模式明确给子进程设置 SQL_DSN=local、LOG_SQL_DSN=local、SQLITE_PATH 指向自己的目录、ERROR_LOG_ENABLED=true；不修改已运行进程环境，也不重启或修改外部实例。验证配置/PID/exe/cwd/listener 的真实本地绑定后才使用管理凭据。服务入口不隐式创建账号或改 NewAPI options，首次初始化由显式新安装流程完成。SGM-8 第5批起，后台余额循环按已保存策略补足已配置账号，包含启动首轮；原「运行时不修改余额」约束由该已确认子计划替代。
 
 创建一个预算，分别构造管理员和 issuer client；issuer 清除管理 token、额外管理员 header、manage 与渠道模板，只保留同实例必要连接和自己的登录材料。TokenOwners 沿原固定 owner 约束注入同一 worker，不做管理员签发 fallback。无 owners 则调用原 new。
 
@@ -36,9 +36,9 @@ G1–G3 由既有 worker/策略/collector 完成，G4–G6 由已验收面板完
 
 ### R3 supervised tasks
 
-只启动五个有归属任务：原 worker.run、原 run_fact_collection、原 PanelServer.serve_ui、GLM 刷新、维护循环。一个任务意外成功退出、错误或 panic 都触发统一停止；外部 SIGINT/SIGTERM 同样触发。先广播停止再 join 全部实际句柄，继续保留已发生的错误；PanelServer 原关闭过程包括停止准入、业务任务和 usage barrier。等待不可抢占 blocking 工作不能用单 HTTP 45 秒截止冒充整体关闭上界。没有正常路径 abort-all，也不因第一个错误丢弃剩余句柄。
+启动六个有归属任务：原 worker.run、原 run_fact_collection、原 PanelServer.serve_ui、GLM 刷新、维护循环，以及 SGM-8 第5批的余额循环。一个任务意外成功退出、错误或 panic 都触发统一停止；外部 SIGINT/SIGTERM 同样触发。先广播停止再 join 全部实际句柄，继续保留已发生的错误；PanelServer 原关闭过程包括停止准入、业务任务和 usage barrier。等待不可抢占 blocking 工作不能用单 HTTP 45 秒截止冒充整体关闭上界。没有正常路径 abort-all，也不因第一个错误丢弃剩余句柄。
 
-论证：JoinSet 对固定五项拥有唯一句柄，停止前循环数不限但没有积压 tick；停止后不创建替代任务。各任务原关闭契约在共同 stop 下收敛，全部 join 后才 drop 最后 worker/catalog 引用；超时/取消不被当作操作未发送。
+论证：JoinSet 对固定六项拥有唯一句柄，停止前循环数不限但没有积压 tick；停止后不创建替代任务。各任务原关闭契约在共同 stop 下收敛，全部 join 后才 drop 最后 worker/catalog 引用；超时/取消不被当作操作未发送。余额轮复用 owned_job，Storage 从真实补足路径上报；取消时先结算不确定记录与封锁，再释放账号互斥（SGM-8 §5.4.3/5.5）。
 
 R4/R5新增循环的每次worker调用使用私有 `owned_job`：持有一个spawn_blocking句柄，由阻塞线程的Handle::block_on执行原异步入口，Tokio runtime保持驱动。其内部仅在await处选择stop取消可取消的网络/采样；正在执行的同步Core/SQLite代码不可抢占，必须实际返回。外层无论stop与否都await该句柄，不能select后丢弃它。每个循环每次仅一个job，各项前后检查stop；停止后不启动下一项或替代job。原worker.run/collector/PanelServer继续复用它们已经审核的句柄和关闭契约，不另写第二执行器。普通shutdown和任务失败均经监督器等待所有job；强杀仍按§4故障边界处理。
 
@@ -58,7 +58,7 @@ R4/R5新增循环的每次worker调用使用私有 `owned_job`：持有一个spa
 
 ## 4 初始化与部署
 
-只对经核对不存在的新目标目录执行安装。复用固定 SHA256 的 NewAPI 二进制；应用二进制记录 SHA/提交，配置和凭据 0600、目录 0700。先独立启动新原生实例、证明 PID/目录/监听归属及 setup 未初始化，再创建随机管理员密码和普通签发账号。新实例的自动恢复关闭、消费与错误日志开启；必要普通账号内部余额由首次初始化显式准备，不在运行循环修改，更不是供应商额度。生成配置中不写真实来源或旧 token。
+只对经核对不存在的新目标目录执行安装。复用固定 SHA256 的 NewAPI 二进制；应用二进制记录 SHA/提交，配置和凭据 0600、目录 0700。先独立启动新原生实例、证明 PID/目录/监听归属及 setup 未初始化，再创建随机管理员密码和普通签发账号。新实例的自动恢复关闭、消费与错误日志开启；必要普通账号内部余额由首次初始化显式准备，SGM-8 第5批起再由独立余额循环按策略补足，不是供应商额度。生成配置中不写真实来源或旧 token。
 
 `initialize_fresh(target, native_binary, app_binary, ports)` 为独立安装脚本，不被serve调用。目标不存在、两个端口空闲、二进制固定SHA是前置；用排他mkdir取得新目录。先生成并以0600写入带随机密码的config.pending.toml（issuer ID暂非法，不能启动），再启动自己的NewAPI，保留Popen句柄并按ss/PID/exe/cwd核验。所有HTTP请求限定该回环实例、禁用代理/重定向、有超时；响应只检查固定字段，不输出body或Cookie。请求顺序为：
 
@@ -91,7 +91,7 @@ R4/R5新增循环的每次worker调用使用私有 `owned_job`：持有一个spa
 
 实施补充：同一个automatic_updates独占guard也覆盖每个token_step（原lane内，不包整个批次）及显式reveal（commands→lane→guard→Frame），人工控制仍沿原fence撤销。未发送暂态操作仍按原T5C等待显式Retry，未知交付不重放。新增collector页已收到后提交遇锁的回归；Catalog/DDL/GLM/火山算法未改。
 
-C固定清单收紧为15项，增加真正旧revision及非法字段零写入反例；要求禁用创建的原生回读、GLM切换前后各自真实命中、成功清错同周期且命中原来源、删除后原Key拒绝。原B7/O4不保证启动完永远选第一个成员，夹具只从同一已收敛快照按source_id重绑定A/B测试角色，后续期望固定不随响应改变。浏览器四配置不拦截API。通用轮询只吞明确的暂态读错误；显式Retry固定同operation/目标，reveal单次POST。测试清理失败必须非零退出，SIGTERM实测进入清理且只关闭自建进程。
+C固定清单原为15项，增加真正旧revision及非法字段零写入反例；SGM-8 第5批新增启动首轮内部余额补足后为16项，核快照v2/默认策略/两所有者自动补足记录及原生余额回读。其余仍要求禁用创建的原生回读、GLM切换前后各自真实命中、成功清错同周期且命中原来源、删除后原Key拒绝。原B7/O4不保证启动完永远选第一个成员，夹具只从同一已收敛快照按source_id重绑定A/B测试角色，后续期望固定不随响应改变。浏览器四配置不拦截API。通用轮询只吞明确的暂态读错误；显式Retry固定同operation/目标，reveal单次POST。测试清理失败必须非零退出，SIGTERM实测进入清理且只关闭自建进程。
 
 用户已明确授权在fermat完成全部测试和全新部署，必要源码/测试文件/公开二进制白名单上传已获准并完成；此前首次包含设计文档的上传被拒，未绕过，后续未传设计/审核文档、真实配置/密钥/数据库。
 

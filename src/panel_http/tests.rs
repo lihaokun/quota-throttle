@@ -23,9 +23,19 @@ impl PanelServer {
 
 pub(crate) fn empty(at: i64) -> PanelSnapshot {
     PanelSnapshot {
-        schema_version: 1,
+        schema_version: crate::reconcile::worker::panel::PANEL_SCHEMA_VERSION,
         captured_at_ms: at,
         backend_ready: false,
+        balance: crate::reconcile::worker::balance::BalanceView {
+            policy: crate::catalog::balance::BalancePolicy {
+                revision: 1,
+                auto_refill: true,
+                warn_below: 100_000_000_000_000,
+                refill_to: 1_000_000_000_000_000,
+            },
+            unit: None,
+            accounts: vec![],
+        },
         catalog: PanelCatalog {
             sources: vec![],
             groups: vec![],
@@ -50,6 +60,32 @@ fn populated(cache: &PanelCache) -> Arc<[u8]> {
         }))
         .unwrap();
     body
+}
+
+#[tokio::test(start_paused = true)]
+async fn balance_connection_deadline_keeps_accept_anchor_and_exact_route() {
+    drive(async {
+    let accepted = Instant::now();
+    tokio::time::advance(Duration::from_secs(4)).await;
+    for (method, path, seconds) in [
+        ("POST", "/api/admin/v1/balance/refill", 75),
+        ("PUT", "/api/admin/v1/balance/refill", 45),
+        ("POST", "/api/admin/v1/balance/refill?x=1", 45),
+        ("POST", "/api/admin/v1/balance/refill?", 45),
+        ("POST", "/api/admin/v1/balance/refill/", 45),
+        ("PUT", "/api/admin/v1/balance/policy", 45),
+    ] {
+        let head = request::parse_head(format!("{method} {path} HTTP/1.1\r\nHost: localhost:13001\r\nOrigin: http://localhost:13001\r\nX-QT-Panel: 1\r\nContent-Length: 0\r\nContent-Type: application/json\r\n\r\n").as_bytes()).unwrap();
+        assert_eq!(
+            connection_deadline(&head, accepted),
+            accepted + Duration::from_secs(seconds)
+        );
+    }
+    let evil = b"POST /api/admin/v1/balance/refill HTTP/1.1\r\nHost: localhost:13001\r\nOrigin: http://evil.invalid\r\nX-QT-Panel: 1\r\nContent-Length: 0\r\nContent-Type: application/json\r\n\r\n";
+    let response = one_request(evil.to_vec(), Arc::new(PanelCache::default())).await;
+    assert!(response_parts(&response).0.starts_with("HTTP/1.1 403"));
+    assert_eq!(MAX_CONNECTIONS, 16);
+    }).await;
 }
 fn response_parts(bytes: &[u8]) -> (&str, &[u8]) {
     let split = bytes.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;

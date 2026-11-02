@@ -1,7 +1,16 @@
+import { VERSIONS } from '../../src/panel_http/ui/contract.mjs';
 export function emptyState(at = 100000) {
-  return { schema_version: 1, captured_at_ms: at, backend_ready: true,
+  return { schema_version: VERSIONS.state, captured_at_ms: at, backend_ready: true,
+    balance: {policy: {revision: 1, auto_refill: true, warn_below: 100000000000000, refill_to: 1000000000000000}, unit: null, accounts: []},
     catalog: { sources: [], groups: [], memberships: [] },
     glm: { cycle_id: null, completed_at_ms: null, sources: [], groups: [] } };
+}
+export function balanceState(at = 1000000) {
+  const state = richState(at);
+  state.balance.unit = {quota_per_unit: 500000, display_type: 'USD'};
+  state.balance.accounts = [{owner_scope: 'issuer', user_id: '9007199254740993', state: 'sufficient', quota: 100000000000000,
+    observed_at_ms: at, unknown_reason: null, locked_until_ms: null, backoff_until_ms: null, last_refill: null}];
+  return state;
 }
 export function richState(at = 100000) {
   const s = emptyState(at);
