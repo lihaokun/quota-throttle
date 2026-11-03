@@ -1,0 +1,29 @@
+# 新实例专用。复制/生成的实际配置包含凭据，必须 chmod 600。
+# 显式启动：quota-throttle serve /absolute/path/config.toml
+# 首次账号/原生选项初始化请使用 scripts/deploy/initialize_groups.py。
+# 来源只从管理面添加；此模式不导入旧 [[keys]]。
+poll_interval_secs = 10
+status_addr = "127.0.0.1:13001"
+keys = []
+
+[zhipu]
+
+[new_api]
+base_url = "http://127.0.0.1:13000"
+root_username = "qtadmin"
+root_password = "REPLACE_WITH_PRIVATE_ADMIN_PASSWORD"
+
+[new_api.manage]
+version = "v1.0.0-rc.20"
+port = 13000
+data_dir = "/absolute/private/instance/native"
+
+[source_groups]
+catalog_path = "/absolute/private/instance/state/catalog.sqlite3"
+public_api_base_url = "http://127.0.0.1:13000"
+legacy_admin_user_id = 1 # 必须是实际核验的管理员ID，不从名称猜测。
+
+[source_groups.issuer]
+user_id = 2 # 必须是实际核验的普通签发账号ID，不得与管理员相同。
+username = "qtsigner"
+password = "REPLACE_WITH_PRIVATE_ISSUER_PASSWORD"

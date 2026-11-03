@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:quota-throttle:panel-http-error:1",
+  "title": "Panel HTTP boundary error",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "error"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "error": {
+      "type": "string",
+      "enum": [
+        "bad_request",
+        "header_too_large",
+        "body_too_large",
+        "target_too_long",
+        "length_required",
+        "unsupported_media_type",
+        "expectation_failed",
+        "unsupported_version",
+        "forbidden",
+        "not_found",
+        "method_not_allowed",
+        "overloaded",
+        "request_timeout",
+        "snapshot_unavailable",
+        "internal"
+      ]
+    }
+  }
+}

@@ -37,6 +37,10 @@ pub struct NewApiProcess {
 }
 
 impl NewApiProcess {
+    pub(crate) fn configured_version(&self) -> &str {
+        &self.version
+    }
+
     pub fn new(cfg: &ManageConfig, base_url: &str) -> Result<Self> {
         let (asset, _) = asset_names(&cfg.version)?;
         let data_dir = PathBuf::from(&cfg.data_dir);
@@ -138,11 +142,36 @@ impl NewApiProcess {
 
     /// 确保 new-api 在跑：已健康则直接返回；否则 detached 启动并等到健康。
     pub async fn ensure_running(&self) -> Result<()> {
+        self.ensure_running_mode(None).await
+    }
+
+    /// 仅新来源分组入口使用；存量运行进程不重启、不改环境，随后必须真实预检。
+    pub(crate) async fn ensure_group_running(
+        &self,
+        shutdown: &tokio::sync::watch::Receiver<bool>,
+    ) -> Result<()> {
+        self.ensure_running_mode(Some(shutdown)).await
+    }
+
+    async fn ensure_running_mode(
+        &self,
+        shutdown: Option<&tokio::sync::watch::Receiver<bool>>,
+    ) -> Result<()> {
+        let check_stop = || -> Result<()> {
+            anyhow::ensure!(
+                !shutdown.is_some_and(|s| *s.borrow()),
+                "managed startup cancelled"
+            );
+            Ok(())
+        };
+        check_stop()?;
         if self.is_healthy().await {
             info!(base = %self.base_url, "new-api 已在运行");
             return Ok(());
         }
+        check_stop()?;
         self.ensure_binary().await?;
+        check_stop()?;
 
         let log_path = self.data_dir.join("new-api.log");
         let log = std::fs::OpenOptions::new()
@@ -156,9 +185,19 @@ impl NewApiProcess {
         let binary_abs = std::fs::canonicalize(&self.binary).context("解析二进制绝对路径失败")?;
         let data_abs = std::fs::canonicalize(&self.data_dir)?;
 
-        let child = Command::new(&binary_abs)
+        let mut command = Command::new(&binary_abs);
+        command
             .current_dir(&data_abs)
-            .env("PORT", self.port.to_string())
+            .env("PORT", self.port.to_string());
+        if shutdown.is_some() {
+            command
+                .env("SQL_DSN", "local")
+                .env("LOG_SQL_DSN", "local")
+                .env("SQLITE_PATH", data_abs.join("one-api.db"))
+                .env("ERROR_LOG_ENABLED", "true");
+        }
+        check_stop()?;
+        let child = command
             .stdin(Stdio::null())
             .stdout(Stdio::from(log))
             .stderr(Stdio::from(log_err))
@@ -171,7 +210,9 @@ impl NewApiProcess {
         info!(pid, port = self.port, log = %log_path.display(), "已拉起 new-api，等待健康…");
 
         for i in 1..=60 {
+            check_stop()?;
             tokio::time::sleep(Duration::from_secs(1)).await;
+            check_stop()?;
             if self.is_healthy().await {
                 info!(base = %self.base_url, secs = i, "new-api 健康");
                 return Ok(());

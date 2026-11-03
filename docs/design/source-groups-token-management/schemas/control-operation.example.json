@@ -1,0 +1,13 @@
+{
+  "schema_version": 2,
+  "operation_id": "example-pause-000001",
+  "kind": "set_source_paused",
+  "target_type": "source",
+  "target_id": "1",
+  "phase": "partial",
+  "target_revision": 2,
+  "total_targets": 2,
+  "confirmed_targets": 1,
+  "error_code": "transport_unknown",
+  "updated_at": 1791993600000
+}

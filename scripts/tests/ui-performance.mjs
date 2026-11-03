@@ -1,0 +1,16 @@
+import assert from 'node:assert/strict';
+import os from 'node:os';
+import { maximumPanel, maximumUsage } from '../../tests/ui/performance-fixtures.mjs';
+import { validateState, SnapshotAge, observations } from '../../src/panel_http/ui/core.mjs';
+import { prepareChart } from '../../src/panel_http/ui/charts.mjs';
+console.log(JSON.stringify({node: process.version, cpu: os.cpus()[0]?.model, platform: process.platform, tests: ['panel-decode-project', 'chart-prepare']}));
+const panel = JSON.stringify(maximumPanel());
+const start = performance.now(), projected = validateState(JSON.parse(panel)), age = new SnapshotAge();
+age.ingest(projected, '0', 0, 0); observations(age, 1);
+const panelMs = performance.now() - start;
+assert.equal(projected.catalog.sources.length, 1000); assert.equal(projected.catalog.groups.length, 100); assert.equal(projected.catalog.memberships.length, 10000);
+console.log(JSON.stringify({gate: 'panel-decode-project', bytes: Buffer.byteLength(panel), milliseconds: panelMs, budget: 1000})); assert.ok(panelMs <= 1000);
+const snapshot = maximumUsage(), chartStart = performance.now(), chart = prepareChart(snapshot), chartMs = performance.now() - chartStart;
+assert.equal(chart.bars.reduce((n, b) => n + b.parts.length, 0), 65536); assert.equal(chart.models.length, 1024);
+assert.equal(chart.bars.length, 745); assert.equal(chart.snapshot.usage.tokens.length, 4096);
+console.log(JSON.stringify({gate: 'chart-prepare', items: 65536, buckets: 745, models: 1024, tokens: 4096, modelBytes: 256, bytes: Buffer.byteLength(JSON.stringify(snapshot)), milliseconds: chartMs, budget: 500})); assert.ok(chartMs <= 500);

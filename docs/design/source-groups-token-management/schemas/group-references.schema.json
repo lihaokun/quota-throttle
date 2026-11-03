@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:quota-throttle:group-references:1",
+  "title": "Known local group references version 1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "group_id", "active_memberships", "historical_memberships", "live_tokens", "pending_creations", "historical_tokens", "unknown_group_tokens", "known_local_only", "deletion_authorized"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "group_id": {"type": "string", "pattern": "^[1-9][0-9]{0,18}$"},
+    "active_memberships": {"$ref": "#/$defs/count"},
+    "historical_memberships": {"$ref": "#/$defs/count"},
+    "live_tokens": {"$ref": "#/$defs/count"},
+    "pending_creations": {"$ref": "#/$defs/count"},
+    "historical_tokens": {"$ref": "#/$defs/count"},
+    "unknown_group_tokens": {"$ref": "#/$defs/count"},
+    "known_local_only": {"const": true},
+    "deletion_authorized": {"const": false}
+  },
+  "$defs": {"count": {"type": "integer", "minimum": 0, "maximum": 10000}}
+}
